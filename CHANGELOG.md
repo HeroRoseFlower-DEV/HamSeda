@@ -1,5 +1,70 @@
 # HamSeda Changelog
 
+## 2026-10-09 — Latest-stack modernization (branch `modernize/latest-stack`)
+
+### Toolchain (all versions verified 2026-10-09 from official sources)
+
+- **AGP 8.13.2 → 9.4.1** (latest stable 9.x, Google Maven). Built-in Kotlin
+  enabled: the `org.jetbrains.kotlin.android` plugin is removed everywhere
+  (AGP 9 hard-fails if applied); `android.kotlinOptions` migrated to the
+  `kotlin { compilerOptions { } }` DSL.
+  https://developer.android.com/build/migrate-to-built-in-kotlin
+- **Kotlin 2.1.20 → 2.4.21** (latest stable, Maven Central) via the root
+  buildscript classpath — the official "higher KGP version" mechanism
+  (AGP bundles 2.2.10).
+- **Gradle wrapper 8.14.6 → 9.8.1** (latest stable, services.gradle.org)
+  with the official SHA-256 checksum in `gradle-wrapper.properties`.
+- **Compose BOM 2025.04.00 → 2026.09.00** (pins Compose UI 1.12.1,
+  Material3 1.4.0; requires AGP 9 + compileSdk 37).
+- **androidx.core:core-ktx 1.16.0 → androidx.core:core 1.19.1**
+  (core-ktx 1.19.x is an empty shim depending on `androidx.core:core` —
+  verified via Google Maven module metadata; coordinate migrated).
+- **lifecycle 2.9.1 → 2.11.0, activity-compose 1.10.1 → 1.13.0,
+  datastore 1.1.2 → 1.2.1, coroutines 1.10.2 → 1.11.0.**
+- JDK stays 17 (Temurin); compileSdk/targetSdk 37; minSdk 26.
+
+### Transport & platform API modernization
+
+- **Wi-Fi Direct:** removed the deprecated `NetworkInfo` /
+  `EXTRA_NETWORK_INFO` connection-state path. The
+  `WIFI_P2P_CONNECTION_CHANGED_ACTION` handler now queries
+  `requestConnectionInfo()` directly (bounded 5 s) and branches on
+  `WifiP2pInfo.groupFormed`.
+- **Audio routing:** on API 31+, endpoint selection uses
+  `availableCommunicationDevices` + `setCommunicationDevice()` /
+  `clearCommunicationDevice()` instead of the legacy speakerphone flag;
+  the deprecated `isWiredHeadsetOn` is no longer used on API 31+.
+  API 26–30 keeps the legacy path.
+- **Receivers:** every context-registered receiver now declares
+  `RECEIVER_NOT_EXPORTED` on API 33+ (previously missing on the audio
+  route receiver — a `SecurityException` crash on API 34+ when targeting
+  API 34+). System broadcasts are still received.
+- **Bluetooth:** discovered (non-bonded) peers now expire after a bounded
+  120 s TTL; bonded peers are unaffected.
+
+### CI & supply chain
+
+- `gradle/actions/setup-gradle` v6.0.1 → **v6.4.0**; the SHA pin is
+  corrected to the real commit SHA (the old pin was the annotated tag
+  object, not the commit).
+- Added `timeout-minutes: 45`, an unsigned `assembleRelease` build gate,
+  and Dependabot (Gradle + GitHub Actions, weekly, no auto-merge).
+- Verified all four action pins resolve to the pinned commit SHAs.
+
+### Docs & codec
+
+- New `docs/TECHNOLOGY_DECISIONS.md`: why Wi-Fi Direct + Classic RFCOMM
+  (and why not BLE/LE Audio/Nearby/Aware), receiver flags, audio routing,
+  crypto, toolchain.
+- Vendored Concentus verified byte-identical to upstream (all 124 files'
+  blob SHAs match); the only newer upstream commit is Go-only.
+- README build matrix now carries exact versions + official source links.
+
+### Tests
+
+- 12 new unit tests (`ModernizationTest`): audio routing decisions,
+  route detection priority, Bluetooth peer TTL boundaries.
+
 ## 2026-10-09 — Security hardening & modernization
 
 ### Fixed (HS-01…HS-11, with regression tests)

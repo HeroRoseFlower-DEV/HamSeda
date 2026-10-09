@@ -61,6 +61,7 @@ fun DiagnosticsScreen(
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
+    val copiedMsg = stringResource(R.string.diag_copied)
     val entries by AppLog.entries.collectAsStateWithLifecycle()
     val listState = rememberLazyListState()
 
@@ -105,7 +106,7 @@ fun DiagnosticsScreen(
                     onClick = {
                         val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                         cm.setPrimaryClip(ClipData.newPlainText("hamseda-log", AppLog.dump()))
-                        Toast.makeText(context, context.getString(R.string.diag_copied), Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, copiedMsg, Toast.LENGTH_SHORT).show()
                     },
                     modifier = Modifier.weight(1f),
                     shape = RoundedCornerShape(14.dp),

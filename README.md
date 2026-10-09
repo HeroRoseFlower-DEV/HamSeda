@@ -47,21 +47,32 @@
 
 ## ابزارهای ساخت (پین‌شده)
 
-همه نسخه‌ها پین شده‌اند (بدون `1.+`) و سازگاری متقابل‌شان بررسی شده است:
+همه نسخه‌ها پین شده‌اند (بدون `1.+`) و سازگاری متقابل‌شان در تاریخ 2026-10-09
+از منابع رسمی بررسی شده است (متادیتای Google Maven / Maven Central /
+صفحات انتشار رسمی). آخرین بیلد سبز CI این ترکیب را اثبات می‌کند.
 
-| مؤلفه | نسخه | دلیل انتخاب |
+| مؤلفه | نسخه | منبع رسمی |
 |---|---|---|
-| Android Gradle Plugin | 8.13.2 | آخرین 8.x پایدار (تأیید 2026-10-09) |
-| Gradle Wrapper | 8.14.6 | سازگار با AGP 8.13.2 (فایل wrapper داخل ریپو کامیت شده) |
-| Kotlin | 2.1.20 | همان نسخه برای پلاگین اندروید و کامپایلر Compose |
-| JDK | 17 (Temurin) | موردنیاز AGP 8.x؛ در CI روی `ubuntu-24.04` |
+| Android Gradle Plugin | 9.4.1 | [Google Maven](https://dl.google.com/dl/android/maven2/com/android/tools/build/gradle/maven-metadata.xml) — جدیدترین 9.x پایدار |
+| Gradle Wrapper | 9.8.1 | [services.gradle.org](https://services.gradle.org/distributions/) — به‌همراه SHA-256 رسمی در `gradle-wrapper.properties` |
+| Kotlin | 2.4.21 | [Maven Central](https://repo1.maven.org/maven2/org/jetbrains/kotlin/kotlin-gradle-plugin/maven-metadata.xml) — از طریق buildscript classpath (مدل built-in Kotlin در AGP 9؛ پلاگین `kotlin-android` حذف شده) |
+| Compose compiler plugin | 2.4.21 | همان نسخه Kotlin ([مستندات Compose](https://developer.android.com/develop/ui/compose/bom/bom-mapping)) |
+| JDK | 17 (Temurin) | [سازگاری AGP 9](https://developer.android.com/build/releases/agp-9-4-0-release-notes) — در CI روی `ubuntu-24.04` |
 | compileSdk / targetSdk | 37 | جدیدترین SDK پایدار (اندروید ۱۷)؛ بالاتر از الزام Play (API 36) |
 | minSdk | 26 | طبق اسپک پروژه (اندروید ۸) |
-| Compose BOM | 2025.04.00 | سازگار با Kotlin 2.1.20 |
+| Compose BOM | 2026.09.00 | [BOM mapping](https://developer.android.com/develop/ui/compose/bom/bom-mapping) — پین‌کننده Compose UI 1.12.1 و Material3 1.4.0؛ نیازمند AGP 9 + compileSdk 37 |
+| androidx.core | 1.19.1 | [AndroidX releases](https://developer.android.com/jetpack/androidx/versions/stable-channel) — جایگزین `core-ktx` (که از 1.19 یک shim خالی است) |
+| lifecycle | 2.11.0 | [AndroidX releases](https://developer.android.com/jetpack/androidx/releases/lifecycle) |
+| activity-compose | 1.13.0 | [AndroidX releases](https://developer.android.com/jetpack/androidx/releases/activity) |
+| datastore-preferences | 1.2.1 | [AndroidX releases](https://developer.android.com/jetpack/androidx/releases/datastore) |
+| kotlinx-coroutines | 1.11.0 | [GitHub releases](https://github.com/Kotlin/kotlinx.coroutines/releases) |
 | actions/checkout | v7.0.1 (SHA-pinned) | امنیت supply-chain |
 | actions/setup-java | v6.0.1 (SHA-pinned) | امنیت supply-chain |
 | actions/upload-artifact | v7.0.2 (SHA-pinned) | امنیت supply-chain + SHA-256 checksum |
-| gradle/actions/setup-gradle | v6.0.1 (SHA-pinned) | کش وابستگی‌های Gradle |
+| gradle/actions/setup-gradle | v6.4.0 (SHA-pinned) | کش وابستگی‌های Gradle |
+
+تاریخچه تصمیم‌های فناوری (چرا Wi-Fi Direct/Bluetooth Classic و نه BLE/LE Audio/
+Nearby/Aware): [`docs/TECHNOLOGY_DECISIONS.md`](docs/TECHNOLOGY_DECISIONS.md).
 
 **Opus:** به‌جای وابستگی به یک artifact خارجیِ غیرقابل‌اعتماد، سورس جاوای
 پروژه Concentus (پورت خالص جاوای کدک Opus، لایسنس BSD مشابه خود Opus) به‌صورت
