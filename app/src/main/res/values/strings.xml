@@ -124,7 +124,7 @@
     <string name="err_peer_not_found">That phone is no longer visible. Scan again.</string>
     <string name="err_handshake_timeout">The phone did not answer in time. Try again.</string>
     <string name="err_peer_timeout">Peer stopped responding; connection closed.</string>
-    <string name="err_protocol">The peer's handshake is incompatible or invalid. Install the same latest HamSeda APK on both phones, then retry.</string>
+    <string name="err_protocol">The handshake from the other phone is incompatible or invalid. Install the same latest HamSeda APK on both phones, then retry.</string>
     <string name="err_mic">Microphone unavailable.</string>
     <string name="err_peer_rejected">Peer rejected the connection.</string>
     <string name="err_radio_disabled_wifi">Wi-Fi Direct is off; please enable it.</string>
