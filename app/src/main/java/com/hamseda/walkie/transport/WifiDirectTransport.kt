@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.net.wifi.WifiManager
 import android.net.wifi.WpsInfo
 import android.net.wifi.p2p.WifiP2pConfig
 import android.net.wifi.p2p.WifiP2pDevice
@@ -204,14 +205,22 @@ class WifiDirectTransport(private val context: Context) : Transport {
             registerReceiver()
             _state.value = TransportState.CONNECTING
             _error.value = null
-            AppLog.log(TAG, "p2p connect to ${peer.displayName} (${peer.id})")
-            try {
-                manager?.stopPeerDiscovery(channel, null)
-            } catch (_: Exception) {}
-
-            // If the phones are already in a P2P group (e.g. connected via
-            // system settings), manager.connect() fails with a framework
-            // error — reuse the existing group instead of a new invitation.
+            val wifiEnabled = try {
+                (context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager)
+                    ?.isWifiEnabled
+            } catch (_: SecurityException) {
+                null
+            }
+            AppLog.log(
+                TAG,
+                "p2p connect preflight: sdk=${Build.VERSION.SDK_INT}, wifiEnabled=$wifiEnabled, " +
+                    "p2pEnabled=$p2pEnabled, channelReady=${channel != null}, peer=${peer.displayName} (${peer.id})",
+            )
+            // Do not call stopPeerDiscovery() immediately before connect().
+            // The P2P framework ends discovery as part of connection setup;
+            // issuing an asynchronous stop right before connect can race on
+            // some vendor stacks. First check whether a group already exists,
+            // then submit the connect request directly.
             val existing = requestConnectionInfoSync()
             if (existing != null && existing.groupFormed) {
                 AppLog.log(TAG, "reusing existing p2p group; skipping invitation")
@@ -306,7 +315,7 @@ class WifiDirectTransport(private val context: Context) : Transport {
 
                     override fun onFailure(reason: Int) {
                         val name = reasonName(reason)
-                        AppLog.log(TAG, "p2p connect failed: $name")
+                        AppLog.log(TAG, "p2p connect failed: $name (code=$reason)")
                         done.complete(false)
                     }
                 })
@@ -648,6 +657,18 @@ class WifiDirectTransport(private val context: Context) : Transport {
                         }
                     }
                 }
+                WifiP2pManager.ACTION_WIFI_P2P_REQUEST_RESPONSE_CHANGED -> {
+                    // Android 13+ exposes whether a P2P connection request was
+                    // accepted by the system/peer approval flow. This is
+                    // diagnostic only; it never bypasses normal authentication.
+                    if (Build.VERSION.SDK_INT >= 33) {
+                        val accepted = intent.getBooleanExtra(
+                            WifiP2pManager.EXTRA_REQUEST_RESPONSE,
+                            false,
+                        )
+                        AppLog.log(TAG, "system connection-request response: accepted=$accepted")
+                    }
+                }
                 WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION -> {
                     if (PermissionHelper.missingWifiDirectPermissions(ctx).isNotEmpty()) return
 
@@ -706,6 +727,9 @@ class WifiDirectTransport(private val context: Context) : Transport {
             addAction(WifiP2pManager.WIFI_P2P_STATE_CHANGED_ACTION)
             addAction(WifiP2pManager.WIFI_P2P_PEERS_CHANGED_ACTION)
             addAction(WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION)
+            if (Build.VERSION.SDK_INT >= 33) {
+                addAction(WifiP2pManager.ACTION_WIFI_P2P_REQUEST_RESPONSE_CHANGED)
+            }
             addAction(WifiP2pManager.WIFI_P2P_THIS_DEVICE_CHANGED_ACTION)
         }
         try {
@@ -734,11 +758,13 @@ class WifiDirectTransport(private val context: Context) : Transport {
         receiverRegistered = false
     }
 
-    private fun reasonName(reason: Int): String = when (reason) {
-        WifiP2pManager.P2P_UNSUPPORTED -> "p2p unsupported"
-        WifiP2pManager.BUSY -> "framework busy"
-        WifiP2pManager.ERROR -> "framework error"
-        else -> "reason=$reason"
+    private fun reasonName(reason: Int): String = when {
+        reason == WifiP2pManager.P2P_UNSUPPORTED -> "p2p unsupported"
+        reason == WifiP2pManager.BUSY -> "framework busy"
+        reason == WifiP2pManager.ERROR -> "framework internal error"
+        Build.VERSION.SDK_INT >= 36 && reason == WifiP2pManager.NO_PERMISSION ->
+            "framework permission denied"
+        else -> "unknown framework result"
     }
 
     companion object {
