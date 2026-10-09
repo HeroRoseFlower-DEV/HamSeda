@@ -6,7 +6,6 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
-import android.net.NetworkInfo
 import android.net.wifi.WpsInfo
 import android.net.wifi.p2p.WifiP2pConfig
 import android.net.wifi.p2p.WifiP2pDevice
@@ -367,8 +366,16 @@ class WifiDirectTransport(private val context: Context) : Transport {
 
     private fun onConnectionInfo(info: WifiP2pInfo) {
         if (!info.groupFormed) {
-            AppLog.log(TAG, "p2p group not formed")
-            scope.launch { handleGroupLost() }
+            // During invitation negotiation Android may emit transient P2P
+            // state updates before group formation. Do not turn an outgoing
+            // CONNECTING attempt into IDLE just because the group is not ready
+            // yet; only tear down a transport that was already established.
+            AppLog.log(TAG, "p2p group not formed yet (transportState=${_state.value})")
+            if (_state.value == TransportState.CONNECTED ||
+                _state.value == TransportState.AUTHENTICATING
+            ) {
+                scope.launch { handleGroupLost("p2p group lost") }
+            }
             return
         }
         AppLog.log(TAG, "p2p group formed (owner=${info.isGroupOwner}, addr=${info.groupOwnerAddress?.hostAddress})")
@@ -567,22 +574,47 @@ class WifiDirectTransport(private val context: Context) : Transport {
                     }
                 }
                 WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION -> {
-                    val netInfo: NetworkInfo? = if (Build.VERSION.SDK_INT >= 33) {
+                    if (PermissionHelper.missingWifiDirectPermissions(ctx).isNotEmpty()) return
+
+                    // Prefer the typed WifiP2pInfo extra. NetworkInfo is
+                    // deprecated and can be absent on newer vendor builds;
+                    // the old null/false path incorrectly tore down CONNECTING
+                    // before the peer group had finished forming.
+                    val broadcastInfo: WifiP2pInfo? = if (Build.VERSION.SDK_INT >= 33) {
                         intent.getParcelableExtra(
-                            WifiP2pManager.EXTRA_NETWORK_INFO,
-                            NetworkInfo::class.java,
+                            WifiP2pManager.EXTRA_WIFI_P2P_INFO,
+                            WifiP2pInfo::class.java,
                         )
                     } else {
                         @Suppress("DEPRECATION")
-                        intent.getParcelableExtra(WifiP2pManager.EXTRA_NETWORK_INFO)
+                        intent.getParcelableExtra(WifiP2pManager.EXTRA_WIFI_P2P_INFO)
                     }
-                    if (netInfo?.isConnected == true) {
-                        if (PermissionHelper.missingWifiDirectPermissions(ctx).isNotEmpty()) return
+
+                    if (broadcastInfo != null) {
+                        onConnectionInfo(broadcastInfo)
+                    } else {
+                        // Some OEMs omit the extra. Query the framework rather
+                        // than infer disconnection from a missing deprecated
+                        // NetworkInfo extra.
                         manager?.requestConnectionInfo(channel) { info: WifiP2pInfo ->
                             onConnectionInfo(info)
+                        } ?: AppLog.log(TAG, "connection broadcast without manager; state=${_state.value}")
+                    }
+                }
+                WifiP2pManager.WIFI_P2P_DISCOVERY_CHANGED_ACTION -> {
+                    when (intent.getIntExtra(WifiP2pManager.EXTRA_DISCOVERY_STATE, -1)) {
+                        WifiP2pManager.WIFI_P2P_DISCOVERY_STARTED -> {
+                            AppLog.log(TAG, "system P2P discovery started")
+                            if (_state.value == TransportState.IDLE) {
+                                _state.value = TransportState.DISCOVERING
+                            }
                         }
-                    } else {
-                        scope.launch { handleGroupLost("p2p group changed") }
+                        WifiP2pManager.WIFI_P2P_DISCOVERY_STOPPED -> {
+                            AppLog.log(TAG, "system P2P discovery stopped")
+                            if (_state.value == TransportState.DISCOVERING) {
+                                _state.value = TransportState.IDLE
+                            }
+                        }
                     }
                 }
             }
@@ -621,15 +653,22 @@ class WifiDirectTransport(private val context: Context) : Transport {
             addAction(WifiP2pManager.WIFI_P2P_STATE_CHANGED_ACTION)
             addAction(WifiP2pManager.WIFI_P2P_PEERS_CHANGED_ACTION)
             addAction(WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION)
+            addAction(WifiP2pManager.WIFI_P2P_DISCOVERY_CHANGED_ACTION)
             addAction(WifiP2pManager.WIFI_P2P_THIS_DEVICE_CHANGED_ACTION)
         }
         try {
             if (Build.VERSION.SDK_INT >= 33) {
-                context.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
+                // Wi-Fi P2P broadcasts may be sent by the privileged Wi-Fi
+                // module UID, not android's system UID. NOT_EXPORTED can
+                // silently block them. The receiver only subscribes to
+                // platform Wi-Fi P2P actions; socket peers still must pass the
+                // authenticated HamSeda handshake.
+                context.registerReceiver(receiver, filter, Context.RECEIVER_EXPORTED)
             } else {
                 context.registerReceiver(receiver, filter)
             }
             receiverRegistered = true
+            AppLog.log(TAG, "Wi-Fi P2P system receiver registered")
         } catch (e: Exception) {
             Log.w(TAG, "receiver register failed", e)
         }
