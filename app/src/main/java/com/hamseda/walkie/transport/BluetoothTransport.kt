@@ -85,6 +85,10 @@ class BluetoothTransport(private val context: Context) : Transport {
 
     override fun availability(): Availability {
         val a = adapter ?: return Availability(false, false, "bluetooth_unsupported")
+        // Register eagerly so the discoverability state is live as soon as
+        // the Discovery screen opens (same reason as Wi-Fi Direct).
+        registerReceiver()
+        updateDiscoverable()
         return Availability(true, a.isEnabled, if (a.isEnabled) "" else "bluetooth_disabled")
     }
 
@@ -252,17 +256,23 @@ class BluetoothTransport(private val context: Context) : Transport {
                     val socket: BluetoothSocket = server.accept()
                     Log.i(TAG, "incoming RFCOMM connection accepted")
                     scope.launch {
-                        mutex.withLock {
-                            // One-to-one MVP: keep the first live connection.
+                        // Decide under the mutex, then release it BEFORE
+                        // onSocketReady: it also locks the mutex and Mutex
+                        // is not reentrant — holding it here deadlocks the
+                        // listener forever (incoming connections could never
+                        // complete).
+                        val accept = mutex.withLock {
                             if (framed != null) {
                                 try { socket.close() } catch (_: IOException) {}
-                                return@withLock
+                                false
+                            } else {
+                                try {
+                                    adapter?.cancelDiscovery()
+                                } catch (_: SecurityException) {}
+                                true
                             }
-                            try {
-                                adapter?.cancelDiscovery()
-                            } catch (_: SecurityException) {}
-                            onSocketReady(socket)
                         }
+                        if (accept) onSocketReady(socket)
                     }
                 } catch (e: IOException) {
                     Log.i(TAG, "rfcomm accept ended: ${e.message}")

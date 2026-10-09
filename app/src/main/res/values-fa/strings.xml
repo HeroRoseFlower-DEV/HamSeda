@@ -34,11 +34,10 @@
     <string name="btn_stop_scan">توقف جستجو</string>
     <string name="discovery_no_peers">دستگاهی پیدا نشد</string>
     <string name="discovery_no_peers_hint">مطمئن شو هم‌صحبت هم همین صفحه را باز کرده و رادیوی مناسب (وای‌فای/بلوتوث) روشن است.</string>
-    <string name="bt_hidden_title">این گوشی قابل مشاهده نیست</string>
-    <string name="bt_hidden_message">جستجوی بلوتوث فقط گوشی‌های قابل مشاهده را پیدا می‌کند. این گوشی را قابل مشاهده کن تا هم‌صحبت بتواند آن را پیدا کند.</string>
-    <string name="bt_visible_title">این گوشی قابل مشاهده است</string>
-    <string name="bt_visible_message">هم‌صحبت اکنون می‌تواند با جستجوی بلوتوث این گوشی را پیدا کند.</string>
-    <string name="bt_make_visible">قابل مشاهده کن</string>
+    <string name="bt_ready_title">آماده برای هم‌صحبت</string>
+    <string name="bt_not_ready_title">هنوز آماده نیست</string>
+    <string name="bt_not_ready_message">برای این‌که هم‌صحبت بتواند پیدا و وصل شود: این گوشی باید قابل مشاهده باشد و در حالت شنیدن. با یک دکمه هر دو انجام می‌شود.</string>
+    <string name="bt_make_visible_and_listen">قابل مشاهده و شنیدن</string>
     <string name="peer_connect">اتصال امن</string>
     <string name="listening_title">منتظر اتصال هم‌صحبت باش</string>
     <string name="listening_hint">اگر هم‌صحبت به تو وصل شود، درخواست امن همین‌جا نمایش داده می‌شود.</string>

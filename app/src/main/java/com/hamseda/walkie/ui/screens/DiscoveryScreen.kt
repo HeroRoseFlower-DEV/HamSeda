@@ -223,21 +223,16 @@ fun DiscoveryScreen(
                     onRetry = { vm.refreshAvailability() },
                 )
             }
-            // Bluetooth classic discovery only finds *discoverable* phones.
-            // Without this, two phones scan forever and never see each other.
+            // Bluetooth classic discovery only finds *discoverable* phones,
+            // and connecting needs the peer to be *listening* too. The card
+            // button runs the full flow (make visible → listen), same as
+            // the Listen button below.
             if (activeType == TransportType.BLUETOOTH) {
                 item {
                     DiscoverabilityCard(
                         discoverable = discoverable,
-                        onMakeVisible = {
-                            val missing = missingForConnect()
-                            if (missing.isNotEmpty()) {
-                                pendingAction = { requestDiscoverable {} }
-                                permLauncher.launch(missing.toTypedArray())
-                            } else {
-                                requestDiscoverable {}
-                            }
-                        },
+                        listening = phase != SessionManager.Phase.IDLE,
+                        onMakeVisibleAndListen = { doListen() },
                     )
                 }
             }
@@ -504,12 +499,14 @@ private fun transportErrorMessage(e: com.hamseda.walkie.transport.TransportError
 @Composable
 private fun DiscoverabilityCard(
     discoverable: Boolean,
-    onMakeVisible: () -> Unit,
+    listening: Boolean,
+    onMakeVisibleAndListen: () -> Unit,
 ) {
+    val ready = discoverable && listening
     Card(
         shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(
-            containerColor = if (discoverable) MaterialTheme.colorScheme.primaryContainer
+            containerColor = if (ready) MaterialTheme.colorScheme.primaryContainer
             else MaterialTheme.colorScheme.surfaceVariant,
         ),
     ) {
@@ -528,29 +525,26 @@ private fun DiscoverabilityCard(
             Column(Modifier.weight(1f)) {
                 Text(
                     text = stringResource(
-                        if (discoverable) R.string.bt_visible_title
-                        else R.string.bt_hidden_title,
+                        if (ready) R.string.bt_ready_title
+                        else R.string.bt_not_ready_title,
                     ),
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.SemiBold,
                 )
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    text = stringResource(
-                        if (discoverable) R.string.bt_visible_message
-                        else R.string.bt_hidden_message,
-                    ),
+                    text = stringResource(R.string.bt_not_ready_message),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            if (!discoverable) {
+            if (!ready) {
                 Spacer(Modifier.width(8.dp))
                 Button(
-                    onClick = onMakeVisible,
+                    onClick = onMakeVisibleAndListen,
                     shape = RoundedCornerShape(12.dp),
                 ) {
-                    Text(stringResource(R.string.bt_make_visible))
+                    Text(stringResource(R.string.bt_make_visible_and_listen))
                 }
             }
         }

@@ -112,6 +112,7 @@ class WifiDirectTransport(private val context: Context) : Transport {
             return Availability(false, false, "wifi_direct_unsupported")
         }
         if (!ensureInit()) return Availability(false, false, "wifi_direct_init_failed")
+        ensureReceiver()
         return Availability(true, p2pEnabled, if (p2pEnabled) "" else "wifi_direct_disabled")
     }
 
@@ -426,6 +427,32 @@ class WifiDirectTransport(private val context: Context) : Transport {
                         scope.launch { handleGroupLost("p2p group changed") }
                     }
                 }
+            }
+        }
+    }
+
+    /**
+     * Registers the P2P receiver eagerly and seeds [p2pEnabled] from the
+     * sticky state broadcast. The state broadcast only arrives *after* a
+     * receiver is registered, but availability() is called as soon as the
+     * Discovery screen opens — without this, the UI wrongly reports
+     * "Wi-Fi Direct is off" on a fresh launch even when the radio is on.
+     */
+    private fun ensureReceiver() {
+        registerReceiver()
+        if (!p2pEnabled) {
+            try {
+                val sticky = context.registerReceiver(
+                    null,
+                    IntentFilter(WifiP2pManager.WIFI_P2P_STATE_CHANGED_ACTION),
+                )
+                if (sticky != null) {
+                    p2pEnabled = sticky.getIntExtra(
+                        WifiP2pManager.EXTRA_WIFI_STATE, -1,
+                    ) == WifiP2pManager.WIFI_P2P_STATE_ENABLED
+                }
+            } catch (_: Exception) {
+                // Best effort: future state changes arrive via the receiver.
             }
         }
     }

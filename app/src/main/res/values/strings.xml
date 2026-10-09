@@ -34,11 +34,10 @@
     <string name="btn_stop_scan">Stop scan</string>
     <string name="discovery_no_peers">No devices found</string>
     <string name="discovery_no_peers_hint">Make sure your peer has this screen open and the right radio (Wi-Fi/Bluetooth) enabled.</string>
-    <string name="bt_hidden_title">This phone is not visible</string>
-    <string name="bt_hidden_message">Bluetooth scans only find visible phones. Make this phone visible so your peer can find it.</string>
-    <string name="bt_visible_title">This phone is visible</string>
-    <string name="bt_visible_message">Your peer can now find this phone with a Bluetooth scan.</string>
-    <string name="bt_make_visible">Make visible</string>
+    <string name="bt_ready_title">Ready for your peer</string>
+    <string name="bt_not_ready_title">Not ready yet</string>
+    <string name="bt_not_ready_message">For your peer to find and connect: make this phone visible and start listening. One tap does both.</string>
+    <string name="bt_make_visible_and_listen">Make visible &amp; listen</string>
     <string name="peer_connect">Connect securely</string>
     <string name="listening_title">Wait for your peer to connect</string>
     <string name="listening_hint">If your peer connects to you, the secure request appears here.</string>
