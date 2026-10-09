@@ -552,11 +552,33 @@ class WifiDirectTransport(private val context: Context) : Transport {
         override fun onReceive(ctx: Context, intent: Intent) {
             when (intent.action) {
                 WifiP2pManager.WIFI_P2P_STATE_CHANGED_ACTION -> {
-                    p2pEnabled = intent.getIntExtra(
-                        WifiP2pManager.EXTRA_WIFI_STATE, -1,
-                    ) == WifiP2pManager.WIFI_P2P_STATE_ENABLED
-                    if (!p2pEnabled && _state.value != TransportState.IDLE) {
-                        scope.launch { handleGroupLost("wi-fi direct disabled") }
+                    // The receiver must be EXPORTED to hear broadcasts from
+                    // the privileged Wi-Fi module. Treat broadcast extras as
+                    // untrusted: on API 29+, query the framework's current
+                    // state instead of accepting a caller-supplied boolean.
+                    if (Build.VERSION.SDK_INT >= 29) {
+                        val mgr = manager
+                        val ch = channel
+                        if (mgr != null && ch != null) {
+                            try {
+                                mgr.requestP2pState(ch) { state ->
+                                    val enabled = state == WifiP2pManager.WIFI_P2P_STATE_ENABLED
+                                    p2pEnabled = enabled
+                                    if (!enabled && _state.value != TransportState.IDLE) {
+                                        scope.launch { handleGroupLost("wi-fi direct disabled") }
+                                    }
+                                }
+                            } catch (e: SecurityException) {
+                                AppLog.log(TAG, "P2P state query denied: ${e.message}")
+                            }
+                        }
+                    } else {
+                        p2pEnabled = intent.getIntExtra(
+                            WifiP2pManager.EXTRA_WIFI_STATE, -1,
+                        ) == WifiP2pManager.WIFI_P2P_STATE_ENABLED
+                        if (!p2pEnabled && _state.value != TransportState.IDLE) {
+                            scope.launch { handleGroupLost("wi-fi direct disabled") }
+                        }
                     }
                 }
                 WifiP2pManager.WIFI_P2P_PEERS_CHANGED_ACTION -> {
@@ -576,45 +598,23 @@ class WifiDirectTransport(private val context: Context) : Transport {
                 WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION -> {
                     if (PermissionHelper.missingWifiDirectPermissions(ctx).isNotEmpty()) return
 
-                    // Prefer the typed WifiP2pInfo extra. NetworkInfo is
-                    // deprecated and can be absent on newer vendor builds;
-                    // the old null/false path incorrectly tore down CONNECTING
-                    // before the peer group had finished forming.
-                    val broadcastInfo: WifiP2pInfo? = if (Build.VERSION.SDK_INT >= 33) {
-                        intent.getParcelableExtra(
-                            WifiP2pManager.EXTRA_WIFI_P2P_INFO,
-                            WifiP2pInfo::class.java,
-                        )
-                    } else {
-                        @Suppress("DEPRECATION")
-                        intent.getParcelableExtra(WifiP2pManager.EXTRA_WIFI_P2P_INFO)
+                    // Do not trust WifiP2pInfo/NetworkInfo extras from an
+                    // exported broadcast receiver. They can be absent on some
+                    // OEM builds, and an app could spoof an extra to make us
+                    // open a socket to an arbitrary address. Ask WifiP2pManager
+                    // for the authoritative connection state instead.
+                    val mgr = manager
+                    val ch = channel
+                    if (mgr == null || ch == null) {
+                        AppLog.log(TAG, "connection update ignored: P2P channel unavailable")
+                        return
                     }
-
-                    if (broadcastInfo != null) {
-                        onConnectionInfo(broadcastInfo)
-                    } else {
-                        // Some OEMs omit the extra. Query the framework rather
-                        // than infer disconnection from a missing deprecated
-                        // NetworkInfo extra.
-                        manager?.requestConnectionInfo(channel) { info: WifiP2pInfo ->
+                    try {
+                        mgr.requestConnectionInfo(ch) { info: WifiP2pInfo ->
                             onConnectionInfo(info)
-                        } ?: AppLog.log(TAG, "connection broadcast without manager; state=${_state.value}")
-                    }
-                }
-                WifiP2pManager.WIFI_P2P_DISCOVERY_CHANGED_ACTION -> {
-                    when (intent.getIntExtra(WifiP2pManager.EXTRA_DISCOVERY_STATE, -1)) {
-                        WifiP2pManager.WIFI_P2P_DISCOVERY_STARTED -> {
-                            AppLog.log(TAG, "system P2P discovery started")
-                            if (_state.value == TransportState.IDLE) {
-                                _state.value = TransportState.DISCOVERING
-                            }
                         }
-                        WifiP2pManager.WIFI_P2P_DISCOVERY_STOPPED -> {
-                            AppLog.log(TAG, "system P2P discovery stopped")
-                            if (_state.value == TransportState.DISCOVERING) {
-                                _state.value = TransportState.IDLE
-                            }
-                        }
+                    } catch (e: SecurityException) {
+                        AppLog.log(TAG, "connection info query denied: ${e.message}")
                     }
                 }
             }
@@ -653,7 +653,6 @@ class WifiDirectTransport(private val context: Context) : Transport {
             addAction(WifiP2pManager.WIFI_P2P_STATE_CHANGED_ACTION)
             addAction(WifiP2pManager.WIFI_P2P_PEERS_CHANGED_ACTION)
             addAction(WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION)
-            addAction(WifiP2pManager.WIFI_P2P_DISCOVERY_CHANGED_ACTION)
             addAction(WifiP2pManager.WIFI_P2P_THIS_DEVICE_CHANGED_ACTION)
         }
         try {
