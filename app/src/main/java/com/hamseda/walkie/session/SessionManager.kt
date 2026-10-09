@@ -503,6 +503,11 @@ class SessionManager(
         val hello = byteArrayOf(Protocol.VERSION, myCodecPref)
         enqueuePlain(MessageType.HELLO, hello)
         Log.i(TAG, "handshake started, HELLO sent")
+        AppLog.log(
+            TAG,
+            "handshake started: HELLO sent (localProtocolVersion=${Protocol.VERSION.toInt() and 0xFF}, " +
+                "codecPreference=${myCodecPref.toInt() and 0xFF})",
+        )
     }
 
     /**
@@ -553,7 +558,17 @@ class SessionManager(
             Frame.decode(bytes)
         } catch (e: FrameException) {
             Log.w(TAG, "dropping malformed frame: ${e.message}")
-            if (_phase.value == Phase.IN_SESSION) _authFailures.value += 1
+            AppLog.log(
+                TAG,
+                "inbound frame rejected (phase=${_phase.value}, bytes=${bytes.size}, reason=${e.message})",
+            )
+            if (_phase.value == Phase.IN_SESSION) {
+                _authFailures.value += 1
+            } else if (_phase.value == Phase.HANDSHAKE ||
+                _phase.value == Phase.AWAITING_SAS_CONFIRM
+            ) {
+                fail(SessionError.PROTOCOL_ERROR, "malformed handshake frame: ${e.message}")
+            }
             return
         }
         when (_phase.value) {
@@ -567,10 +582,28 @@ class SessionManager(
     private fun handleHandshakeFrame(frame: Frame) {
         when (frame.type) {
             MessageType.HELLO -> {
+                val peerVersion = frame.payload.getOrNull(0)?.toInt()?.and(0xFF)
+                val peerPrefValue = frame.payload.getOrNull(1)?.toInt()?.and(0xFF)
                 if (frame.payload.size != 2 || frame.payload[0] != Protocol.VERSION) {
-                    fail(SessionError.PROTOCOL_ERROR); return
+                    fail(
+                        SessionError.PROTOCOL_ERROR,
+                        "invalid HELLO (payloadBytes=${frame.payload.size}, peerVersion=$peerVersion, " +
+                            "expectedVersion=${Protocol.VERSION.toInt() and 0xFF})",
+                    )
+                    return
                 }
                 val peerPref = frame.payload[1]
+                if (peerPref != CodecId.OPUS && peerPref != CodecId.PCM16) {
+                    fail(
+                        SessionError.PROTOCOL_ERROR,
+                        "unsupported codec preference=$peerPrefValue in HELLO",
+                    )
+                    return
+                }
+                AppLog.log(
+                    TAG,
+                    "received compatible HELLO (protocolVersion=$peerVersion, codecPreference=$peerPrefValue)",
+                )
                 activeCodecId = minOf(myCodecPref, peerPref)
                 if (!keyExchangeSent) sendKeyExchange()
             }
@@ -578,12 +611,18 @@ class SessionManager(
                 if (peerPubBytes != null) return // duplicate; ignore
                 try {
                     onKeyExchange(frame.payload)
+                    if (!keyExchangeSent) sendKeyExchange()
+                    deriveAndConfirm()
+                    AppLog.log(TAG, "KEY_EXCHANGE accepted; key derivation completed")
                 } catch (e: Exception) {
-                    Log.w(TAG, "bad KEY_EXCHANGE", e)
-                    fail(SessionError.PROTOCOL_ERROR); return
+                    Log.w(TAG, "bad KEY_EXCHANGE or key derivation failed", e)
+                    fail(
+                        SessionError.PROTOCOL_ERROR,
+                        "KEY_EXCHANGE processing failed (payloadBytes=${frame.payload.size}, " +
+                            "cause=${e.javaClass.simpleName}: ${e.message})",
+                    )
+                    return
                 }
-                if (!keyExchangeSent) sendKeyExchange()
-                deriveAndConfirm()
             }
             MessageType.KEY_CONFIRM -> {
                 // May arrive before we finished deriving (both sides race).
@@ -596,7 +635,13 @@ class SessionManager(
             MessageType.DISCONNECT -> {
                 endSession(SessionError.PEER_REJECTED, notifyPeer = false)
             }
-            else -> Log.w(TAG, "unexpected ${frame.type} during handshake")
+            else -> {
+                Log.w(TAG, "unexpected ${frame.type} during handshake")
+                AppLog.log(
+                    TAG,
+                    "unexpected handshake frame (type=${frame.type.toInt() and 0xFF}, payloadBytes=${frame.payload.size})",
+                )
+            }
         }
     }
 
@@ -975,8 +1020,12 @@ class SessionManager(
         else -> SessionError.TRANSPORT_LOST
     }
 
-    private fun fail(error: SessionError) {
-        AppLog.log(TAG, "session failed: $error")
+    private fun fail(error: SessionError, detail: String? = null) {
+        if (detail.isNullOrBlank()) {
+            AppLog.log(TAG, "session failed: $error")
+        } else {
+            AppLog.log(TAG, "session failed: $error ($detail)")
+        }
         scope.launch { teardown(error) }
     }
 
