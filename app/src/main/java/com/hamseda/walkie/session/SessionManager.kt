@@ -744,7 +744,19 @@ class SessionManager(
                 verifyPeerKeyConfirm(frame)
             }
             MessageType.SAS_CONFIRM -> {
-                openControl(frame, k) // authenticates; payload empty
+                // A malformed/forged control frame must not throw out of the
+                // incomingFrames collector and silently stop all later traffic.
+                val plaintext = try {
+                    openControl(frame, k)
+                } catch (e: Exception) {
+                    _authFailures.value += 1
+                    AppLog.log(TAG, "unauthenticated SAS_CONFIRM rejected (${e.javaClass.simpleName})")
+                    return
+                }
+                if (plaintext.isNotEmpty()) {
+                    fail(SessionError.PROTOCOL_ERROR, "SAS_CONFIRM payload must be empty")
+                    return
+                }
                 _peerSasConfirmed.value = true
                 lastPeerSeen = clock()
                 maybeEnterSession()

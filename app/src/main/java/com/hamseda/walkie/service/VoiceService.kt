@@ -20,7 +20,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * Foreground service hosting the voice session.
@@ -71,11 +73,21 @@ class VoiceService : Service() {
         when (intent?.action) {
             ACTION_STOP -> {
                 Log.i(TAG, "stop requested")
+                // endSession() performs asynchronous flush + teardown. Do not
+                // stop the Service immediately: onDestroy cancels serviceScope
+                // and could interrupt transport disconnection before it runs.
                 serviceScope.launch {
-                    sessionManager.endSession()
+                    if (sessionManager.phase.value != SessionManager.Phase.IDLE &&
+                        sessionManager.phase.value != SessionManager.Phase.ENDED
+                    ) {
+                        sessionManager.endSession()
+                    }
+                    withTimeoutOrNull(15_000L) {
+                        sessionManager.phase.first { it == SessionManager.Phase.IDLE }
+                    }
+                    stopForegroundCompat()
+                    stopSelf(startId)
                 }
-                stopForegroundCompat()
-                stopSelf()
             }
             ACTION_START -> ensureForeground(sessionManager.phase.value)
         }

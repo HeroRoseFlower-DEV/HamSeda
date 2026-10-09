@@ -132,6 +132,7 @@ class AudioEngine(private val context: Context) : AudioPipeline {
             AudioFormat.ENCODING_PCM_16BIT,
         )
         if (minBuf <= 0) {
+            abandonFocus()
             pipelineListener?.onCaptureError("microphone unavailable (min buffer=$minBuf)")
             return false
         }
@@ -149,11 +150,13 @@ class AudioEngine(private val context: Context) : AudioPipeline {
                 .setBufferSizeInBytes(minBuf * 4)
                 .build()
         } catch (e: Exception) {
+            abandonFocus()
             pipelineListener?.onCaptureError("microphone unavailable: ${e.message}")
             return false
         }
         if (rec.state != AudioRecord.STATE_INITIALIZED) {
             rec.release()
+            abandonFocus()
             pipelineListener?.onCaptureError("microphone unavailable (init failed)")
             return false
         }
@@ -276,18 +279,22 @@ class AudioEngine(private val context: Context) : AudioPipeline {
             return false
         }
         applyAudioMode()
+        // Audio playback must start before we report success to SessionManager.
+        // Previously the worker thread could fail at AudioTrack.play() only
+        // after startPlayback() had already returned true.
+        try {
+            at.play()
+        } catch (e: IllegalStateException) {
+            Log.w(TAG, "AudioTrack play failed: ${e.message}")
+            at.release()
+            return false
+        }
         track = at
         playbackRunning.set(true)
         playbackThread = Thread({
             val silence = ShortArray(AudioCodec.FRAME_SAMPLES)
             var last: ShortArray? = null
             var plcCount = 0
-            try {
-                at.play()
-            } catch (e: IllegalStateException) {
-                playbackRunning.set(false)
-                return@Thread
-            }
             while (playbackRunning.get()) {
                 when (val r = buffer.takeNext()) {
                     is JitterBuffer.TakeResult.Frame -> {

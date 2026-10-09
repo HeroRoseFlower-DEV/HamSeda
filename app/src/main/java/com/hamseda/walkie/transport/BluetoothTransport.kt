@@ -129,11 +129,21 @@ class BluetoothTransport(private val context: Context) : Transport {
 
     override fun availability(): Availability {
         val a = adapter ?: return Availability(false, false, "bluetooth_unsupported")
-        // Register eagerly so the discoverability state is live as soon as
-        // the Discovery screen opens (same reason as Wi-Fi Direct).
-        registerReceiver()
-        updateDiscoverable()
-        return Availability(true, a.isEnabled, if (a.isEnabled) "" else "bluetooth_disabled")
+        // Adapter state and scan mode require BLUETOOTH_CONNECT on Android 12+.
+        // TransportManager calls availability during startup, before the user
+        // necessarily grants that runtime permission.
+        if (PermissionHelper.missingBluetoothPermissions(context, forDiscovery = false).isNotEmpty()) {
+            return Availability(true, false, "bluetooth_permission_missing")
+        }
+        return try {
+            val enabled = a.isEnabled
+            registerReceiver()
+            updateDiscoverable()
+            Availability(true, enabled, if (enabled) "" else "bluetooth_disabled")
+        } catch (e: SecurityException) {
+            AppLog.log(TAG, "adapter availability denied: ${e.message}")
+            Availability(true, false, "bluetooth_permission_missing")
+        }
     }
 
     override fun clearError() {
@@ -371,6 +381,7 @@ class BluetoothTransport(private val context: Context) : Transport {
         if (missing.isNotEmpty()) {
             AppLog.log(TAG, "connect blocked: missing permissions $missing")
             _error.value = TransportError.PermissionDenied(missing)
+            _state.value = TransportState.FAILED
             return
         }
         mutex.withLock {
@@ -382,10 +393,12 @@ class BluetoothTransport(private val context: Context) : Transport {
             }
             val a = adapter ?: run {
                 _error.value = TransportError.Unsupported("bluetooth_unsupported")
+                _state.value = TransportState.FAILED
                 return
             }
             if (!a.isEnabled) {
                 _error.value = TransportError.RadioDisabled(TransportType.BLUETOOTH)
+                _state.value = TransportState.FAILED
                 return
             }
             cancelPendingConnectLocked()
@@ -480,15 +493,17 @@ class BluetoothTransport(private val context: Context) : Transport {
         val missing = PermissionHelper.missingBluetoothPermissions(context, forDiscovery = false)
         if (missing.isNotEmpty()) {
             _error.value = TransportError.PermissionDenied(missing)
+            _state.value = TransportState.FAILED
             return
         }
         mutex.withLock {
             val a = adapter ?: run {
-                _state.value = TransportState.UNAVAILABLE
+                _error.value = TransportError.Unsupported("bluetooth_unsupported")
+                _state.value = TransportState.FAILED
                 return
             }
             if (!a.isEnabled) {
-                _state.value = TransportState.UNAVAILABLE
+                _state.value = TransportState.FAILED
                 _error.value = TransportError.RadioDisabled(TransportType.BLUETOOTH)
                 return
             }
@@ -511,10 +526,12 @@ class BluetoothTransport(private val context: Context) : Transport {
         } catch (e: IOException) {
             AppLog.log(TAG, "rfcomm listen failed: ${e.message}")
             _error.value = TransportError.ConnectFailed("rfcomm listen failed: ${e.message}")
+            _state.value = TransportState.FAILED
             return
         } catch (e: SecurityException) {
             AppLog.log(TAG, "rfcomm listen denied: ${e.message}")
             _error.value = TransportError.PermissionDenied(listOf("bluetooth_connect"))
+            _state.value = TransportState.FAILED
             return
         }
         val server = serverSocket ?: return

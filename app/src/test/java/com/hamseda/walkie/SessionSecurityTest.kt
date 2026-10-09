@@ -145,6 +145,40 @@ class SessionSecurityTest {
     }
 
     @Test
+    fun `malformed SAS confirmation does not terminate inbound collector`() {
+        val rig = newRig()
+        rig.start()
+        rig.await("both endpoints waiting for SAS") {
+            rig.a.phase.value == SessionManager.Phase.AWAITING_SAS_CONFIRM &&
+                rig.b.phase.value == SessionManager.Phase.AWAITING_SAS_CONFIRM
+        }
+
+        val failuresBefore = rig.b.authFailures.value
+        val malformed = Frame(
+            type = MessageType.SAS_CONFIRM,
+            sessionId = ByteArray(8),
+            seq = 1L,
+            timestamp = System.currentTimeMillis(),
+            codecId = 0xFF.toByte(),
+            payload = ByteArray(0), // Missing nonce/tag; authentication must fail safely.
+        ).encode()
+        assertTrue(rig.tb.inject(malformed))
+        rig.await("malformed SAS frame counted") {
+            rig.b.authFailures.value > failuresBefore
+        }
+        assertEquals(SessionManager.Phase.AWAITING_SAS_CONFIRM, rig.b.phase.value)
+
+        // Bad data must not kill the collector; valid confirmations still work.
+        rig.a.confirmSas(true)
+        rig.b.confirmSas(true)
+        rig.await("session recovered after malformed SAS frame") {
+            rig.a.phase.value == SessionManager.Phase.IN_SESSION &&
+                rig.b.phase.value == SessionManager.Phase.IN_SESSION
+        }
+        rig.close()
+    }
+
+    @Test
     fun `hs01 bad tag huge seq does not poison replay window`() {
         var capturedSid: ByteArray? = null
         val rig = newRig(interceptA = { bytes ->

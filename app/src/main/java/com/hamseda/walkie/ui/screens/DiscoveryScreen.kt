@@ -142,12 +142,13 @@ fun DiscoveryScreen(
         PermissionHelper.missingBluetoothPermissions(context, forDiscovery = true)
     }
 
-    /** Connect-time permissions: discovery + local-network access on API 37+. */
-    fun missingForConnect(): List<String> = if (activeType == TransportType.WIFI_DIRECT) {
-        PermissionHelper.missingWifiDirectConnectPermissions(context)
-    } else {
-        PermissionHelper.missingBluetoothPermissions(context, forDiscovery = false)
-    }
+    /** Permissions required before starting the microphone foreground service/session. */
+    fun missingForSessionStart(): List<String> =
+        (if (activeType == TransportType.WIFI_DIRECT) {
+            PermissionHelper.missingWifiDirectConnectPermissions(context)
+        } else {
+            PermissionHelper.missingBluetoothPermissions(context, forDiscovery = false)
+        } + PermissionHelper.missingMicrophonePermission(context)).distinct()
 
     fun doScan() {
         val missing = missingForScan()
@@ -160,7 +161,7 @@ fun DiscoveryScreen(
     }
 
     fun doConnectPeer(peer: com.hamseda.walkie.transport.PeerDevice) {
-        val missing = missingForConnect()
+        val missing = missingForSessionStart()
         if (missing.isNotEmpty()) {
             pendingAction = { vm.connectPeer(peer) }
             permLauncher.launch(missing.toTypedArray())
@@ -170,7 +171,7 @@ fun DiscoveryScreen(
     }
 
     fun doListen() {
-        val missing = missingForConnect()
+        val missing = missingForSessionStart()
         if (missing.isNotEmpty()) {
             // Re-enter this whole flow after permission grant so Bluetooth
             // discoverability is still requested before opening the listener.
