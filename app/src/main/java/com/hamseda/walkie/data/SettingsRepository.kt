@@ -79,7 +79,12 @@ class SettingsRepository(private val context: Context) {
         context.dataStore.edit { it[Keys.THEME] = v.name }
     }
 
+    /** L10: only validated language codes are persisted. */
     suspend fun setLanguage(v: String) {
-        context.dataStore.edit { it[Keys.LANGUAGE] = v }
+        val safe = when (v) {
+            "fa", "en", "" -> v
+            else -> ""
+        }
+        context.dataStore.edit { it[Keys.LANGUAGE] = safe }
     }
 }

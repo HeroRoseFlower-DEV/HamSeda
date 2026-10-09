@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- HamSeda makes no cleartext network requests. The INTERNET permission
+     exists only because Android requires it for local TCP sockets (Wi-Fi
+     Direct). Explicitly disable cleartext as defense-in-depth. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />
+</network-security-config>

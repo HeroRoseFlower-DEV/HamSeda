@@ -34,7 +34,11 @@ object Protocol {
     /** Largest acceptable total frame (header + payload). */
     const val MAX_FRAME = HEADER_SIZE + MAX_PAYLOAD
 
-    /** Frames older/newer than this are rejected (clock-skew tolerance). */
+    /**
+     * HS-08: wall-clock skew is no longer enforced. The frame timestamp is
+     * diagnostic metadata only; authentication and anti-replay rely on
+     * AEAD + sequence numbers + session binding. Kept for documentation.
+     */
     const val MAX_CLOCK_SKEW_MS = 10 * 60 * 1000L
 
     /** TCP port used by the Wi-Fi Direct group owner for the session socket. */
@@ -58,6 +62,14 @@ object Protocol {
     /** Liveness ping interval / peer considered dead after this silence. */
     const val PING_INTERVAL_MS = 5_000L
     const val PEER_TIMEOUT_MS = 20_000L
+
+    /**
+     * Protocol phase deadlines (HS-07). A peer that disappears mid-handshake
+     * or never confirms the SAS must cause bounded teardown, not an
+     * indefinite spinner.
+     */
+    const val HANDSHAKE_TIMEOUT_MS = 30_000L
+    const val SAS_CONFIRM_TIMEOUT_MS = 120_000L
 }
 
 /** Wire message types. Values are stable; do not renumber. */

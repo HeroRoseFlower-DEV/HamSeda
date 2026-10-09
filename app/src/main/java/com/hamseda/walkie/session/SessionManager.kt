@@ -20,14 +20,20 @@ import com.hamseda.walkie.transport.TransportError
 import com.hamseda.walkie.transport.TransportState
 import com.hamseda.walkie.transport.TransportType
 import com.hamseda.walkie.util.AppLog
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import java.io.IOException
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -68,7 +74,7 @@ class SessionManager(
 
     enum class SessionError {
         AUTH_MISMATCH, PEER_BUSY, TRANSPORT_LOST, PEER_TIMEOUT,
-        PROTOCOL_ERROR, MIC_UNAVAILABLE, PEER_REJECTED,
+        PROTOCOL_ERROR, MIC_UNAVAILABLE, PLAYBACK_UNAVAILABLE, PEER_REJECTED,
     }
 
     // ------------------------------------------------------- observable state
@@ -136,9 +142,123 @@ class SessionManager(
     private val jitter = JitterBuffer()
     private val floor = FloorController(clock, this)
 
+    /**
+     * Monotonic session generation (HS-07). Incremented on every
+     * attachTransport; delayed async callbacks (deadlines, handshake steps)
+     * capture the generation and no-op if it changed, so a stale callback
+     * from an old session can never mutate a newer one.
+     */
+    private var sessionGeneration = 0L
+    private var handshakeDeadlineJob: Job? = null
+    private var sasDeadlineJob: Job? = null
+
     private var lastPeerSeen: Long = 0
     private var lastLevelPush: Long = 0
     private var pttHeld = false
+
+    // ------------------------------------------------------- outbound pipeline
+    //
+    // HS-02: all outgoing session messages are serialized through ONE bounded
+    // channel with a SINGLE consumer. The consumer allocates the sequence
+    // number, seals, and writes in deterministic FIFO order. This fixes:
+    //  - non-atomic sendSeq++ raced by concurrent producers,
+    //  - an unbounded coroutine launched per 20 ms audio frame,
+    //  - non-deterministic wire order from coroutine scheduling.
+    //
+    // Overflow policy (documented): audio frames are dropped on a full queue
+    // (bounded latency for real-time voice; counted in audioDropped);
+    // control messages are never expected to overflow (low volume) and a
+    // drop is logged as a warning.
+
+    private sealed interface OutboundMsg {
+        data class Plain(val type: Byte, val payload: ByteArray) : OutboundMsg
+        data class Sealed(
+            val type: Byte,
+            val codecId: Byte,
+            /** Captured at enqueue so a later rekey/teardown can't mix them. */
+            val sessionId: ByteArray,
+            val key: ByteArray,
+            val role: Byte,
+            val plaintext: ByteArray,
+        ) : OutboundMsg
+    }
+
+    private val outbound = Channel<OutboundMsg>(capacity = 256)
+    private var senderJob: Job? = null
+    private var audioDropped = 0L
+
+    private fun startSender() {
+        // Drain anything stale from a previous session before (re)starting.
+        while (outbound.tryReceive().isSuccess) { /* drop */ }
+        senderJob?.cancel()
+        senderJob = scope.launch {
+            for (msg in outbound) {
+                val bytes: ByteArray = try {
+                    when (msg) {
+                        is OutboundMsg.Plain -> buildPlainFrame(msg.type, msg.payload)
+                        is OutboundMsg.Sealed -> buildSealedFrame(msg)
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.w(TAG, "outbound build failed: ${e.message}")
+                    continue
+                }
+                try {
+                    val t = transport ?: break
+                    t.sendFrame(bytes)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.w(TAG, "outbound send failed: ${e.message}")
+                    // Transport loss is surfaced via the transport watcher;
+                    // keep the sender alive so teardown DISCONNECT can flush.
+                }
+            }
+        }
+    }
+
+    private fun stopSender() {
+        senderJob?.cancel(); senderJob = null
+        while (outbound.tryReceive().isSuccess) { /* drop */ }
+    }
+
+    /** Enqueues a plaintext handshake frame (HELLO / KEY_EXCHANGE). */
+    private fun enqueuePlain(type: Byte, payload: ByteArray) {
+        if (!outbound.trySend(OutboundMsg.Plain(type, payload)).isSuccess) {
+            Log.w(TAG, "outbound queue full; dropping plain frame type=$type")
+        }
+    }
+
+    /** Enqueues a sealed control frame. */
+    private fun enqueueControl(type: Byte, plaintext: ByteArray) {
+        val k = keys ?: return
+        val msg = OutboundMsg.Sealed(
+            type = type,
+            codecId = 0xFF.toByte(),
+            sessionId = k.sessionId.copyOf(),
+            key = k.controlKey,
+            role = myRole,
+            plaintext = plaintext,
+        )
+        if (!outbound.trySend(msg).isSuccess) {
+            Log.w(TAG, "outbound queue full; dropping control frame type=$type")
+        }
+    }
+
+    /** Enqueues an audio frame; drops on overflow (bounded latency). */
+    private fun enqueueAudio(codecId: Byte, plaintext: ByteArray) {
+        val k = keys ?: return
+        val msg = OutboundMsg.Sealed(
+            type = MessageType.AUDIO,
+            codecId = codecId,
+            sessionId = k.sessionId.copyOf(),
+            key = k.audioKey,
+            role = myRole,
+            plaintext = plaintext,
+        )
+        if (!outbound.trySend(msg).isSuccess) audioDropped++
+    }
 
     init {
         audio.pipelineListener = this
@@ -192,6 +312,8 @@ class SessionManager(
 
     private fun attachTransport(t: Transport, peerName: String) {
         detachTransport()
+        sessionGeneration++
+        startSender()
         transport = t
         _peerName.value = peerName
         _transportType.value = t.type
@@ -229,6 +351,7 @@ class SessionManager(
     }
 
     private fun detachTransport() {
+        stopSender()
         collectJob?.cancel(); collectJob = null
         transportWatchJob?.cancel(); transportWatchJob = null
         transport = null
@@ -243,7 +366,7 @@ class SessionManager(
             return
         }
         selfSasConfirmed = true
-        scope.launch { sendSealed(MessageType.SAS_CONFIRM, controlKeyOrThrow(), ByteArray(0)) }
+        enqueueControl(MessageType.SAS_CONFIRM, ByteArray(0))
         maybeEnterSession()
     }
 
@@ -258,26 +381,14 @@ class SessionManager(
                 return
             }
             if (floor.requestFloor()) {
-                scope.launch {
-                    sendSealed(
-                        MessageType.FLOOR_REQUEST,
-                        controlKeyOrThrow(),
-                        ByteArray(0),
-                    )
-                }
+                enqueueControl(MessageType.FLOOR_REQUEST, ByteArray(0))
             }
         } else {
             floor.cancelRequest()
             if (_isTransmitting.value) {
                 stopTransmit()
                 floor.releaseSelf() // SelfReleased event also stops; idempotent
-                scope.launch {
-                    sendSealed(
-                        MessageType.FLOOR_RELEASE,
-                        controlKeyOrThrow(),
-                        ByteArray(0),
-                    )
-                }
+                enqueueControl(MessageType.FLOOR_RELEASE, ByteArray(0))
             }
         }
     }
@@ -285,6 +396,9 @@ class SessionManager(
     fun clearError() {
         _error.value = null
     }
+
+    /** Guards teardown: one ordered teardown at a time; the body is idempotent. */
+    private val teardownMutex = Mutex()
 
     /** Ends the session, wipes keys, stops audio, disconnects transport. */
     fun endSession(
@@ -294,23 +408,28 @@ class SessionManager(
     ) {
         if (_phase.value == Phase.IDLE || _phase.value == Phase.ENDED) return
         _phase.value = Phase.ENDED
-        val k = keys
-        if (notifyPeer && k != null) {
-            scope.launch {
-                try {
-                    sendSealed(MessageType.DISCONNECT, k.controlKey, byteArrayOf(disconnectReason))
-                    delay(150) // best-effort flush before socket close
-                } catch (_: Exception) {}
-                scope.launch { teardown(error) }
-            }
-        } else {
-            scope.launch { teardown(error) }
+        // Enqueue DISCONNECT while the sender is still running; the flush
+        // delay below gives it a bounded window to go out.
+        if (notifyPeer && keys != null) {
+            enqueueControl(MessageType.DISCONNECT, byteArrayOf(disconnectReason))
+        }
+        scope.launch {
+            delay(150) // best-effort flush before socket close
+            teardown(error)
         }
     }
 
-    private suspend fun teardown(error: SessionError?) {
+    /**
+     * One explicit, idempotent, ordered teardown (HS-03). Safe to call
+     * twice, concurrently, after partial init, mid-handshake, or after
+     * transport loss. Key wiping is best-effort minimization of secret
+     * lifetime in memory — the JVM/GC may retain copies elsewhere.
+     */
+    private suspend fun teardown(error: SessionError?) = teardownMutex.withLock {
+        cancelDeadlines()
         stopTransmit()
-        audio.stopPlayback()
+        stopSender() // before key wipe: queued messages hold key references
+        try { audio.stopPlayback() } catch (_: Exception) {}
         livenessJob?.cancel(); livenessJob = null
         floor.reset()
         jitter.reset()
@@ -336,8 +455,34 @@ class SessionManager(
         _phase.value = Phase.IDLE
     }
 
+    /**
+     * Fast synchronous path for Service.onDestroy (HS-03): stops audio and
+     * wipes keys immediately without depending on the service scope (which
+     * onDestroy is about to cancel). Transport close runs best-effort.
+     */
     fun close() {
-        scope.launch { teardown(null) }
+        val wasActive = _phase.value != Phase.IDLE && _phase.value != Phase.ENDED
+        _phase.value = Phase.ENDED
+        cancelDeadlines()
+        stopSender()
+        try { audio.stopCapture() } catch (_: Exception) {}
+        try { audio.stopPlayback() } catch (_: Exception) {}
+        keys?.wipe(); keys = null
+        myKeyPair = null
+        scope.launch {
+            // NonCancellable: serviceScope.cancel() in onDestroy must not
+            // abort the transport disconnect.
+            withContext(NonCancellable) {
+                try { transport?.disconnect() } catch (_: Exception) {}
+                detachTransport()
+            }
+            _phase.value = Phase.IDLE
+        }
+        if (!wasActive) {
+            // Nothing was running; still detach for a clean slate.
+            detachTransport()
+            _phase.value = Phase.IDLE
+        }
     }
 
     // ------------------------------------------------------- handshake
@@ -348,6 +493,7 @@ class SessionManager(
         if (handshakeStarted) return
         handshakeStarted = true
         _phase.value = Phase.HANDSHAKE
+        startHandshakeDeadline()
         myKeyPair = SessionCrypto.generateEphemeralKeyPair()
         myPubBytes = SessionCrypto.encodePublicKey(myKeyPair!!.public)
         myNonce = SessionCrypto.newNonce16()
@@ -355,13 +501,56 @@ class SessionManager(
         lastPeerSeen = clock()
         // HELLO payload: protocol version (1) + codec preference (1)
         val hello = byteArrayOf(Protocol.VERSION, myCodecPref)
-        scope.launch { sendPlain(MessageType.HELLO, hello) }
+        enqueuePlain(MessageType.HELLO, hello)
         Log.i(TAG, "handshake started, HELLO sent")
+    }
+
+    /**
+     * Handshake deadline (HS-07): a peer that disappears mid-handshake
+     * causes bounded teardown, not an indefinite spinner.
+     */
+    private fun startHandshakeDeadline() {
+        handshakeDeadlineJob?.cancel()
+        val gen = sessionGeneration
+        handshakeDeadlineJob = scope.launch {
+            delay(Protocol.HANDSHAKE_TIMEOUT_MS)
+            if (sessionGeneration == gen && _phase.value == Phase.HANDSHAKE) {
+                Log.w(TAG, "handshake timed out")
+                AppLog.log(TAG, "handshake timed out")
+                endSession(SessionError.PEER_TIMEOUT, notifyPeer = false)
+            }
+        }
+    }
+
+    /**
+     * SAS confirmation deadline (HS-07): fails closed if the peer never
+     * confirms. Both sides must explicitly confirm before audio flows.
+     */
+    private fun startSasDeadline() {
+        sasDeadlineJob?.cancel()
+        val gen = sessionGeneration
+        sasDeadlineJob = scope.launch {
+            delay(Protocol.SAS_CONFIRM_TIMEOUT_MS)
+            if (sessionGeneration == gen && _phase.value == Phase.AWAITING_SAS_CONFIRM) {
+                Log.w(TAG, "SAS confirmation timed out")
+                AppLog.log(TAG, "SAS confirmation timed out")
+                endSession(
+                    SessionError.PEER_TIMEOUT,
+                    notifyPeer = true,
+                    disconnectReason = DisconnectReason.PEER_TIMEOUT,
+                )
+            }
+        }
+    }
+
+    private fun cancelDeadlines() {
+        handshakeDeadlineJob?.cancel(); handshakeDeadlineJob = null
+        sasDeadlineJob?.cancel(); sasDeadlineJob = null
     }
 
     private fun onRawFrame(bytes: ByteArray) {
         val frame = try {
-            Frame.decode(bytes, clock())
+            Frame.decode(bytes)
         } catch (e: FrameException) {
             Log.w(TAG, "dropping malformed frame: ${e.message}")
             if (_phase.value == Phase.IN_SESSION) _authFailures.value += 1
@@ -418,7 +607,7 @@ class SessionManager(
         buf.put(pub)
         buf.put(myNonce)
         keyExchangeSent = true
-        scope.launch { sendPlain(MessageType.KEY_EXCHANGE, buf.array()) }
+        enqueuePlain(MessageType.KEY_EXCHANGE, buf.array())
     }
 
     private fun onKeyExchange(payload: ByteArray) {
@@ -449,7 +638,7 @@ class SessionManager(
         secret.fill(0)
         if (!keyConfirmSent) {
             keyConfirmSent = true
-            scope.launch { sendSealed(MessageType.KEY_CONFIRM, k.controlKey, transcript) }
+            enqueueControl(MessageType.KEY_CONFIRM, transcript)
         }
         // The peer's KEY_CONFIRM may have arrived before derivation finished.
         pendingKeyConfirmFrame?.let { stashed ->
@@ -498,6 +687,22 @@ class SessionManager(
         }
     }
 
+    private fun verifyKeyConfirmPayload(payload: ByteArray) {
+        if (!MessageDigest.isEqual(payload, expectedTranscript())) {
+            Log.w(TAG, "KEY_CONFIRM transcript mismatch — possible MITM")
+            endSession(SessionError.AUTH_MISMATCH, notifyPeer = true,
+                disconnectReason = DisconnectReason.AUTH_MISMATCH)
+            return
+        }
+        if (_phase.value == Phase.HANDSHAKE) {
+            _phase.value = Phase.AWAITING_SAS_CONFIRM
+            _sasCode.value = SessionCrypto.shortAuthString(keys!!.sasSeed)
+            // SAS confirmation deadline (HS-07): the peer must confirm.
+            startSasDeadline()
+            Log.i(TAG, "key exchange verified; awaiting SAS comparison")
+        }
+    }
+
     private fun verifyKeyConfirm(payload: ByteArray, expectedTranscript: ByteArray) {
         if (!MessageDigest.isEqual(payload, expectedTranscript)) {
             Log.w(TAG, "KEY_CONFIRM transcript mismatch — possible MITM")
@@ -508,6 +713,8 @@ class SessionManager(
         if (_phase.value == Phase.HANDSHAKE) {
             _phase.value = Phase.AWAITING_SAS_CONFIRM
             _sasCode.value = SessionCrypto.shortAuthString(keys!!.sasSeed)
+            // SAS confirmation deadline (HS-07): the peer must confirm.
+            startSasDeadline()
             Log.i(TAG, "key exchange verified; awaiting SAS comparison")
         }
     }
@@ -519,15 +726,31 @@ class SessionManager(
     }
 
     private fun enterSession() {
-        _phase.value = Phase.IN_SESSION
-        AppLog.log(TAG, "session established (codec=$activeCodecId)")
+        cancelDeadlines()
         codec = AudioCodec.create(activeCodecId).also { it.reset() }
         jitter.reset()
         replay.reset()
         lastPeerSeen = clock()
-        // Note: speakerphone routing follows the user's setting, applied by
-        // VoiceService — the session never overrides it.
-        audio.startPlayback(codec!!, jitter)
+        // HS-05: never report voice readiness if playback fails to start.
+        // Roll the session back cleanly instead of a fake IN_SESSION.
+        val playbackOk = try {
+            audio.startPlayback(codec!!, jitter)
+        } catch (e: Exception) {
+            Log.w(TAG, "playback start threw", e)
+            false
+        }
+        if (!playbackOk) {
+            Log.w(TAG, "playback failed to start; ending session")
+            AppLog.log(TAG, "playback failed to start")
+            endSession(
+                SessionError.PLAYBACK_UNAVAILABLE,
+                notifyPeer = true,
+                disconnectReason = DisconnectReason.PROTOCOL_ERROR,
+            )
+            return
+        }
+        _phase.value = Phase.IN_SESSION
+        AppLog.log(TAG, "session established (codec=$activeCodecId)")
         livenessJob = scope.launch {
             while (isActive && _phase.value == Phase.IN_SESSION) {
                 delay(1_000)
@@ -541,9 +764,7 @@ class SessionManager(
                     lastPingSent = now
                     val ping = ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN)
                         .putLong(now).array()
-                    try {
-                        sendSealed(MessageType.PING, controlKeyOrThrow(), ping)
-                    } catch (_: Exception) {}
+                    enqueueControl(MessageType.PING, ping)
                 }
             }
         }
@@ -556,80 +777,88 @@ class SessionManager(
 
     private fun handleSessionFrame(frame: Frame) {
         val k = keys ?: return
-        // Session binding: drop frames for a different/old session.
+        // 1. Session binding (no state mutation).
         if (!MessageDigest.isEqual(frame.sessionId, k.sessionId)) {
             _authFailures.value += 1
             return
         }
+        // 2. Authenticate FIRST — before replay, liveness, or floor state.
+        //    A structurally valid but unauthenticated frame must not advance
+        //    the anti-replay window, refresh liveness, or influence the floor.
+        //    This includes frames that will be ignored (e.g. audio from a
+        //    non-floor-holder): they are still authenticated.
+        val plaintext: ByteArray = try {
+            when (frame.type) {
+                MessageType.AUDIO ->
+                    SessionCrypto.open(k.audioKey, aadForReceive(frame), frame.payload)
+                else -> openControl(frame, k)
+            }
+        } catch (e: Exception) {
+            _authFailures.value += 1
+            return
+        }
+        // 3. Replay check — mutates the window only for authenticated frames.
         if (!replay.accept(frame.seq)) {
             _authFailures.value += 1 // duplicate / replayed / too old
             return
         }
+        // 4. Authenticated liveness.
         lastPeerSeen = clock()
-        try {
-            when (frame.type) {
-                MessageType.AUDIO -> {
-                    if (floor.holder != FloorController.Holder.PEER) {
-                        return // not the floor holder — drop
-                    }
-                    val encodedAudio = SessionCrypto.open(k.audioKey, aadForReceive(frame), frame.payload)
-                    floor.onPeerAudio()
-                    jitter.push(frame.seq, encodedAudio)
+        // 5. Dispatch using the already-authenticated plaintext.
+        when (frame.type) {
+            MessageType.AUDIO -> {
+                if (floor.holder != FloorController.Holder.PEER) {
+                    return // not the floor holder — drop (already authenticated)
                 }
-                MessageType.FLOOR_REQUEST -> {
-                    val granted = floor.onPeerRequest()
-                    _floorHolder.value = floor.holder
-                    val t = if (granted) MessageType.FLOOR_GRANT else MessageType.FLOOR_DENY
-                    val payload = if (granted) {
-                        ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN)
-                            .putInt(FloorController.PEER_LEASE_MS.toInt()).array()
-                    } else byteArrayOf(DenyReason.PEER_BUSY)
-                    scope.launch { sendSealed(t, k.controlKey, payload) }
-                }
-                MessageType.FLOOR_GRANT -> {
-                    val lease = if (frame.payload.size >= 4) {
-                        ByteBuffer.wrap(openControl(frame, k)).order(ByteOrder.BIG_ENDIAN).int.toLong()
-                    } else FloorController.SELF_LEASE_REQUEST_MS
-                    floor.onGrant(lease)
-                }
-                MessageType.FLOOR_RELEASE -> {
-                    openControl(frame, k)
-                    floor.onPeerRelease()
-                    _floorHolder.value = floor.holder
-                }
-                MessageType.FLOOR_DENY -> {
-                    val reason = openControl(frame, k).firstOrNull() ?: DenyReason.PEER_BUSY
-                    floor.onDeny(reason)
-                }
-                MessageType.PING -> {
-                    val ts = openControl(frame, k)
-                    scope.launch { sendSealed(MessageType.PONG, k.controlKey, ts) }
-                }
-                MessageType.PONG -> openControl(frame, k) // liveness proof
-                MessageType.SAS_CONFIRM -> {
-                    openControl(frame, k)
-                    _peerSasConfirmed.value = true
-                }
-                MessageType.DISCONNECT -> {
-                    val reason = openControl(frame, k).firstOrNull()
-                        ?: DisconnectReason.USER_HANGUP
-                    val err = when (reason) {
-                        DisconnectReason.AUTH_MISMATCH -> SessionError.AUTH_MISMATCH
-                        else -> SessionError.PEER_REJECTED
-                    }
-                    endSession(err, notifyPeer = false)
-                }
-                MessageType.ERROR -> Log.w(TAG, "peer error frame")
-                MessageType.KEY_CONFIRM -> {
-                    // Duplicate confirm inside the session — re-verify.
-                    verifyPeerKeyConfirm(frame)
-                }
-                else -> Log.w(TAG, "unexpected ${frame.type} in session")
+                floor.onPeerAudio()
+                jitter.push(frame.seq, plaintext)
             }
-        } catch (e: Exception) {
-            // AEAD auth failure, malformed control payload, etc.
-            Log.w(TAG, "dropping unauthenticated/malformed frame: ${e.message}")
-            _authFailures.value += 1
+            MessageType.FLOOR_REQUEST -> {
+                val granted = floor.onPeerRequest()
+                _floorHolder.value = floor.holder
+                val t = if (granted) MessageType.FLOOR_GRANT else MessageType.FLOOR_DENY
+                val payload = if (granted) {
+                    ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN)
+                        .putInt(FloorController.PEER_LEASE_MS.toInt()).array()
+                } else byteArrayOf(DenyReason.PEER_BUSY)
+                enqueueControl(t, payload)
+            }
+            MessageType.FLOOR_GRANT -> {
+                val lease = if (plaintext.size >= 4) {
+                    ByteBuffer.wrap(plaintext).order(ByteOrder.BIG_ENDIAN).int.toLong()
+                } else FloorController.SELF_LEASE_REQUEST_MS
+                floor.onGrant(lease)
+            }
+            MessageType.FLOOR_RELEASE -> {
+                floor.onPeerRelease()
+                _floorHolder.value = floor.holder
+            }
+            MessageType.FLOOR_DENY -> {
+                val reason = plaintext.firstOrNull() ?: DenyReason.PEER_BUSY
+                floor.onDeny(reason)
+            }
+            MessageType.PING -> {
+                enqueueControl(MessageType.PONG, plaintext)
+            }
+            MessageType.PONG -> Unit // liveness already refreshed above
+            MessageType.SAS_CONFIRM -> {
+                _peerSasConfirmed.value = true
+            }
+            MessageType.DISCONNECT -> {
+                val reason = plaintext.firstOrNull()
+                    ?: DisconnectReason.USER_HANGUP
+                val err = when (reason) {
+                    DisconnectReason.AUTH_MISMATCH -> SessionError.AUTH_MISMATCH
+                    else -> SessionError.PEER_REJECTED
+                }
+                endSession(err, notifyPeer = false)
+            }
+            MessageType.ERROR -> Log.w(TAG, "peer error frame")
+            MessageType.KEY_CONFIRM -> {
+                // Duplicate confirm inside the session — re-verify transcript.
+                verifyKeyConfirmPayload(plaintext)
+            }
+            else -> Log.w(TAG, "unexpected ${frame.type} in session")
         }
     }
 
@@ -646,15 +875,7 @@ class SessionManager(
                 val wasTx = _isTransmitting.value
                 stopTransmit()
                 if (wasTx && _phase.value == Phase.IN_SESSION) {
-                    scope.launch {
-                        try {
-                            sendSealed(
-                                MessageType.FLOOR_RELEASE,
-                                controlKeyOrThrow(),
-                                ByteArray(0),
-                            )
-                        } catch (_: Exception) {}
-                    }
+                    enqueueControl(MessageType.FLOOR_RELEASE, ByteArray(0))
                 }
             }
             is FloorController.Event.Denied -> {
@@ -674,21 +895,16 @@ class SessionManager(
     private fun startTransmit() {
         val c = codec ?: return
         _isTransmitting.value = true
+        // HS-02: the capture callback only ENQUEUES; the single outbound
+        // sender allocates sequences and writes. No per-frame coroutines.
         val ok = audio.startCapture(c) { encoded, level ->
             val now = clock()
             if (now - lastLevelPush > 120) {
                 lastLevelPush = now
                 _voiceLevel.value = level
             }
-            scope.launch {
-                try {
-                    val frame = sealedFrame(
-                        MessageType.AUDIO, c.codecId, keys!!.audioKey, encoded,
-                    )
-                    transport?.sendFrame(frame)
-                } catch (e: Exception) {
-                    Log.w(TAG, "audio send failed: ${e.message}")
-                }
+            if (_phase.value == Phase.IN_SESSION) {
+                enqueueAudio(c.codecId, encoded)
             }
         }
         if (!ok) {
@@ -708,47 +924,42 @@ class SessionManager(
         } catch (_: Exception) {}
     }
 
-    // ------------------------------------------------------- frame helpers
+    // ------------------------------------------------------- frame builders
+    //
+    // Called ONLY from the single outbound sender coroutine, so sequence
+    // allocation is deterministic and race-free. Sequence numbers are uint32
+    // and wrap after 2^32 frames; the wrap is safe because every frame is
+    // AEAD-authenticated with a fresh random nonce (no nonce reuse) and the
+    // replay window treats the wrap as a far jump (documented in
+    // ReplayProtection).
 
     private fun nextSeq(): Long = (sendSeq++).and(0xFFFFFFFFL)
 
-    private fun sendPlain(type: Byte, payload: ByteArray) {
-        val frame = Frame(
+    private fun buildPlainFrame(type: Byte, payload: ByteArray): ByteArray {
+        return Frame(
             type = type,
             sessionId = ByteArray(8),
             seq = nextSeq(),
             timestamp = clock(),
             codecId = 0xFF.toByte(),
             payload = payload,
-        )
-        scope.launch {
-            try {
-                transport?.sendFrame(frame.encode())
-            } catch (e: Exception) {
-                Log.w(TAG, "sendPlain failed: ${e.message}")
-            }
-        }
+        ).encode()
     }
 
-    private suspend fun sendSealed(type: Byte, key: ByteArray, plaintext: ByteArray) {
-        transport?.sendFrame(sealedFrame(type, 0xFF.toByte(), key, plaintext))
-    }
-
-    private fun sealedFrame(type: Byte, codecId: Byte, key: ByteArray, plaintext: ByteArray): ByteArray {
-        val k = keys ?: throw IOException("no session keys")
+    private fun buildSealedFrame(msg: OutboundMsg.Sealed): ByteArray {
         // The AAD covers the frame header, which embeds the payload length —
         // so the header must be built with the FINAL sealed length, not zero.
-        val sealedLen = SessionCrypto.sealedLength(plaintext.size)
+        val sealedLen = SessionCrypto.sealedLength(msg.plaintext.size)
         val frame = Frame(
-            type = type,
-            sessionId = k.sessionId,
+            type = msg.type,
+            sessionId = msg.sessionId,
             seq = nextSeq(),
             timestamp = clock(),
-            codecId = codecId,
+            codecId = msg.codecId,
             payload = ByteArray(sealedLen), // placeholder; swapped for sealed bytes below
         )
-        val aad = frame.headerBytes() + myRole
-        val sealed = SessionCrypto.seal(key, aad, plaintext)
+        val aad = frame.headerBytes() + msg.role
+        val sealed = SessionCrypto.seal(msg.key, aad, msg.plaintext)
         check(sealed.size == sealedLen) { "sealed length mismatch" }
         return frame.copy(payload = sealed).encode()
     }
@@ -758,9 +969,6 @@ class SessionManager(
 
     private fun openControl(frame: Frame, k: SessionKeys): ByteArray =
         SessionCrypto.open(k.controlKey, aadForReceive(frame), frame.payload)
-
-    private fun controlKeyOrThrow(): ByteArray =
-        keys?.controlKey ?: throw IOException("no session keys")
 
     private fun transportErrorToSession(e: TransportError?): SessionError = when (e) {
         is TransportError.PermissionDenied -> SessionError.TRANSPORT_LOST

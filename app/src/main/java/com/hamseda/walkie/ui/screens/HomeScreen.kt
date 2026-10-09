@@ -202,7 +202,7 @@ fun HomeScreen(
 @Composable
 private fun rememberVibrator(): Vibrator? {
     val context = LocalContext.current
-    return remember {
+    return remember(context) {
         context.getSystemService(Vibrator::class.java)
     }
 }

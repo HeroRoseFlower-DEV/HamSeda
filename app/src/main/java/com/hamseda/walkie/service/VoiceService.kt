@@ -186,9 +186,16 @@ class VoiceService : Service() {
         }
 
         fun stop(context: android.content.Context) {
-            context.startService(
-                Intent(context, VoiceService::class.java).setAction(ACTION_STOP),
-            )
+            // L7: startService() throws IllegalStateException if the app is
+            // in the background and the service isn't running. Swallow it:
+            // there's nothing to stop in that case.
+            try {
+                context.startService(
+                    Intent(context, VoiceService::class.java).setAction(ACTION_STOP),
+                )
+            } catch (e: IllegalStateException) {
+                Log.w(TAG, "stop ignored: ${e.message}")
+            }
         }
     }
 }

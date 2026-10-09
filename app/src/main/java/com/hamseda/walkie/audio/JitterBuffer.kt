@@ -47,14 +47,22 @@ class JitterBuffer(
     fun push(seq: Long, payload: ByteArray) {
         received++
         val now = nowMs()
+        // HS-10: validate the frame BEFORE making room. A stale or duplicate
+        // frame must not evict a useful queued frame. Eviction policy: when
+        // full, drop the OLDEST queued frame (lowest seq) to make room for a
+        // validated newer frame — this bounds memory and latency.
+        if (nextSeq != -1L && seq < nextSeq) {
+            droppedStale++ // too late to play; drop without evicting
+            return
+        }
+        if (queue.containsKey(seq)) {
+            droppedStale++ // duplicate; drop without evicting
+            return
+        }
         if (queue.size >= maxFrames) {
             // Runaway protection: drop the oldest queued frame.
             queue.pollFirstEntry()
             droppedStale++
-        }
-        if (nextSeq != -1L && seq < nextSeq) {
-            droppedStale++ // too late to play
-            return
         }
         queue[seq] = Packet(seq, now, payload)
     }

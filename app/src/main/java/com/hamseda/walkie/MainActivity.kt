@@ -57,7 +57,17 @@ class MainActivity : ComponentActivity() {
         // Apply the saved language before resources are loaded. Note: the
         // Application object exists here but its onCreate has not run yet,
         // so a standalone SettingsRepository is used (same DataStore file).
-        val code = runBlocking { SettingsRepository(newBase).languageFlow.first() }
+        // L9: runBlocking is unavoidable here (must run before super), but
+        // bounded with a timeout so a stuck DataStore can't ANR startup.
+        val code = try {
+            runBlocking {
+                kotlinx.coroutines.withTimeout(2000) {
+                    SettingsRepository(newBase).languageFlow.first()
+                }
+            }
+        } catch (e: Exception) {
+            ""
+        }
         if (code.isNotEmpty()) {
             val locale = Locale(code)
             Locale.setDefault(locale)

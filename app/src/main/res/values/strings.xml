@@ -50,8 +50,6 @@
     <string name="mode_connecting">Connecting…</string>
     <string name="mode_connecting_wifi_hint">Check the other phone and accept the Wi-Fi Direct invitation.</string>
     <string name="peer_connect">Connect securely</string>
-    <string name="listening_title">Wait for your peer to connect</string>
-    <string name="listening_hint">If your peer connects to you, the secure request appears here.</string>
     <string name="choice_explain_auto_wifi">Automatic: Wi-Fi Direct is available and was selected.</string>
     <string name="choice_explain_auto_bt">Automatic: Wi-Fi Direct is unavailable; Bluetooth was selected.</string>
     <string name="choice_explain_manual_wifi">Manual mode: Wi-Fi Direct.</string>
@@ -145,4 +143,5 @@
     <string name="retry">Retry</string>
     <string name="close">Close</string>
     <string name="back">Back</string>
+    <string name="discoverable_declined">Visibility declined — your phone will not be discoverable to Bluetooth scans.</string>
 </resources>

@@ -83,7 +83,7 @@ data class Frame(
     companion object {
         /** Parses and validates one frame from its wire bytes.
          * @throws FrameException if the bytes are malformed or violate limits. */
-        fun decode(bytes: ByteArray, nowMs: Long = System.currentTimeMillis()): Frame {
+        fun decode(bytes: ByteArray): Frame {
             if (bytes.size < Protocol.HEADER_SIZE) {
                 throw FrameException("frame too short: ${bytes.size} < ${Protocol.HEADER_SIZE}")
             }
@@ -118,11 +118,12 @@ data class Frame(
                         "${Protocol.HEADER_SIZE + payloadLen}"
                 )
             }
-            val skew = kotlin.math.abs(nowMs - timestamp)
-            if (skew > Protocol.MAX_CLOCK_SKEW_MS) {
-                throw FrameException("timestamp outside skew window: skew=${skew}ms")
-            }
             val payload = ByteArray(payloadLen).also { buf.get(it) }
+            // HS-08: the wall-clock timestamp is diagnostic metadata only.
+            // It is intentionally NOT validated: two offline phones may have
+            // wildly different manual clock settings, and authentication /
+            // anti-replay rely on AEAD + sequence numbers + session binding,
+            // never on synchronized wall clocks.
             return Frame(type, sessionId, seq, timestamp, codecId, payload)
         }
     }

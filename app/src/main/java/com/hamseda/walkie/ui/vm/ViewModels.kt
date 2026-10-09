@@ -16,8 +16,10 @@ import com.hamseda.walkie.transport.TransportState
 import com.hamseda.walkie.transport.TransportType
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
@@ -100,10 +102,15 @@ class DiscoveryViewModel(private val deps: VmDeps) : ViewModel() {
         }
     }
 
+    // L1: manual refresh trigger — the availability flow below only
+    // recomputes when activeType changes, so Retry must nudge it too.
+    private val availabilityRefresh = MutableStateFlow(0)
+
     val availability: StateFlow<com.hamseda.walkie.transport.Availability?> =
-        deps.transports.activeType.flatMapLatest { type ->
-            flowOf(deps.transports.transportOf(type).availability())
-        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+        combine(deps.transports.activeType, availabilityRefresh) { type, _ -> type }
+            .flatMapLatest { type ->
+                flowOf(deps.transports.transportOf(type).availability())
+            }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     fun setPreference(p: TransportPreference) {
         viewModelScope.launch {
@@ -148,6 +155,7 @@ class DiscoveryViewModel(private val deps: VmDeps) : ViewModel() {
 
     fun refreshAvailability() {
         deps.transports.refreshRecommendation()
+        availabilityRefresh.value += 1
     }
 
     private fun activeTransport(): Transport = deps.transports.active

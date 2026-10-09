@@ -72,6 +72,14 @@ class LoopbackTransport(
 
     override fun close() {}
 
+    /** Test-only: injects raw bytes as if received from the peer (suspends until buffered). */
+    fun injectBlocking(bytes: ByteArray) {
+        kotlinx.coroutines.runBlocking { _incoming.emit(bytes) }
+    }
+
+    /** Test-only: injects raw bytes as if received from the peer. */
+    fun inject(bytes: ByteArray): Boolean = _incoming.tryEmit(bytes)
+
     companion object {
         fun pair(
             interceptA: ((ByteArray) -> ByteArray)? = null,
@@ -96,6 +104,8 @@ class FakeAudioPipeline : AudioPipeline {
     var playbackBuffer: JitterBuffer? = null
     var speakerphoneOn: Boolean = true
         private set
+    /** When true, startPlayback returns false (HS-05 test hook). */
+    var failPlayback: Boolean = false
 
     override fun startCapture(
         codec: AudioCodec,
@@ -112,6 +122,7 @@ class FakeAudioPipeline : AudioPipeline {
     }
 
     override fun startPlayback(codec: AudioCodec, buffer: JitterBuffer): Boolean {
+        if (failPlayback) return false
         playbackCodec = codec
         playbackBuffer = buffer
         return true

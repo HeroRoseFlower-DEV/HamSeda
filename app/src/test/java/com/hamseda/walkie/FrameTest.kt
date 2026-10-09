@@ -98,15 +98,15 @@ class FrameTest {
     }
 
     @Test
-    fun `stale timestamp is rejected`() {
-        val f = sampleFrame().copy(timestamp = System.currentTimeMillis() - Protocol.MAX_CLOCK_SKEW_MS - 1000)
-        assertThrows(FrameException::class.java) { Frame.decode(f.encode()) }
+    fun `hs08 stale timestamp is accepted (clocks may differ offline)`() {
+        val f = sampleFrame().copy(timestamp = System.currentTimeMillis() - 30 * 60 * 1000)
+        assertEquals(f, Frame.decode(f.encode()))
     }
 
     @Test
-    fun `future timestamp beyond skew is rejected`() {
-        val f = sampleFrame().copy(timestamp = System.currentTimeMillis() + Protocol.MAX_CLOCK_SKEW_MS + 1000)
-        assertThrows(FrameException::class.java) { Frame.decode(f.encode()) }
+    fun `hs08 future timestamp is accepted (clocks may differ offline)`() {
+        val f = sampleFrame().copy(timestamp = System.currentTimeMillis() + 30 * 60 * 1000)
+        assertEquals(f, Frame.decode(f.encode()))
     }
 
     @Test

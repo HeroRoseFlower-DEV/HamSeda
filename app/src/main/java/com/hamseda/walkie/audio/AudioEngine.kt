@@ -170,18 +170,46 @@ class AudioEngine(private val context: Context) : AudioPipeline {
                 captureRunning.set(false)
                 return@Thread
             }
+            // HS-09: classify every negative read result. ERROR_DEAD_OBJECT
+            // and invalid-operation are fatal (stop, don't spin); transient
+            // errors back off with a bounded retry count.
+            var consecutiveErrors = 0
             while (captureRunning.get()) {
                 val read = rec.read(frame, 0, frame.size)
                 if (read < 0) {
-                    Log.w(TAG, "AudioRecord.read error: $read")
-                    if (read == AudioRecord.ERROR_INVALID_OPERATION ||
-                        read == AudioRecord.ERROR_BAD_VALUE
-                    ) {
-                        pipelineListener?.onCaptureError("microphone read error ($read)")
-                        break
+                    consecutiveErrors++
+                    when (read) {
+                        AudioRecord.ERROR_DEAD_OBJECT -> {
+                            Log.w(TAG, "AudioRecord dead object; stopping capture")
+                            pipelineListener?.onCaptureError("microphone disconnected")
+                            captureRunning.set(false)
+                            break
+                        }
+                        AudioRecord.ERROR_INVALID_OPERATION,
+                        AudioRecord.ERROR_BAD_VALUE -> {
+                            pipelineListener?.onCaptureError("microphone read error ($read)")
+                            captureRunning.set(false)
+                            break
+                        }
+                        else -> {
+                            Log.w(TAG, "AudioRecord.read error: $read")
+                            if (consecutiveErrors > MAX_CONSECUTIVE_READ_ERRORS) {
+                                pipelineListener?.onCaptureError(
+                                    "microphone read error ($read)"
+                                )
+                                captureRunning.set(false)
+                                break
+                            }
+                            try {
+                                Thread.sleep(READ_ERROR_BACKOFF_MS)
+                            } catch (_: InterruptedException) {
+                                break
+                            }
+                            continue
+                        }
                     }
-                    continue
                 }
+                consecutiveErrors = 0
                 if (read != frame.size) continue // wait for a full 20 ms frame
                 var peak = 0
                 for (s in frame) peak = maxOf(peak, abs(s.toInt()))
@@ -417,5 +445,8 @@ class AudioEngine(private val context: Context) : AudioPipeline {
         private const val TAG = "HamSedaAudio"
         private const val MAX_PLC_FRAMES = 5
         private const val PLC_DECAY = 0.85f
+        /** HS-09: bounded retries for transient AudioRecord.read errors. */
+        private const val MAX_CONSECUTIVE_READ_ERRORS = 10
+        private const val READ_ERROR_BACKOFF_MS = 20L
     }
 }

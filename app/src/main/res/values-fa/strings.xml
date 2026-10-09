@@ -50,8 +50,6 @@
     <string name="mode_connecting">در حال اتصال…</string>
     <string name="mode_connecting_wifi_hint">گوشی مقابل را چک کن و دعوت وای‌فای دایرکت را قبول کن.</string>
     <string name="peer_connect">اتصال امن</string>
-    <string name="listening_title">منتظر اتصال هم‌صحبت باش</string>
-    <string name="listening_hint">اگر هم‌صحبت به تو وصل شود، درخواست امن همین‌جا نمایش داده می‌شود.</string>
     <string name="choice_explain_auto_wifi">خودکار: وای‌فای دایرکت در دسترس است و انتخاب شد.</string>
     <string name="choice_explain_auto_bt">خودکار: وای‌فای دایرکت در دسترس نیست؛ بلوتوث انتخاب شد.</string>
     <string name="choice_explain_manual_wifi">حالت دستی: وای‌فای دایرکت.</string>
@@ -145,4 +143,5 @@
     <string name="retry">تلاش دوباره</string>
     <string name="close">بستن</string>
     <string name="back">بازگشت</string>
+    <string name="discoverable_declined">قابل‌مشاهده شدن رد شد — گوشی شما برای اسکن بلوتوث قابل‌مشاهده نخواهد بود.</string>
 </resources>

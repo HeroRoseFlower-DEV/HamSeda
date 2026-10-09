@@ -165,7 +165,12 @@ fun PttButton(
                 .size(168.dp)
                 .scale(scale)
                 .semantics {
-                    contentDescription = if (transmitting) "transmitting" else "hold to talk"
+                    // L2: localized accessibility labels, not hardcoded English.
+                    contentDescription = if (transmitting) {
+                        stringResource(R.string.ptt_transmitting)
+                    } else {
+                        stringResource(R.string.ptt_label)
+                    }
                 }
                 .pointerInput(enabled) {
                     detectTapGestures(

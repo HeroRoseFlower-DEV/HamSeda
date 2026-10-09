@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -153,7 +154,12 @@ fun DiagnosticsScreen(
                             .padding(12.dp),
                         verticalArrangement = Arrangement.spacedBy(4.dp),
                     ) {
-                        items(entries, key = { it.time + it.tag + it.message }) { e ->
+                        itemsIndexed(
+                            entries,
+                            // L6: index-based key — two entries can share the
+                            // same millisecond timestamp, tag, and message.
+                            key = { index, _ -> index },
+                        ) { _, e ->
                             Text(
                                 text = "${e.time} [${e.tag}] ${e.message}",
                                 fontFamily = FontFamily.Monospace,

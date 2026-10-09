@@ -16,11 +16,13 @@ import android.net.wifi.p2p.WifiP2pManager
 import android.os.Build
 import android.os.Looper
 import android.util.Log
+import com.hamseda.walkie.proto.FrameException
 import com.hamseda.walkie.proto.FramedSocket
 import com.hamseda.walkie.proto.Protocol
 import com.hamseda.walkie.util.AppLog
 import com.hamseda.walkie.util.PermissionHelper
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -445,7 +447,23 @@ class WifiDirectTransport(private val context: Context) : Transport {
             while (_state.value == TransportState.CONNECTED ||
                 _state.value == TransportState.AUTHENTICATING
             ) {
-                when (val r = f.readFrame()) {
+                // HS-04: readFrame() throws FrameException on protocol
+                // violation — route it through the common disconnect path
+                // instead of stranding the transport in CONNECTED.
+                val r = try {
+                    f.readFrame()
+                } catch (e: FrameException) {
+                    AppLog.log(TAG, "framing error: ${e.message}")
+                    handleGroupLost("framing error: ${e.message}")
+                    return@launch
+                } catch (e: CancellationException) {
+                    throw e // normal shutdown; not an error
+                } catch (e: Exception) {
+                    AppLog.log(TAG, "reader failed: ${e.javaClass.simpleName}")
+                    handleGroupLost("read error: ${e.message}")
+                    return@launch
+                }
+                when (r) {
                     is FramedSocket.ReadResult.Frame -> _incomingFrames.emit(r.frame)
                     is FramedSocket.ReadResult.Closed -> {
                         handleGroupLost()

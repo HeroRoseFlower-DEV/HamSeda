@@ -100,6 +100,14 @@ fun DiscoveryScreen(
     ) { result ->
         if (result.resultCode == android.app.Activity.RESULT_OK) {
             pendingAction?.invoke()
+        } else {
+            // L5: declining the dialog silently dropped the pending action.
+            // Tell the user why nothing happened.
+            android.widget.Toast.makeText(
+                context,
+                context.getString(R.string.discoverable_declined),
+                android.widget.Toast.LENGTH_LONG,
+            ).show()
         }
         pendingAction = null
     }

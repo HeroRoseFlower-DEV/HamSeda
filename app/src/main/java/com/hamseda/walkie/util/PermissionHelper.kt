@@ -80,6 +80,9 @@ object PermissionHelper {
             .distinct()
 
     fun missingNotificationPermission(context: Context): List<String> =
+        // L8: kept for API completeness; currently unused because the app
+        // only posts its foreground-service notification (exempt from
+        // POST_NOTIFICATIONS on API 33+).
         if (Build.VERSION.SDK_INT >= 33) {
             listOf(Manifest.permission.POST_NOTIFICATIONS).filter { !isGranted(context, it) }
         } else emptyList()

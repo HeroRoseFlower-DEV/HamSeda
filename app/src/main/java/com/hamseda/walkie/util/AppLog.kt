@@ -14,10 +14,14 @@ import java.util.Locale
  * connection fails on a user's phone, the log shows exactly which step
  * failed instead of a generic error banner.
  *
- * Never contains audio, keys, or personal data — only step/result labels.
+ * Privacy: MAC addresses are redacted before storage (M1). Never contains
+ * audio, keys, or other personal data — only step/result labels.
  */
 object AppLog {
     private const val MAX_ENTRIES = 300
+
+    /** Matches Bluetooth/Wi-Fi MAC addresses like `aa:bb:cc:11:22:33`. */
+    private val MAC_RE = Regex("(?i)\\b([0-9a-f]{2}:){5}[0-9a-f]{2}\\b")
 
     data class Entry(val time: String, val tag: String, val message: String)
 
@@ -28,7 +32,9 @@ object AppLog {
 
     @Synchronized
     fun log(tag: String, message: String) {
-        val e = Entry(timeFmt.format(Date()), tag, message)
+        // Redact persistent device identifiers before they hit the buffer.
+        val safe = MAC_RE.replace(message, "** : ** : ** : ** : ** : **")
+        val e = Entry(timeFmt.format(Date()), tag, safe)
         buffer.addLast(e)
         while (buffer.size > MAX_ENTRIES) buffer.removeFirst()
         _entries.value = buffer.toList()

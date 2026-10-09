@@ -87,4 +87,49 @@ class JitterBufferTest {
         assertEquals(1L, jb.received)
         assertEquals(1L, jb.played)
     }
+
+    @Test
+    fun `hs10 stale frame at full buffer does not evict useful frame`() {
+        val clock = Clock()
+        val jb = JitterBuffer(targetFrames = 2, maxFrames = 4, nowMs = clock::get)
+        // Prime: seqs 0,1 → take 0 → nextSeq=1.
+        jb.push(0, payload(0))
+        jb.push(1, payload(1))
+        val first = jb.takeNext()
+        assertTrue(first is JitterBuffer.TakeResult.Frame)
+        // Fill to maxFrames=4: queue holds 1,2,3,4.
+        jb.push(2, payload(2))
+        jb.push(3, payload(3))
+        jb.push(4, payload(4))
+        assertEquals(4, jb.bufferedFrames())
+        val droppedBefore = jb.droppedStale
+        // Stale frame (seq 0 < nextSeq=1) at a FULL buffer.
+        // Old code evicted the useful seq-1 frame first, then dropped stale.
+        // New code drops stale without evicting.
+        jb.push(0, payload(0))
+        assertEquals(droppedBefore + 1, jb.droppedStale)
+        assertEquals(4, jb.bufferedFrames())
+        // Seq 1 survived (was not evicted).
+        val next = jb.takeNext()
+        assertTrue(next is JitterBuffer.TakeResult.Frame)
+        assertEquals(1L, (next as JitterBuffer.TakeResult.Frame).packet.seq)
+    }
+
+    @Test
+    fun `hs10 duplicate at full buffer does not evict`() {
+        val clock = Clock()
+        val jb = JitterBuffer(targetFrames = 2, maxFrames = 4, nowMs = clock::get)
+        jb.push(0, payload(0))
+        jb.push(1, payload(1))
+        jb.takeNext()
+        jb.push(2, payload(2))
+        jb.push(3, payload(3))
+        jb.push(4, payload(4))
+        assertEquals(4, jb.bufferedFrames())
+        val droppedBefore = jb.droppedStale
+        // Duplicate of queued seq 2.
+        jb.push(2, payload(2))
+        assertEquals(droppedBefore + 1, jb.droppedStale)
+        assertEquals(4, jb.bufferedFrames())
+    }
 }

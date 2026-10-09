@@ -12,10 +12,12 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.os.Build
 import android.util.Log
+import com.hamseda.walkie.proto.FrameException
 import com.hamseda.walkie.proto.FramedSocket
 import com.hamseda.walkie.proto.Protocol
 import com.hamseda.walkie.util.AppLog
 import com.hamseda.walkie.util.PermissionHelper
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -33,6 +35,8 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
 import java.io.IOException
+import java.net.SocketTimeoutException
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Secondary transport: Bluetooth Classic RFCOMM.
@@ -138,12 +142,17 @@ class BluetoothTransport(private val context: Context) : Transport {
                 }
                 PeerDevice(id = d.address, displayName = name, transport = TransportType.BLUETOOTH)
             }
+            // HS-11: always reconcile. A successfully empty bonded set clears
+            // the cache (stale peers must not linger); only a permission
+            // failure leaves the old cache (unknown state, logged as such).
+            bondedCache.clear()
+            bonded.forEach { bondedCache[it.id] = it }
             if (bonded.isNotEmpty()) {
                 AppLog.log(TAG, "found ${bonded.size} paired device(s)")
-                bondedCache.clear()
-                bonded.forEach { bondedCache[it.id] = it }
-                publishPeers()
+            } else {
+                AppLog.log(TAG, "no paired devices")
             }
+            publishPeers()
         } catch (e: SecurityException) {
             AppLog.log(TAG, "bonded-device list denied: ${e.message}")
         }
@@ -252,8 +261,21 @@ class BluetoothTransport(private val context: Context) : Transport {
                 a.cancelDiscovery()
             } catch (_: SecurityException) {}
             stopAcceptLocked()
-            scope.launch {
+            // HS-06: the blocking connect() runs on Dispatchers.IO, and the
+            // deadline is enforced by a watchdog that CLOSES the socket —
+            // closing unblocks the pending connect(), which withTimeout
+            // alone cannot interrupt. The AtomicReference guarantees the
+            // watchdog never closes a newer socket.
+            scope.launch(Dispatchers.IO) {
                 var socket: BluetoothSocket? = null
+                val socketRef = AtomicReference<BluetoothSocket?>()
+                val watchdog = launch {
+                    delay(Protocol.CONNECT_TIMEOUT_MS.toLong())
+                    socketRef.getAndSet(null)?.let { s ->
+                        AppLog.log(TAG, "connect timed out; closing socket to unblock")
+                        try { s.close() } catch (_: IOException) {}
+                    }
+                }
                 try {
                     val device: BluetoothDevice = try {
                         a.getRemoteDevice(peer.id)
@@ -263,15 +285,19 @@ class BluetoothTransport(private val context: Context) : Transport {
                     socket = device.createRfcommSocketToServiceRecord(
                         Protocol.BLUETOOTH_SERVICE_UUID,
                     )
-                    // connect() blocks; closing the socket aborts it, so on
-                    // timeout we close below to avoid a leaked thread.
-                    withTimeout(Protocol.CONNECT_TIMEOUT_MS.toLong()) {
-                        socket.connect()
+                    socketRef.set(socket)
+                    socket.connect() // blocking; watchdog close unblocks it
+                    watchdog.cancel()
+                    socketRef.set(null)
+                    if (!socket.isConnected) {
+                        throw SocketTimeoutException("bluetooth connect timed out")
                     }
                     AppLog.log(TAG, "rfcomm connected to ${peer.id}")
                     onSocketReady(socket)
                     socket = null // owned by the transport now
                 } catch (e: Exception) {
+                    watchdog.cancel()
+                    socketRef.set(null)
                     AppLog.log(TAG, "connect failed: ${e.javaClass.simpleName}: ${e.message}")
                     try {
                         socket?.close()
@@ -395,7 +421,23 @@ class BluetoothTransport(private val context: Context) : Transport {
         val f = framed ?: return
         readerJob = scope.launch {
             while (_state.value == TransportState.CONNECTED) {
-                when (val r = f.readFrame()) {
+                // HS-04: readFrame() throws FrameException on protocol
+                // violation — route it through the common disconnect path
+                // instead of stranding the transport in CONNECTED.
+                val r = try {
+                    f.readFrame()
+                } catch (e: FrameException) {
+                    AppLog.log(TAG, "framing error: ${e.message}")
+                    handleLost("framing error: ${e.message}")
+                    return@launch
+                } catch (e: CancellationException) {
+                    throw e // normal shutdown; not an error
+                } catch (e: Exception) {
+                    AppLog.log(TAG, "reader failed: ${e.javaClass.simpleName}")
+                    handleLost("read error: ${e.message}")
+                    return@launch
+                }
+                when (r) {
                     is FramedSocket.ReadResult.Frame -> _incomingFrames.emit(r.frame)
                     is FramedSocket.ReadResult.Closed -> {
                         handleLost("peer closed the connection")
