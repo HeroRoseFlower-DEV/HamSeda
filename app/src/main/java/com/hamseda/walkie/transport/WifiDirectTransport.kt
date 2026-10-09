@@ -112,6 +112,9 @@ class WifiDirectTransport(private val context: Context) : Transport {
 
     // ------------------------------------------------------------ discovery
 
+    // Permissions (NEARBY_WIFI_DEVICES / location) are checked explicitly at
+    // the top of this function; lint cannot follow the early return.
+    @SuppressLint("MissingPermission")
     override suspend fun startDiscovery() {
         val missing = PermissionHelper.missingWifiDirectPermissions(context)
         if (missing.isNotEmpty()) {
@@ -151,6 +154,10 @@ class WifiDirectTransport(private val context: Context) : Transport {
 
     // ------------------------------------------------------------- connect
 
+    // Permissions (discovery + ACCESS_LOCAL_NETWORK on API 37+) are checked
+    // explicitly at the top of this function; lint cannot follow the early
+    // return.
+    @SuppressLint("MissingPermission")
     override suspend fun connect(peer: PeerDevice) {
         // Discovery permission AND local-network access (API 37+) — the P2P
         // group socket is a local-network connection and would otherwise be
