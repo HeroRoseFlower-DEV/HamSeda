@@ -370,6 +370,10 @@ class WifiDirectTransport(private val context: Context) : Transport {
     // ------------------------------------------------------------- receiver
 
     private val receiver = object : BroadcastReceiver() {
+        // requestPeers/requestConnectionInfo need NEARBY_WIFI_DEVICES; the
+        // helper check below is real but lint cannot trace it through the
+        // helper, so this is suppressed rather than duplicated.
+        @SuppressLint("MissingPermission")
         override fun onReceive(ctx: Context, intent: Intent) {
             when (intent.action) {
                 WifiP2pManager.WIFI_P2P_STATE_CHANGED_ACTION -> {
