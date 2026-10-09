@@ -37,6 +37,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
 import java.io.IOException
 import java.net.SocketTimeoutException
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
 /**
@@ -92,6 +93,13 @@ class BluetoothTransport(private val context: Context) : Transport {
     private var serverSocket: BluetoothServerSocket? = null
     private var readerJob: Job? = null
     private var acceptThread: Thread? = null
+
+    // Outgoing RFCOMM connect() is a blocking platform call. Keep its job and
+    // socket reference so disconnect() can close it immediately instead of
+    // allowing a delayed connection to resurrect CONNECTED afterwards.
+    private val connectionGeneration = AtomicLong(0L)
+    private var connectJob: Job? = null
+    private var pendingConnectSocket: AtomicReference<BluetoothSocket?>? = null
     private var receiverRegistered = false
     private val found = mutableMapOf<String, PeerDevice>()
     private val bondedCache = mutableMapOf<String, PeerDevice>()
@@ -380,6 +388,10 @@ class BluetoothTransport(private val context: Context) : Transport {
                 _error.value = TransportError.RadioDisabled(TransportType.BLUETOOTH)
                 return
             }
+            cancelPendingConnectLocked()
+            val attempt = connectionGeneration.incrementAndGet()
+            val socketRef = AtomicReference<BluetoothSocket?>()
+            pendingConnectSocket = socketRef
             _state.value = TransportState.CONNECTING
             _error.value = null
             AppLog.log(TAG, "connecting to ${peer.displayName} (${peer.id})")
@@ -392,9 +404,8 @@ class BluetoothTransport(private val context: Context) : Transport {
             // closing unblocks the pending connect(), which withTimeout
             // alone cannot interrupt. The AtomicReference guarantees the
             // watchdog never closes a newer socket.
-            scope.launch(Dispatchers.IO) {
+            connectJob = scope.launch(Dispatchers.IO) {
                 var socket: BluetoothSocket? = null
-                val socketRef = AtomicReference<BluetoothSocket?>()
                 val watchdog = launch {
                     delay(Protocol.CONNECT_TIMEOUT_MS.toLong())
                     socketRef.getAndSet(null)?.let { s ->
@@ -412,15 +423,33 @@ class BluetoothTransport(private val context: Context) : Transport {
                         Protocol.BLUETOOTH_SERVICE_UUID,
                     )
                     socketRef.set(socket)
-                    socket.connect() // blocking; watchdog close unblocks it
+                    // disconnect() invalidates the generation and closes this
+                    // reference. Check before entering the blocking call so a
+                    // cancellation during device/socket creation cannot start
+                    // a fresh RFComm connection after the user stopped it.
+                    if (connectionGeneration.get() != attempt) {
+                        socketRef.getAndSet(null)?.let { try { it.close() } catch (_: IOException) {} }
+                        return@launch
+                    }
+                    socket.connect() // blocking; disconnect/watchdog close unblocks it
                     watchdog.cancel()
                     socketRef.set(null)
                     if (!socket.isConnected) {
                         throw SocketTimeoutException("bluetooth connect timed out")
                     }
+                    if (connectionGeneration.get() != attempt) {
+                        try { socket.close() } catch (_: IOException) {}
+                        socket = null
+                        return@launch
+                    }
                     AppLog.log(TAG, "rfcomm connected to ${peer.id}")
-                    onSocketReady(socket)
-                    socket = null // owned by the transport now
+                    onSocketReady(socket, expectedGeneration = attempt)
+                    socket = null // onSocketReady accepted or closed the socket
+                } catch (e: CancellationException) {
+                    watchdog.cancel()
+                    socketRef.getAndSet(null)?.let { try { it.close() } catch (_: IOException) {} }
+                    try { socket?.close() } catch (_: IOException) {}
+                    throw e
                 } catch (e: Exception) {
                     watchdog.cancel()
                     socketRef.set(null)
@@ -429,10 +458,17 @@ class BluetoothTransport(private val context: Context) : Transport {
                         socket?.close()
                     } catch (_: IOException) {}
                     mutex.withLock {
-                        _error.value = TransportError.ConnectFailed(
-                            "bluetooth connect failed: ${e.message}",
-                        )
-                        _state.value = TransportState.FAILED
+                        // An old attempt that was cancelled by disconnect() or
+                        // superseded by a retry must not overwrite the newer
+                        // transport state with FAILED.
+                        if (connectionGeneration.get() == attempt &&
+                            _state.value == TransportState.CONNECTING
+                        ) {
+                            _error.value = TransportError.ConnectFailed(
+                                "bluetooth connect failed: ${e.message}",
+                            )
+                            _state.value = TransportState.FAILED
+                        }
                     }
                 }
             }
@@ -523,8 +559,21 @@ class BluetoothTransport(private val context: Context) : Transport {
 
     // --------------------------------------------------------------- socket
 
-    private suspend fun onSocketReady(socket: BluetoothSocket) {
+    private suspend fun onSocketReady(
+        socket: BluetoothSocket,
+        expectedGeneration: Long? = null,
+    ) {
         mutex.withLock {
+            // A socket may finish connecting at the same moment as Stop or
+            // disconnect. Only the active outgoing attempt may publish it.
+            if (expectedGeneration != null &&
+                (connectionGeneration.get() != expectedGeneration ||
+                    _state.value != TransportState.CONNECTING)
+            ) {
+                try { socket.close() } catch (_: IOException) {}
+                AppLog.log(TAG, "discarding stale RFCOMM socket after disconnect/retry")
+                return@withLock
+            }
             closeSocketLocked()
             btSocket = socket
             val remote = try {
@@ -589,6 +638,17 @@ class BluetoothTransport(private val context: Context) : Transport {
         }
     }
 
+    /** Must be called under [mutex]. Invalidates and actively closes a pending connect. */
+    private fun cancelPendingConnectLocked() {
+        connectionGeneration.incrementAndGet()
+        pendingConnectSocket?.getAndSet(null)?.let { socket ->
+            try { socket.close() } catch (_: IOException) {}
+        }
+        pendingConnectSocket = null
+        connectJob?.cancel()
+        connectJob = null
+    }
+
     private fun closeSocketLocked() {
         readerJob?.cancel(); readerJob = null
         framed?.close(); framed = null
@@ -612,6 +672,7 @@ class BluetoothTransport(private val context: Context) : Transport {
     override suspend fun disconnect() {
         invalidateDiscovery()
         mutex.withLock {
+            cancelPendingConnectLocked()
             closeSocketLocked()
             stopAcceptLocked()
             _state.value = TransportState.IDLE
