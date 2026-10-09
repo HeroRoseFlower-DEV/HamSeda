@@ -1,10 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <!-- API 29+ only: edge-to-edge contrast enforcement flags. -->
     <style name="Theme.HamSeda" parent="android:Theme.Material.Light.NoActionBar">
         <item name="android:windowBackground">@color/ivory_background</item>
         <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:navigationBarColor">@android:color/transparent</item>
         <item name="android:windowLightStatusBar">true</item>
-        <!-- enforce*Contrast need API 29+; see values-v29/themes.xml -->
+        <item name="android:enforceStatusBarContrast">false</item>
+        <item name="android:enforceNavigationBarContrast">false</item>
     </style>
 </resources>
