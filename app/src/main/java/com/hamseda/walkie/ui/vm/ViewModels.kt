@@ -15,12 +15,15 @@ import com.hamseda.walkie.transport.TransportPreference
 import com.hamseda.walkie.transport.TransportState
 import com.hamseda.walkie.transport.TransportType
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
 
 /** Dependencies every screen ViewModel needs. */
 data class VmDeps(
@@ -73,10 +76,28 @@ class DiscoveryViewModel(private val deps: VmDeps) : ViewModel() {
     val discoverable: StateFlow<Boolean> =
         deps.transports.activeType.flatMapLatest { type ->
             deps.transports.transportOf(type).discoverable
-        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
+        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
 
     fun clearTransportError() {
         deps.transports.active.clearError()
+    }
+
+    /**
+     * Brings any lingering session back to IDLE first. Without this, tapping
+     * "connect" while a previous listen/connect is still winding down hits
+     * SessionManager's `if (phase != IDLE) return` guard and *silently does
+     * nothing* — the button looks dead.
+     */
+    private suspend fun restartIdle() {
+        if (deps.manager.phase.value == SessionManager.Phase.IDLE) return
+        deps.manager.endSession()
+        try {
+            withTimeout(5_000) {
+                deps.manager.phase.first { it == SessionManager.Phase.IDLE }
+            }
+        } catch (_: TimeoutCancellationException) {
+            // Proceed anyway; startOutgoing/acceptIncoming re-check IDLE.
+        }
     }
 
     val availability: StateFlow<com.hamseda.walkie.transport.Availability?> =
@@ -102,6 +123,7 @@ class DiscoveryViewModel(private val deps: VmDeps) : ViewModel() {
     /** Outgoing secure session to [peer]. Starts the foreground service first. */
     fun connectPeer(peer: PeerDevice) {
         viewModelScope.launch {
+            restartIdle()
             VoiceService.start(deps.appContext)
             val codec = deps.settings.codecPref()
             deps.manager.startOutgoing(activeTransport(), peer, codec)
@@ -111,10 +133,17 @@ class DiscoveryViewModel(private val deps: VmDeps) : ViewModel() {
     /** Listen for an incoming connection on the active transport. */
     fun listenForIncoming() {
         viewModelScope.launch {
+            restartIdle()
             VoiceService.start(deps.appContext)
             val codec = deps.settings.codecPref()
             deps.manager.acceptIncoming(activeTransport(), codec)
         }
+    }
+
+    /** Stops waiting/connecting and returns everything to idle. */
+    fun cancelSession() {
+        deps.manager.endSession()
+        VoiceService.stop(deps.appContext)
     }
 
     fun refreshAvailability() {

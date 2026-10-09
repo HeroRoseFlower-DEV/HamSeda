@@ -18,12 +18,14 @@ import android.os.Looper
 import android.util.Log
 import com.hamseda.walkie.proto.FramedSocket
 import com.hamseda.walkie.proto.Protocol
+import com.hamseda.walkie.util.AppLog
 import com.hamseda.walkie.util.PermissionHelper
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -89,6 +91,7 @@ class WifiDirectTransport(private val context: Context) : Transport {
     private var serverSocket: ServerSocket? = null
     private var readerJob: Job? = null
     private var socketJob: Job? = null
+    private var connectWatchdog: Job? = null
 
     private fun ensureInit(): Boolean {
         if (manager != null) return true
@@ -188,6 +191,7 @@ class WifiDirectTransport(private val context: Context) : Transport {
             registerReceiver()
             _state.value = TransportState.CONNECTING
             _error.value = null
+            AppLog.log(TAG, "p2p connect to ${peer.displayName} (${peer.id})")
             try {
                 manager?.stopPeerDiscovery(channel, null)
             } catch (_: Exception) {}
@@ -202,19 +206,41 @@ class WifiDirectTransport(private val context: Context) : Transport {
             }
             manager?.connect(channel, config, object : WifiP2pManager.ActionListener {
                 override fun onSuccess() {
+                    AppLog.log(TAG, "p2p connect initiated; waiting for peer to accept the system invitation")
                     Log.i(TAG, "p2p connect initiated to ${peer.id}")
                 }
 
                 override fun onFailure(reason: Int) {
+                    val name = reasonName(reason)
+                    AppLog.log(TAG, "p2p connect failed: $name")
                     scope.launch {
                         mutex.withLock {
                             _error.value =
-                                TransportError.ConnectFailed("connect failed: ${reasonName(reason)}")
+                                TransportError.ConnectFailed("connect failed: $name")
                             _state.value = TransportState.FAILED
                         }
                     }
                 }
             })
+            // Watchdog: the framework reports nothing when the peer ignores
+            // the system invitation prompt — fail visibly instead of hanging
+            // in CONNECTING forever.
+            connectWatchdog?.cancel()
+            connectWatchdog = scope.launch {
+                delay(Protocol.P2P_INVITE_TIMEOUT_MS)
+                mutex.withLock {
+                    if (_state.value == TransportState.CONNECTING) {
+                        AppLog.log(TAG, "p2p invitation timed out (peer did not accept)")
+                        try {
+                            manager?.cancelConnect(channel, null)
+                        } catch (_: Exception) {}
+                        _error.value = TransportError.ConnectFailed(
+                            "peer did not accept the wi-fi direct invitation in time",
+                        )
+                        _state.value = TransportState.FAILED
+                    }
+                }
+            }
         }
     }
 
@@ -233,16 +259,21 @@ class WifiDirectTransport(private val context: Context) : Transport {
 
     private fun onConnectionInfo(info: WifiP2pInfo) {
         if (!info.groupFormed) {
+            AppLog.log(TAG, "p2p group not formed")
             scope.launch { handleGroupLost() }
             return
         }
+        AppLog.log(TAG, "p2p group formed (owner=${info.isGroupOwner}, addr=${info.groupOwnerAddress?.hostAddress})")
         scope.launch {
             mutex.withLock {
                 if (framed != null) return@withLock // already have a socket
+                connectWatchdog?.cancel()
+                connectWatchdog = null
                 // The P2P group socket is a local-network connection: on
                 // API 37+ it is silently blocked without ACCESS_LOCAL_NETWORK.
                 val missing = PermissionHelper.missingLocalNetworkPermission(context)
                 if (missing.isNotEmpty()) {
+                    AppLog.log(TAG, "p2p socket blocked: missing $missing (API 37+)")
                     _error.value = TransportError.PermissionDenied(missing)
                     _state.value = TransportState.FAILED
                     return@withLock
@@ -254,8 +285,10 @@ class WifiDirectTransport(private val context: Context) : Transport {
                         val socket = withTimeout(Protocol.CONNECT_TIMEOUT_MS.toLong()) {
                             if (info.isGroupOwner) acceptAsOwner() else connectAsClient(info)
                         }
+                        AppLog.log(TAG, "p2p socket established")
                         onSocketReady(socket)
                     } catch (e: Exception) {
+                        AppLog.log(TAG, "p2p socket failed: ${e.javaClass.simpleName}: ${e.message}")
                         mutex.withLock {
                             closeSocketLocked()
                             _error.value = TransportError.ConnectFailed(
@@ -337,6 +370,7 @@ class WifiDirectTransport(private val context: Context) : Transport {
     private fun closeSocketLocked() {
         readerJob?.cancel(); readerJob = null
         socketJob?.cancel(); socketJob = null
+        connectWatchdog?.cancel(); connectWatchdog = null
         framed?.close(); framed = null
         try { serverSocket?.close() } catch (_: IOException) {}
         serverSocket = null

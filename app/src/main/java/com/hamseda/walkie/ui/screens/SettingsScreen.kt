@@ -54,6 +54,7 @@ fun SettingsScreen(
     deps: VmDeps,
     onBack: () -> Unit,
     onOpenPrivacy: () -> Unit,
+    onOpenDiagnostics: () -> Unit,
     onLanguageChanged: () -> Unit,
     modifier: Modifier = Modifier,
     vm: SettingsViewModel = viewModel(factory = VmFactory(deps)),
@@ -183,6 +184,21 @@ fun SettingsScreen(
                 ) {
                     Text(
                         text = stringResource(R.string.settings_privacy),
+                        style = MaterialTheme.typography.bodyLarge,
+                        fontWeight = FontWeight.Medium,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Icon(Icons.Filled.ChevronLeft, contentDescription = null)
+                }
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable(onClick = onOpenDiagnostics)
+                        .padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = stringResource(R.string.settings_diagnostics),
                         style = MaterialTheme.typography.bodyLarge,
                         fontWeight = FontWeight.Medium,
                         modifier = Modifier.weight(1f),

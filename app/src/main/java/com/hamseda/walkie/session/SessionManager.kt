@@ -19,6 +19,7 @@ import com.hamseda.walkie.transport.Transport
 import com.hamseda.walkie.transport.TransportError
 import com.hamseda.walkie.transport.TransportState
 import com.hamseda.walkie.transport.TransportType
+import com.hamseda.walkie.util.AppLog
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -147,7 +148,11 @@ class SessionManager(
 
     /** Outgoing session: connect the transport, then run the handshake. */
     fun startOutgoing(t: Transport, peer: PeerDevice, codecPref: Byte = CodecId.OPUS) {
-        if (_phase.value != Phase.IDLE) return
+        if (_phase.value != Phase.IDLE) {
+            AppLog.log(TAG, "startOutgoing ignored: phase=${_phase.value}")
+            return
+        }
+        AppLog.log(TAG, "outgoing session to ${peer.displayName} via ${t.type}")
         myCodecPref = codecPref
         attachTransport(t, peer.displayName)
         _phase.value = Phase.CONNECTING_TRANSPORT
@@ -165,7 +170,11 @@ class SessionManager(
 
     /** Incoming session: the transport is already listening for a peer. */
     fun acceptIncoming(t: Transport, codecPref: Byte = CodecId.OPUS) {
-        if (_phase.value != Phase.IDLE) return
+        if (_phase.value != Phase.IDLE) {
+            AppLog.log(TAG, "acceptIncoming ignored: phase=${_phase.value}")
+            return
+        }
+        AppLog.log(TAG, "listening for incoming via ${t.type}")
         myCodecPref = codecPref
         attachTransport(t, "")
         _phase.value = Phase.CONNECTING_TRANSPORT
@@ -511,6 +520,7 @@ class SessionManager(
 
     private fun enterSession() {
         _phase.value = Phase.IN_SESSION
+        AppLog.log(TAG, "session established (codec=$activeCodecId)")
         codec = AudioCodec.create(activeCodecId).also { it.reset() }
         jitter.reset()
         replay.reset()
@@ -758,6 +768,7 @@ class SessionManager(
     }
 
     private fun fail(error: SessionError) {
+        AppLog.log(TAG, "session failed: $error")
         scope.launch { teardown(error) }
     }
 

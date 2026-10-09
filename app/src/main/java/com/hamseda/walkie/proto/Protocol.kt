@@ -48,6 +48,12 @@ object Protocol {
     /** Connection establishment timeouts. */
     const val CONNECT_TIMEOUT_MS = 12_000
     const val SOCKET_TIMEOUT_MS = 8_000
+    /**
+     * How long to wait for the peer to accept a Wi-Fi Direct system
+     * invitation before failing visibly (the framework gives no callback
+     * when the peer simply ignores the prompt).
+     */
+    const val P2P_INVITE_TIMEOUT_MS = 30_000L
 
     /** Liveness ping interval / peer considered dead after this silence. */
     const val PING_INTERVAL_MS = 5_000L

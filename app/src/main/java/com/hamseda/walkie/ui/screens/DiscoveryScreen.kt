@@ -266,47 +266,25 @@ fun DiscoveryScreen(
                     )
                 }
             }
+            // ---- Mode A: wait for the peer to connect to this phone ----
             item {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
-                    val scanning = transportState == TransportState.DISCOVERING
-                    Button(
-                        onClick = { if (scanning) vm.stopScan() else doScan() },
-                        modifier = Modifier.weight(1f),
-                        shape = RoundedCornerShape(14.dp),
-                    ) {
-                        if (scanning) CircularProgressIndicator(
-                            modifier = Modifier.size(18.dp),
-                            strokeWidth = 2.dp,
-                            color = MaterialTheme.colorScheme.onPrimary,
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        Text(
-                            stringResource(
-                                if (scanning) R.string.btn_stop_scan else R.string.btn_scan,
-                            ),
-                            fontWeight = FontWeight.Bold,
-                        )
-                    }
-                    OutlinedButton(
-                        onClick = { doListen() },
-                        modifier = Modifier.weight(1f),
-                        shape = RoundedCornerShape(14.dp),
-                        enabled = phase == SessionManager.Phase.IDLE,
-                    ) {
-                        Text(stringResource(R.string.listening_title), fontWeight = FontWeight.Bold)
-                    }
-                }
-                if (phase != SessionManager.Phase.IDLE) {
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        text = stringResource(R.string.listening_hint),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
+                WaitCard(
+                    activeType = activeType,
+                    waiting = phase != SessionManager.Phase.IDLE &&
+                        transportState != TransportState.CONNECTING,
+                    onStartWaiting = { doListen() },
+                    onStopWaiting = { vm.cancelSession() },
+                )
+            }
+            // ---- Mode B: scan and connect to a peer ----
+            item {
+                ScanCard(
+                    scanning = transportState == TransportState.DISCOVERING,
+                    connecting = transportState == TransportState.CONNECTING,
+                    activeType = activeType,
+                    onScanToggle = { if (transportState == TransportState.DISCOVERING) vm.stopScan() else doScan() },
+                    onCancelConnect = { vm.cancelSession() },
+                )
             }
             transportError?.let { e ->
                 item {
@@ -326,6 +304,148 @@ fun DiscoveryScreen(
                         peer = peer,
                         connecting = transportState == TransportState.CONNECTING,
                         onConnect = { doConnectPeer(peer) },
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun WaitCard(
+    activeType: TransportType,
+    waiting: Boolean,
+    onStartWaiting: () -> Unit,
+    onStopWaiting: () -> Unit,
+) {
+    Card(
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+    ) {
+        Column(Modifier.padding(16.dp)) {
+            Text(
+                text = stringResource(R.string.mode_wait_title),
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                text = stringResource(
+                    if (activeType == TransportType.BLUETOOTH) R.string.mode_wait_bt_message
+                    else R.string.mode_wait_wifi_message,
+                ),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(12.dp))
+            if (waiting) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(20.dp),
+                        strokeWidth = 2.dp,
+                    )
+                    Spacer(Modifier.width(12.dp))
+                    Text(
+                        text = stringResource(R.string.mode_waiting),
+                        modifier = Modifier.weight(1f),
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    OutlinedButton(
+                        onClick = onStopWaiting,
+                        shape = RoundedCornerShape(12.dp),
+                    ) {
+                        Text(stringResource(R.string.btn_stop))
+                    }
+                }
+            } else {
+                Button(
+                    onClick = onStartWaiting,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(14.dp),
+                ) {
+                    Text(stringResource(R.string.mode_wait_start), fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ScanCard(
+    scanning: Boolean,
+    connecting: Boolean,
+    activeType: TransportType,
+    onScanToggle: () -> Unit,
+    onCancelConnect: () -> Unit,
+) {
+    Card(
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+    ) {
+        Column(Modifier.padding(16.dp)) {
+            Text(
+                text = stringResource(R.string.mode_scan_title),
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                text = stringResource(R.string.mode_scan_message),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(12.dp))
+            if (connecting) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(20.dp),
+                        strokeWidth = 2.dp,
+                    )
+                    Spacer(Modifier.width(12.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            text = stringResource(R.string.mode_connecting),
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        if (activeType == TransportType.WIFI_DIRECT) {
+                            Spacer(Modifier.height(2.dp))
+                            Text(
+                                text = stringResource(R.string.mode_connecting_wifi_hint),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                    OutlinedButton(
+                        onClick = onCancelConnect,
+                        shape = RoundedCornerShape(12.dp),
+                    ) {
+                        Text(stringResource(R.string.btn_cancel))
+                    }
+                }
+            } else {
+                Button(
+                    onClick = onScanToggle,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(14.dp),
+                ) {
+                    if (scanning) CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp),
+                        strokeWidth = 2.dp,
+                        color = MaterialTheme.colorScheme.onPrimary,
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        stringResource(
+                            if (scanning) R.string.btn_stop_scan else R.string.btn_scan,
+                        ),
+                        fontWeight = FontWeight.Bold,
                     )
                 }
             }

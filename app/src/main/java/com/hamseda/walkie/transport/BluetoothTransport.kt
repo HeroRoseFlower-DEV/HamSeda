@@ -14,6 +14,7 @@ import android.os.Build
 import android.util.Log
 import com.hamseda.walkie.proto.FramedSocket
 import com.hamseda.walkie.proto.Protocol
+import com.hamseda.walkie.util.AppLog
 import com.hamseda.walkie.util.PermissionHelper
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -116,15 +117,18 @@ class BluetoothTransport(private val context: Context) : Transport {
     override suspend fun startDiscovery() {
         val missing = PermissionHelper.missingBluetoothPermissions(context, forDiscovery = true)
         if (missing.isNotEmpty()) {
+            AppLog.log(TAG, "discovery blocked: missing permissions $missing")
             _error.value = TransportError.PermissionDenied(missing)
             return
         }
         val a = adapter ?: run {
+            AppLog.log(TAG, "discovery failed: no adapter")
             _state.value = TransportState.UNAVAILABLE
             _error.value = TransportError.Unsupported("bluetooth_unsupported")
             return
         }
         if (!a.isEnabled) {
+            AppLog.log(TAG, "discovery failed: radio disabled")
             _state.value = TransportState.UNAVAILABLE
             _error.value = TransportError.RadioDisabled(TransportType.BLUETOOTH)
             return
@@ -135,9 +139,11 @@ class BluetoothTransport(private val context: Context) : Transport {
         updateDiscoverable()
         if (a.isDiscovering) a.cancelDiscovery()
         if (a.startDiscovery()) {
+            AppLog.log(TAG, "discovery started")
             _state.value = TransportState.DISCOVERING
             _error.value = null
         } else {
+            AppLog.log(TAG, "discovery failed: startDiscovery() returned false")
             _error.value = TransportError.ConnectFailed("bluetooth discovery failed to start")
         }
     }
@@ -156,13 +162,17 @@ class BluetoothTransport(private val context: Context) : Transport {
     override suspend fun connect(peer: PeerDevice) {
         val missing = PermissionHelper.missingBluetoothPermissions(context, forDiscovery = false)
         if (missing.isNotEmpty()) {
+            AppLog.log(TAG, "connect blocked: missing permissions $missing")
             _error.value = TransportError.PermissionDenied(missing)
             return
         }
         mutex.withLock {
             if (_state.value == TransportState.CONNECTED ||
                 _state.value == TransportState.CONNECTING
-            ) return
+            ) {
+                AppLog.log(TAG, "connect ignored: already ${_state.value}")
+                return
+            }
             val a = adapter ?: run {
                 _error.value = TransportError.Unsupported("bluetooth_unsupported")
                 return
@@ -173,6 +183,7 @@ class BluetoothTransport(private val context: Context) : Transport {
             }
             _state.value = TransportState.CONNECTING
             _error.value = null
+            AppLog.log(TAG, "connecting to ${peer.displayName} (${peer.id})")
             try {
                 a.cancelDiscovery()
             } catch (_: SecurityException) {}
@@ -193,9 +204,11 @@ class BluetoothTransport(private val context: Context) : Transport {
                     withTimeout(Protocol.CONNECT_TIMEOUT_MS.toLong()) {
                         socket.connect()
                     }
+                    AppLog.log(TAG, "rfcomm connected to ${peer.id}")
                     onSocketReady(socket)
                     socket = null // owned by the transport now
                 } catch (e: Exception) {
+                    AppLog.log(TAG, "connect failed: ${e.javaClass.simpleName}: ${e.message}")
                     try {
                         socket?.close()
                     } catch (_: IOException) {}
@@ -242,10 +255,13 @@ class BluetoothTransport(private val context: Context) : Transport {
                 "HamSeda",
                 Protocol.BLUETOOTH_SERVICE_UUID,
             )
+            AppLog.log(TAG, "rfcomm server listening (uuid=${Protocol.BLUETOOTH_SERVICE_UUID})")
         } catch (e: IOException) {
+            AppLog.log(TAG, "rfcomm listen failed: ${e.message}")
             _error.value = TransportError.ConnectFailed("rfcomm listen failed: ${e.message}")
             return
         } catch (e: SecurityException) {
+            AppLog.log(TAG, "rfcomm listen denied: ${e.message}")
             _error.value = TransportError.PermissionDenied(listOf("bluetooth_connect"))
             return
         }
@@ -295,6 +311,12 @@ class BluetoothTransport(private val context: Context) : Transport {
         mutex.withLock {
             closeSocketLocked()
             btSocket = socket
+            val remote = try {
+                socket.remoteDevice?.address ?: "unknown"
+            } catch (_: SecurityException) {
+                "unknown"
+            }
+            AppLog.log(TAG, "socket ready (peer=$remote)")
             framed = FramedSocket.fromStreams(socket.inputStream, socket.outputStream) {
                 scope.launch { handleLost("peer closed the connection") }
             }
@@ -326,6 +348,7 @@ class BluetoothTransport(private val context: Context) : Transport {
 
     private suspend fun handleLost(reason: String) {
         mutex.withLock {
+            AppLog.log(TAG, "connection lost: $reason (was ${_state.value})")
             if (_state.value == TransportState.CONNECTED) {
                 _error.value = TransportError.ConnectionLost(reason)
             }

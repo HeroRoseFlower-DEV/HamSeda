@@ -26,6 +26,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.hamseda.walkie.data.SettingsRepository
 import com.hamseda.walkie.service.VoiceService
 import com.hamseda.walkie.session.SessionManager
+import com.hamseda.walkie.ui.screens.DiagnosticsScreen
 import com.hamseda.walkie.ui.screens.DiscoveryScreen
 import com.hamseda.walkie.ui.screens.HomeScreen
 import com.hamseda.walkie.ui.screens.PairingScreen
@@ -122,7 +123,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class Screen { HOME, DISCOVERY, PAIRING, SETTINGS, PRIVACY }
+private enum class Screen { HOME, DISCOVERY, PAIRING, SETTINGS, PRIVACY, DIAGNOSTICS }
 
 @Composable
 private fun HamSedaRoot(deps: VmDeps, onLanguageChanged: () -> Unit) {
@@ -157,8 +158,10 @@ private fun HamSedaRoot(deps: VmDeps, onLanguageChanged: () -> Unit) {
             deps = deps,
             onBack = { screen = Screen.HOME },
             onOpenPrivacy = { screen = Screen.PRIVACY },
+            onOpenDiagnostics = { screen = Screen.DIAGNOSTICS },
             onLanguageChanged = onLanguageChanged,
         )
         Screen.PRIVACY -> PrivacyScreen(onBack = { screen = Screen.SETTINGS })
+        Screen.DIAGNOSTICS -> DiagnosticsScreen(onBack = { screen = Screen.SETTINGS })
     }
 }
