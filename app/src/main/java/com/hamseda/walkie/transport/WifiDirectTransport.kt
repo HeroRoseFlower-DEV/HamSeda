@@ -27,6 +27,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -325,8 +326,15 @@ class WifiDirectTransport(private val context: Context) : Transport {
                 })
                 done.await()
             }
-        } catch (_: Exception) {
+        } catch (e: TimeoutCancellationException) {
             AppLog.log(TAG, "p2p connect attempt timed out")
+            false
+        } catch (e: CancellationException) {
+            // User/lifecycle cancellation must not be mistaken for a failed
+            // framework attempt and followed by a second connect request.
+            throw e
+        } catch (e: Exception) {
+            AppLog.log(TAG, "p2p connect request failed: ${e.javaClass.simpleName}: ${e.message}")
             false
         }
     }
@@ -365,12 +373,19 @@ class WifiDirectTransport(private val context: Context) : Transport {
                     mgr.requestConnectionInfo(ch) { info ->
                         deferred.complete(info)
                     }
+                } catch (e: CancellationException) {
+                    throw e
                 } catch (e: Exception) {
                     deferred.complete(null)
                 }
                 deferred.await()
             }
-        } catch (_: Exception) {
+        } catch (e: TimeoutCancellationException) {
+            null
+        } catch (e: CancellationException) {
+            // Do not swallow cancellation of the caller's operation.
+            throw e
+        } catch (e: Exception) {
             null
         }
     }
@@ -424,14 +439,36 @@ class WifiDirectTransport(private val context: Context) : Transport {
                         }
                         AppLog.log(TAG, "p2p socket established")
                         onSocketReady(socket)
+                    } catch (e: TimeoutCancellationException) {
+                        // The bounded socket setup actually timed out. A
+                        // concurrent disconnect/group-loss may already have
+                        // moved the transport to IDLE, so only publish failure
+                        // while this socket setup is still the active state.
+                        AppLog.log(TAG, "p2p socket setup timed out")
+                        mutex.withLock {
+                            if (_state.value == TransportState.AUTHENTICATING) {
+                                closeSocketLocked()
+                                _error.value = TransportError.ConnectFailed(
+                                    "socket setup timed out",
+                                )
+                                _state.value = TransportState.FAILED
+                            }
+                        }
+                    } catch (e: CancellationException) {
+                        // closeSocketLocked() intentionally cancels this job
+                        // during disconnect/group loss. Propagate it so the
+                        // cancelled operation cannot resurrect FAILED state.
+                        throw e
                     } catch (e: Exception) {
                         AppLog.log(TAG, "p2p socket failed: ${e.javaClass.simpleName}: ${e.message}")
                         mutex.withLock {
-                            closeSocketLocked()
-                            _error.value = TransportError.ConnectFailed(
-                                "socket failed: ${e.message}",
-                            )
-                            _state.value = TransportState.FAILED
+                            if (_state.value == TransportState.AUTHENTICATING) {
+                                closeSocketLocked()
+                                _error.value = TransportError.ConnectFailed(
+                                    "socket failed: ${e.message}",
+                                )
+                                _state.value = TransportState.FAILED
+                            }
                         }
                     }
                 }
