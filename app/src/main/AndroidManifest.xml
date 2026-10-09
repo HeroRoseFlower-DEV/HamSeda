@@ -34,14 +34,14 @@
         android:name="android.permission.NEARBY_WIFI_DEVICES"
         android:usesPermissionFlags="neverForLocation" />
 
-    <!-- Wi-Fi Direct discovery on Android 10–12 -->
+    <!-- Wi-Fi Direct discovery on Android 10–12 (both declared: lint
+         requires COARSE alongside FINE) -->
     <uses-permission
         android:name="android.permission.ACCESS_FINE_LOCATION"
         android:maxSdkVersion="32" />
-    <!-- Wi-Fi Direct discovery on Android 8–9 -->
     <uses-permission
         android:name="android.permission.ACCESS_COARSE_LOCATION"
-        android:maxSdkVersion="28" />
+        android:maxSdkVersion="32" />
 
     <!-- Bluetooth Classic on Android 12+ -->
     <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
