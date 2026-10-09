@@ -62,6 +62,9 @@ class BluetoothTransport(private val context: Context) : Transport {
     private val _peers = MutableStateFlow<List<PeerDevice>>(emptyList())
     override val peers: StateFlow<List<PeerDevice>> = _peers.asStateFlow()
 
+    private val _discoverable = MutableStateFlow(false)
+    override val discoverable: StateFlow<Boolean> = _discoverable.asStateFlow()
+
     private val _incomingFrames = MutableSharedFlow<ByteArray>(extraBufferCapacity = 64)
     override val incomingFrames: SharedFlow<ByteArray> = _incomingFrames.asSharedFlow()
 
@@ -83,6 +86,24 @@ class BluetoothTransport(private val context: Context) : Transport {
     override fun availability(): Availability {
         val a = adapter ?: return Availability(false, false, "bluetooth_unsupported")
         return Availability(true, a.isEnabled, if (a.isEnabled) "" else "bluetooth_disabled")
+    }
+
+    override fun clearError() {
+        _error.value = null
+    }
+
+    /**
+     * Whether this phone is currently visible to other phones' scans.
+     * Classic discovery only finds *discoverable* devices — without this,
+     * two phones running the app scan forever and never see each other.
+     */
+    @SuppressLint("MissingPermission")
+    private fun updateDiscoverable() {
+        _discoverable.value = try {
+            adapter?.scanMode == BluetoothAdapter.SCAN_MODE_CONNECTABLE_DISCOVERABLE
+        } catch (_: SecurityException) {
+            false
+        }
     }
 
     // ------------------------------------------------------------ discovery
@@ -107,6 +128,7 @@ class BluetoothTransport(private val context: Context) : Transport {
         registerReceiver()
         found.clear()
         _peers.value = emptyList()
+        updateDiscoverable()
         if (a.isDiscovering) a.cancelDiscovery()
         if (a.startDiscovery()) {
             _state.value = TransportState.DISCOVERING
@@ -202,6 +224,7 @@ class BluetoothTransport(private val context: Context) : Transport {
                 return
             }
             if (acceptThread?.isAlive == true) return
+            updateDiscoverable()
             startAcceptLocked(a)
             Log.i(TAG, "listening for incoming RFCOMM connections")
         }
@@ -379,6 +402,9 @@ class BluetoothTransport(private val context: Context) : Transport {
                         _state.value = TransportState.IDLE
                     }
                 }
+                BluetoothAdapter.ACTION_SCAN_MODE_CHANGED -> {
+                    updateDiscoverable()
+                }
             }
         }
     }
@@ -388,6 +414,7 @@ class BluetoothTransport(private val context: Context) : Transport {
         val filter = IntentFilter().apply {
             addAction(BluetoothDevice.ACTION_FOUND)
             addAction(BluetoothAdapter.ACTION_DISCOVERY_FINISHED)
+            addAction(BluetoothAdapter.ACTION_SCAN_MODE_CHANGED)
         }
         try {
             if (Build.VERSION.SDK_INT >= 33) {

@@ -69,6 +69,16 @@ class DiscoveryViewModel(private val deps: VmDeps) : ViewModel() {
             deps.transports.transportOf(type).error
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
+    /** True when this phone can currently be found by the peer's scan. */
+    val discoverable: StateFlow<Boolean> =
+        deps.transports.activeType.flatMapLatest { type ->
+            deps.transports.transportOf(type).discoverable
+        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
+
+    fun clearTransportError() {
+        deps.transports.active.clearError()
+    }
+
     val availability: StateFlow<com.hamseda.walkie.transport.Availability?> =
         deps.transports.activeType.flatMapLatest { type ->
             flowOf(deps.transports.transportOf(type).availability())

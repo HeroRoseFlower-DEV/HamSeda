@@ -71,10 +71,21 @@ interface Transport {
     val error: StateFlow<TransportError?>
     val peers: StateFlow<List<PeerDevice>>
 
+    /**
+     * True when this device can currently be *found* by a peer's scan.
+     * Bluetooth Classic requires explicit discoverability
+     * ([BluetoothAdapter.ACTION_REQUEST_DISCOVERABLE]); Wi-Fi Direct
+     * P2P discovery needs none, so it reports true.
+     */
+    val discoverable: StateFlow<Boolean>
+
     /** Frames received from the connected peer (complete encoded frames). */
     val incomingFrames: SharedFlow<ByteArray>
 
     fun availability(): Availability
+
+    /** Clears the last surfaced [error] (e.g. after the user dismisses it). */
+    fun clearError()
 
     /** Starts peer discovery; results flow into [peers]. */
     suspend fun startDiscovery()

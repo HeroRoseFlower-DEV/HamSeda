@@ -80,6 +80,7 @@ fun DiscoveryScreen(
     val transportError by vm.transportError.collectAsStateWithLifecycle()
     val availability by vm.availability.collectAsStateWithLifecycle()
     val phase by vm.phase.collectAsStateWithLifecycle()
+    val discoverable by vm.discoverable.collectAsStateWithLifecycle()
 
     val context = LocalContext.current
     var pendingAction by remember { mutableStateOf<(() -> Unit)?>(null) }
@@ -90,6 +91,30 @@ fun DiscoveryScreen(
         pendingAction?.invoke()
         pendingAction = null
         vm.refreshAvailability()
+    }
+    // System dialog that makes this phone visible to Bluetooth scans.
+    // Needs BLUETOOTH_ADVERTISE on API 31+ (requested via the permission
+    // flow before listen/scan).
+    val discoverableLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) { result ->
+        if (result.resultCode == android.app.Activity.RESULT_OK) {
+            pendingAction?.invoke()
+        }
+        pendingAction = null
+    }
+
+    fun requestDiscoverable(then: () -> Unit) {
+        val intent = android.content.Intent(
+            android.bluetooth.BluetoothAdapter.ACTION_REQUEST_DISCOVERABLE,
+        ).apply {
+            putExtra(
+                android.bluetooth.BluetoothAdapter.EXTRA_DISCOVERABLE_DURATION,
+                300, // max the platform honors
+            )
+        }
+        pendingAction = then
+        discoverableLauncher.launch(intent)
     }
 
     fun missingForScan(): List<String> = if (activeType == TransportType.WIFI_DIRECT) {
@@ -130,6 +155,12 @@ fun DiscoveryScreen(
         if (missing.isNotEmpty()) {
             pendingAction = { vm.listenForIncoming() }
             permLauncher.launch(missing.toTypedArray())
+            return
+        }
+        // Bluetooth classic only finds *discoverable* phones: make this
+        // phone visible first, then open the RFCOMM server socket.
+        if (activeType == TransportType.BLUETOOTH && !discoverable) {
+            requestDiscoverable { vm.listenForIncoming() }
         } else {
             vm.listenForIncoming()
         }
@@ -191,6 +222,24 @@ fun DiscoveryScreen(
                     activeType = activeType,
                     onRetry = { vm.refreshAvailability() },
                 )
+            }
+            // Bluetooth classic discovery only finds *discoverable* phones.
+            // Without this, two phones scan forever and never see each other.
+            if (activeType == TransportType.BLUETOOTH) {
+                item {
+                    DiscoverabilityCard(
+                        discoverable = discoverable,
+                        onMakeVisible = {
+                            val missing = missingForConnect()
+                            if (missing.isNotEmpty()) {
+                                pendingAction = { requestDiscoverable {} }
+                                permLauncher.launch(missing.toTypedArray())
+                            } else {
+                                requestDiscoverable {}
+                            }
+                        },
+                    )
+                }
             }
             // Permission rationale (shown before the system dialog when needed).
             // On API 37+, Wi-Fi Direct also needs local-network access to open
@@ -268,7 +317,7 @@ fun DiscoveryScreen(
                 item {
                     ErrorBanner(
                         message = transportErrorMessage(e),
-                        onDismiss = { /* transport errors clear on next action */ },
+                        onDismiss = { vm.clearTransportError() },
                     )
                 }
             }
@@ -441,8 +490,69 @@ private fun transportErrorMessage(e: com.hamseda.walkie.transport.TransportError
                 else R.string.err_radio_disabled_bt,
             )
         is com.hamseda.walkie.transport.TransportError.ConnectFailed ->
-            stringResource(R.string.err_transport_lost)
+            stringResource(R.string.err_connect_failed)
         is com.hamseda.walkie.transport.TransportError.ConnectionLost ->
             stringResource(R.string.err_transport_lost)
-        else -> stringResource(R.string.err_transport_lost)
+        is com.hamseda.walkie.transport.TransportError.PeerNotFound ->
+            stringResource(R.string.err_peer_not_found)
+        is com.hamseda.walkie.transport.TransportError.HandshakeTimeout ->
+            stringResource(R.string.err_handshake_timeout)
+        is com.hamseda.walkie.transport.TransportError.Unsupported ->
+            stringResource(R.string.err_unsupported)
     }
+
+@Composable
+private fun DiscoverabilityCard(
+    discoverable: Boolean,
+    onMakeVisible: () -> Unit,
+) {
+    Card(
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = if (discoverable) MaterialTheme.colorScheme.primaryContainer
+            else MaterialTheme.colorScheme.surfaceVariant,
+        ),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                Icons.Filled.Bluetooth,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+            )
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    text = stringResource(
+                        if (discoverable) R.string.bt_visible_title
+                        else R.string.bt_hidden_title,
+                    ),
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = stringResource(
+                        if (discoverable) R.string.bt_visible_message
+                        else R.string.bt_hidden_message,
+                    ),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            if (!discoverable) {
+                Spacer(Modifier.width(8.dp))
+                Button(
+                    onClick = onMakeVisible,
+                    shape = RoundedCornerShape(12.dp),
+                ) {
+                    Text(stringResource(R.string.bt_make_visible))
+                }
+            }
+        }
+    }
+}

@@ -34,6 +34,11 @@
     <string name="btn_stop_scan">توقف جستجو</string>
     <string name="discovery_no_peers">دستگاهی پیدا نشد</string>
     <string name="discovery_no_peers_hint">مطمئن شو هم‌صحبت هم همین صفحه را باز کرده و رادیوی مناسب (وای‌فای/بلوتوث) روشن است.</string>
+    <string name="bt_hidden_title">این گوشی قابل مشاهده نیست</string>
+    <string name="bt_hidden_message">جستجوی بلوتوث فقط گوشی‌های قابل مشاهده را پیدا می‌کند. این گوشی را قابل مشاهده کن تا هم‌صحبت بتواند آن را پیدا کند.</string>
+    <string name="bt_visible_title">این گوشی قابل مشاهده است</string>
+    <string name="bt_visible_message">هم‌صحبت اکنون می‌تواند با جستجوی بلوتوث این گوشی را پیدا کند.</string>
+    <string name="bt_make_visible">قابل مشاهده کن</string>
     <string name="peer_connect">اتصال امن</string>
     <string name="listening_title">منتظر اتصال هم‌صحبت باش</string>
     <string name="listening_hint">اگر هم‌صحبت به تو وصل شود، درخواست امن همین‌جا نمایش داده می‌شود.</string>
@@ -97,6 +102,9 @@
     <string name="err_auth_mismatch">تأیید امنیتی ناموفق بود؛ اتصال قطع شد.</string>
     <string name="err_peer_busy">هم‌صحبت دارد صحبت می‌کند؛ کمی صبر کن.</string>
     <string name="err_transport_lost">اتصال قطع شد.</string>
+    <string name="err_connect_failed">اتصال به آن گوشی برقرار نشد. مطمئن شوید گوشی مقابل در حالت شنیدن است و نزدیک است، سپس دوباره تلاش کنید.</string>
+    <string name="err_peer_not_found">آن گوشی دیگر قابل مشاهده نیست. دوباره جستجو کنید.</string>
+    <string name="err_handshake_timeout">گوشی مقابل به‌موقع پاسخ نداد. دوباره تلاش کنید.</string>
     <string name="err_peer_timeout">هم‌صحبت پاسخ نداد؛ اتصال قطع شد.</string>
     <string name="err_protocol">خطای پروتکل؛ اتصال قطع شد.</string>
     <string name="err_mic">میکروفون در دسترس نیست.</string>

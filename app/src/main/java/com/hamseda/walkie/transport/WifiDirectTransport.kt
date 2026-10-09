@@ -69,6 +69,11 @@ class WifiDirectTransport(private val context: Context) : Transport {
     private val _peers = MutableStateFlow<List<PeerDevice>>(emptyList())
     override val peers: StateFlow<List<PeerDevice>> = _peers.asStateFlow()
 
+    // Wi-Fi Direct P2P discovery finds nearby devices without an explicit
+    // "discoverable" step, so this is always true.
+    override val discoverable: StateFlow<Boolean> =
+        MutableStateFlow(true).asStateFlow()
+
     private val _incomingFrames = MutableSharedFlow<ByteArray>(extraBufferCapacity = 64)
     override val incomingFrames: SharedFlow<ByteArray> = _incomingFrames.asSharedFlow()
 
@@ -108,6 +113,10 @@ class WifiDirectTransport(private val context: Context) : Transport {
         }
         if (!ensureInit()) return Availability(false, false, "wifi_direct_init_failed")
         return Availability(true, p2pEnabled, if (p2pEnabled) "" else "wifi_direct_disabled")
+    }
+
+    override fun clearError() {
+        _error.value = null
     }
 
     // ------------------------------------------------------------ discovery

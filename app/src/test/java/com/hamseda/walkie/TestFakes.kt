@@ -34,11 +34,17 @@ class LoopbackTransport(
     override val error: StateFlow<TransportError?> = _error.asStateFlow()
     private val _peers = MutableStateFlow<List<PeerDevice>>(emptyList())
     override val peers: StateFlow<List<PeerDevice>> = _peers.asStateFlow()
+    override val discoverable: StateFlow<Boolean> =
+        MutableStateFlow(true).asStateFlow()
     private val _incoming = MutableSharedFlow<ByteArray>(extraBufferCapacity = 256)
     override val incomingFrames: SharedFlow<ByteArray> = _incoming.asSharedFlow()
 
     fun setState(s: TransportState) {
         _state.value = s
+    }
+
+    override fun clearError() {
+        _error.value = null
     }
 
     override fun availability() = Availability(true, true)
