@@ -382,6 +382,15 @@ class WifiDirectTransport(private val context: Context) : Transport {
         scope.launch {
             mutex.withLock {
                 if (framed != null) return@withLock // already have a socket
+                // Connection-changed broadcasts may be duplicated while the
+                // group is forming. Do not cancel/restart an active TCP
+                // accept/connect job for the same group.
+                if (_state.value == TransportState.AUTHENTICATING &&
+                    socketJob?.isActive == true
+                ) {
+                    AppLog.log(TAG, "duplicate group-formed event ignored; socket setup is already running")
+                    return@withLock
+                }
                 connectWatchdog?.cancel()
                 connectWatchdog = null
                 // The P2P group socket is a local-network connection: on
