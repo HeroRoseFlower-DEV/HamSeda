@@ -124,7 +124,7 @@
     <string name="err_peer_not_found">آن گوشی دیگر قابل مشاهده نیست. دوباره جستجو کنید.</string>
     <string name="err_handshake_timeout">گوشی مقابل به‌موقع پاسخ نداد. دوباره تلاش کنید.</string>
     <string name="err_peer_timeout">هم‌صحبت پاسخ نداد؛ اتصال قطع شد.</string>
-    <string name="err_protocol">خطای پروتکل؛ اتصال قطع شد.</string>
+    <string name="err_protocol">پیام دست‌دهی گوشی مقابل ناسازگار یا نامعتبر است. آخرین نسخهٔ یکسان هم‌صدا را روی هر دو گوشی نصب کن و دوباره تلاش کن.</string>
     <string name="err_mic">میکروفون در دسترس نیست.</string>
     <string name="err_peer_rejected">هم‌صحبت اتصال را رد کرد.</string>
     <string name="err_radio_disabled_wifi">وای‌فای دایرکت خاموش است؛ آن را روشن کن.</string>
