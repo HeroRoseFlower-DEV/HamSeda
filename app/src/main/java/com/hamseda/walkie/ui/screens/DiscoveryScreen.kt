@@ -87,29 +87,30 @@ fun DiscoveryScreen(
     val permLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
     ) {
-        // Re-run whatever the user tried to do; transports re-check.
-        pendingAction?.invoke()
+        // Clear the old action BEFORE invoking it: the action can open a
+        // second system prompt and install a new pending action.
+        val action = pendingAction
         pendingAction = null
+        action?.invoke()
         vm.refreshAvailability()
     }
     // System dialog that makes this phone visible to Bluetooth scans.
-    // Needs BLUETOOTH_ADVERTISE on API 31+ (requested via the permission
-    // flow before listen/scan).
+    // BLUETOOTH_ADVERTISE is requested only when this dialog is needed.
     val discoverableLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
     ) { result ->
+        val action = pendingAction
+        pendingAction = null
         if (result.resultCode == android.app.Activity.RESULT_OK) {
-            pendingAction?.invoke()
+            action?.invoke()
         } else {
-            // L5: declining the dialog silently dropped the pending action.
-            // Tell the user why nothing happened.
+            // Declining visibility leaves the app in listen-not-ready state.
             android.widget.Toast.makeText(
                 context,
                 context.getString(R.string.discoverable_declined),
                 android.widget.Toast.LENGTH_LONG,
             ).show()
         }
-        pendingAction = null
     }
 
     fun requestDiscoverable(then: () -> Unit) {
@@ -161,13 +162,23 @@ fun DiscoveryScreen(
     fun doListen() {
         val missing = missingForConnect()
         if (missing.isNotEmpty()) {
-            pendingAction = { vm.listenForIncoming() }
+            // Re-enter this whole flow after permission grant so Bluetooth
+            // discoverability is still requested before opening the listener.
+            pendingAction = { doListen() }
             permLauncher.launch(missing.toTypedArray())
             return
         }
-        // Bluetooth classic only finds *discoverable* phones: make this
-        // phone visible first, then open the RFCOMM server socket.
+        // Bluetooth Classic scans only find discoverable phones. Request the
+        // additional permission only if this screen needs to make the phone
+        // visible; outgoing scans/connections do not need ADVERTISE.
         if (activeType == TransportType.BLUETOOTH && !discoverable) {
+            val missingAdvertise =
+                PermissionHelper.missingBluetoothAdvertisePermission(context)
+            if (missingAdvertise.isNotEmpty()) {
+                pendingAction = { doListen() }
+                permLauncher.launch(missingAdvertise.toTypedArray())
+                return
+            }
             requestDiscoverable { vm.listenForIncoming() }
         } else {
             vm.listenForIncoming()

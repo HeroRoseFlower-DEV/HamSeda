@@ -16,7 +16,7 @@ import androidx.core.content.ContextCompat
  *
  * Bluetooth Classic:
  * - API 31+: BLUETOOTH_SCAN (discovery), BLUETOOTH_CONNECT (connect + device
- *   info), BLUETOOTH_ADVERTISE (RFCOMM listen/advertise)
+ *   info), BLUETOOTH_ADVERTISE only when this phone is made discoverable.
  * - API ≤30: BLUETOOTH + BLUETOOTH_ADMIN (install-time) and location only
  *   where the platform required it for discovery (API 23–30)
  *
@@ -48,14 +48,22 @@ object PermissionHelper {
         val needed = mutableListOf<String>()
         if (Build.VERSION.SDK_INT >= 31) {
             if (forDiscovery) needed += Manifest.permission.BLUETOOTH_SCAN
+            // Connecting to/listening for RFCOMM peers and reading their
+            // device metadata needs CONNECT. ADVERTISE is separate and is
+            // requested only immediately before this phone is made visible.
             needed += Manifest.permission.BLUETOOTH_CONNECT
-            needed += Manifest.permission.BLUETOOTH_ADVERTISE
         } else if (forDiscovery && Build.VERSION.SDK_INT >= 23) {
             // API 23–30 required location for classic discovery.
             needed += Manifest.permission.ACCESS_COARSE_LOCATION
         }
         return needed.filter { !isGranted(context, it) }
     }
+
+    /** Runtime permission needed only when asking Android to make this phone discoverable. */
+    fun missingBluetoothAdvertisePermission(context: Context): List<String> =
+        if (Build.VERSION.SDK_INT >= 31) {
+            listOf(Manifest.permission.BLUETOOTH_ADVERTISE).filter { !isGranted(context, it) }
+        } else emptyList()
 
     fun missingMicrophonePermission(context: Context): List<String> =
         listOf(Manifest.permission.RECORD_AUDIO).filter { !isGranted(context, it) }
