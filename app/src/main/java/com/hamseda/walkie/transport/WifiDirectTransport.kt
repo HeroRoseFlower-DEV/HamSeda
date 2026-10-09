@@ -166,7 +166,11 @@ class WifiDirectTransport(private val context: Context) : Transport {
             }
 
             override fun onFailure(reason: Int) {
-                _error.value = TransportError.ConnectFailed("discovery failed: ${reasonName(reason)}")
+                val name = reasonName(reason)
+                AppLog.log(TAG, "p2p discovery failed: $name (code=$reason)")
+                _error.value = TransportError.ConnectFailed(
+                    "discovery failed: $name (code=$reason)",
+                )
                 _state.value = TransportState.IDLE
             }
         })

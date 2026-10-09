@@ -78,6 +78,11 @@ class BluetoothTransport(private val context: Context) : Transport {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val mutex = Mutex()
 
+    // Serializes scan starts with Stop/disconnect so a delayed retry cannot
+    // resurrect discovery after the user has explicitly stopped it.
+    private val discoveryLock = Any()
+    private var discoveryGeneration = 0L
+
     private val adapter: BluetoothAdapter? by lazy {
         (context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
     }
@@ -181,50 +186,59 @@ class BluetoothTransport(private val context: Context) : Transport {
 
     @SuppressLint("MissingPermission")
     override suspend fun startDiscovery() {
+        val attempt = synchronized(discoveryLock) { ++discoveryGeneration }
         val missing = PermissionHelper.missingBluetoothPermissions(context, forDiscovery = true)
         if (missing.isNotEmpty()) {
             AppLog.log(TAG, "discovery blocked: missing permissions $missing")
-            _error.value = TransportError.PermissionDenied(missing)
+            updateDiscoveryOutcome(attempt, error = TransportError.PermissionDenied(missing))
             return
         }
         val a = adapter ?: run {
             AppLog.log(TAG, "discovery failed: no adapter")
-            _state.value = TransportState.UNAVAILABLE
-            _error.value = TransportError.Unsupported("bluetooth_unsupported")
+            updateDiscoveryOutcome(
+                attempt,
+                state = TransportState.UNAVAILABLE,
+                error = TransportError.Unsupported("bluetooth_unsupported"),
+            )
             return
         }
         if (!a.isEnabled) {
             AppLog.log(TAG, "discovery failed: radio disabled")
-            _state.value = TransportState.UNAVAILABLE
-            _error.value = TransportError.RadioDisabled(TransportType.BLUETOOTH)
+            updateDiscoveryOutcome(
+                attempt,
+                state = TransportState.UNAVAILABLE,
+                error = TransportError.RadioDisabled(TransportType.BLUETOOTH),
+            )
             return
         }
+        if (!isCurrentDiscovery(attempt)) return
         registerReceiver()
-        found.clear()
-        _peers.value = emptyList()
+        synchronized(discoveryLock) {
+            if (attempt != discoveryGeneration) return
+            found.clear()
+            _peers.value = emptyList()
+        }
         updateDiscoverable()
         // Paired phones are connectable without discovery — list them even
         // if the discovery scan itself fails on this device.
         refreshBondedPeers()
-        // If a previous discovery is still running, keep it instead of
-        // cancel+restart: hammering startDiscovery() right after a cancel
-        // makes the stack return false.
-        if (a.isDiscovering) {
-            AppLog.log(TAG, "discovery already in progress; keeping it")
-            _state.value = TransportState.DISCOVERING
-            _error.value = null
-            return
+
+        when (tryStartDiscovery(a, attempt)) {
+            DiscoveryStartResult.STARTED -> {
+                AppLog.log(TAG, "discovery started")
+                return
+            }
+            DiscoveryStartResult.ALREADY_ACTIVE -> {
+                AppLog.log(TAG, "discovery already in progress; keeping it")
+                return
+            }
+            DiscoveryStartResult.CANCELLED -> return
+            DiscoveryStartResult.FAILED -> Unit
         }
-        AppLog.log(TAG, "starting discovery (adapterState=${a.state})")
-        if (a.startDiscovery()) {
-            AppLog.log(TAG, "discovery started")
-            _state.value = TransportState.DISCOVERING
-            _error.value = null
-            return
-        }
+
         // Bluetooth service readiness can lag behind STATE_ON on some OEM
-        // builds. Retry with bounded backoff rather than a single 1-second
-        // retry; keep every failure visible in diagnostics.
+        // builds. Retry with bounded backoff, but abandon this generation if
+        // the user stops scanning, disconnects, or starts a newer scan.
         val retryDelaysMs = longArrayOf(750L, 1_500L, 3_000L)
         for ((index, waitMs) in retryDelaysMs.withIndex()) {
             AppLog.log(
@@ -233,19 +247,33 @@ class BluetoothTransport(private val context: Context) : Transport {
                     "(adapterState=${a.state}, discovering=${a.isDiscovering})",
             )
             delay(waitMs)
+            if (!isCurrentDiscovery(attempt)) {
+                AppLog.log(TAG, "discovery retry cancelled because the request is no longer current")
+                return
+            }
             if (a.state != BluetoothAdapter.STATE_ON) {
                 AppLog.log(TAG, "discovery retry stopped: adapter no longer STATE_ON (state=${a.state})")
-                _state.value = TransportState.UNAVAILABLE
-                _error.value = TransportError.RadioDisabled(TransportType.BLUETOOTH)
+                updateDiscoveryOutcome(
+                    attempt,
+                    state = TransportState.UNAVAILABLE,
+                    error = TransportError.RadioDisabled(TransportType.BLUETOOTH),
+                )
                 return
             }
-            if (a.isDiscovering || a.startDiscovery()) {
-                AppLog.log(TAG, if (a.isDiscovering) "discovery active after retry wait" else "discovery started on retry ${index + 1}")
-                _state.value = TransportState.DISCOVERING
-                _error.value = null
-                return
+            when (tryStartDiscovery(a, attempt)) {
+                DiscoveryStartResult.STARTED -> {
+                    AppLog.log(TAG, "discovery started on retry ${index + 1}")
+                    return
+                }
+                DiscoveryStartResult.ALREADY_ACTIVE -> {
+                    AppLog.log(TAG, "discovery became active during retry wait")
+                    return
+                }
+                DiscoveryStartResult.CANCELLED -> return
+                DiscoveryStartResult.FAILED -> Unit
             }
         }
+        if (!isCurrentDiscovery(attempt)) return
         val scanPermissionGranted = if (Build.VERSION.SDK_INT >= 31) {
             PermissionHelper.isGranted(context, android.Manifest.permission.BLUETOOTH_SCAN)
         } else null
@@ -263,16 +291,67 @@ class BluetoothTransport(private val context: Context) : Transport {
                 "coarseLocationGranted=$coarseLocationGranted, scanMode=${runCatching { a.scanMode }.getOrNull()}, " +
                 "bondedCandidates=${bondedCache.size})",
         )
-        _error.value = TransportError.ConnectFailed("bluetooth discovery failed to start; retry or restart Bluetooth")
-        _state.value = TransportState.FAILED
+        updateDiscoveryOutcome(
+            attempt,
+            state = TransportState.FAILED,
+            error = TransportError.ConnectFailed(
+                "bluetooth discovery failed to start; retry or restart Bluetooth",
+            ),
+        )
     }
 
+    private enum class DiscoveryStartResult {
+        STARTED,
+        ALREADY_ACTIVE,
+        FAILED,
+        CANCELLED,
+    }
+
+    /** Start scan + commit the state atomically with Stop/disconnect. */
     @SuppressLint("MissingPermission")
+    private fun tryStartDiscovery(
+        adapter: BluetoothAdapter,
+        attempt: Long,
+    ): DiscoveryStartResult = synchronized(discoveryLock) {
+        if (attempt != discoveryGeneration) return@synchronized DiscoveryStartResult.CANCELLED
+        val alreadyActive = adapter.isDiscovering
+        if (!alreadyActive && !adapter.startDiscovery()) {
+            return@synchronized DiscoveryStartResult.FAILED
+        }
+        _state.value = TransportState.DISCOVERING
+        _error.value = null
+        if (alreadyActive) DiscoveryStartResult.ALREADY_ACTIVE else DiscoveryStartResult.STARTED
+    }
+
+    private fun isCurrentDiscovery(attempt: Long): Boolean =
+        synchronized(discoveryLock) { attempt == discoveryGeneration }
+
+    private fun updateDiscoveryOutcome(
+        attempt: Long,
+        state: TransportState? = null,
+        error: TransportError? = null,
+    ): Boolean = synchronized(discoveryLock) {
+        if (attempt != discoveryGeneration) return@synchronized false
+        state?.let { _state.value = it }
+        _error.value = error
+        true
+    }
+
     override suspend fun stopDiscovery() {
-        try {
-            adapter?.cancelDiscovery()
-        } catch (_: SecurityException) {}
-        if (_state.value == TransportState.DISCOVERING) _state.value = TransportState.IDLE
+        invalidateDiscovery()
+    }
+
+    /** Invalidates pending retries before cancelling the platform scan. */
+    private fun invalidateDiscovery() {
+        synchronized(discoveryLock) {
+            discoveryGeneration++
+            try {
+                adapter?.cancelDiscovery()
+            } catch (_: Exception) {}
+            if (_state.value == TransportState.DISCOVERING) {
+                _state.value = TransportState.IDLE
+            }
+        }
     }
 
     // ------------------------------------------------------------- connect
@@ -530,6 +609,7 @@ class BluetoothTransport(private val context: Context) : Transport {
     }
 
     override suspend fun disconnect() {
+        invalidateDiscovery()
         mutex.withLock {
             closeSocketLocked()
             stopAcceptLocked()
@@ -541,6 +621,7 @@ class BluetoothTransport(private val context: Context) : Transport {
     }
 
     override fun close() {
+        invalidateDiscovery()
         scope.launch { disconnect() }.invokeOnCompletion {
             unregisterReceiver()
             scope.cancel()
@@ -588,14 +669,28 @@ class BluetoothTransport(private val context: Context) : Transport {
                     publishPeers()
                 }
                 BluetoothAdapter.ACTION_DISCOVERY_STARTED -> {
-                    AppLog.log(TAG, "system Bluetooth discovery started")
-                    _state.value = TransportState.DISCOVERING
-                    _error.value = null
+                    // This is a system-wide inquiry broadcast and may be
+                    // triggered by another app; our own startDiscovery()
+                    // call is responsible for setting our requested state.
+                    AppLog.log(TAG, "system Bluetooth discovery started (appState=${_state.value})")
                 }
                 BluetoothAdapter.ACTION_DISCOVERY_FINISHED -> {
-                    AppLog.log(TAG, "system Bluetooth discovery finished (visiblePeers=${_peers.value.size})")
-                    if (_state.value == TransportState.DISCOVERING) {
-                        _state.value = TransportState.IDLE
+                    val stillDiscovering = try {
+                        adapter?.isDiscovering == true
+                    } catch (_: SecurityException) {
+                        false
+                    }
+                    AppLog.log(
+                        TAG,
+                        "system Bluetooth discovery finished (visiblePeers=${_peers.value.size}, " +
+                            "stillDiscovering=$stillDiscovering)",
+                    )
+                    synchronized(discoveryLock) {
+                        // An older finish broadcast must not clear state if a
+                        // newer inquiry is already running.
+                        if (!stillDiscovering && _state.value == TransportState.DISCOVERING) {
+                            _state.value = TransportState.IDLE
+                        }
                     }
                 }
                 BluetoothAdapter.ACTION_SCAN_MODE_CHANGED -> {

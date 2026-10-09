@@ -130,6 +130,7 @@ class SessionManager(
     private var myRole: Byte = 0
     private var keyExchangeSent = false
     private var keyConfirmSent = false
+    private var peerHelloReceived = false
     /** True once beginHandshake ran for the current attempt (re-entrancy guard). */
     private var handshakeStarted = false
     private var selfSasConfirmed = false
@@ -439,6 +440,8 @@ class SessionManager(
         myKeyPair = null
         peerPubBytes = null; peerNonce = null
         keyExchangeSent = false; keyConfirmSent = false
+        peerHelloReceived = false
+        pendingKeyConfirmFrame = null
         handshakeStarted = false
         selfSasConfirmed = false
         _sasCode.value = null
@@ -492,6 +495,8 @@ class SessionManager(
         // state flow, once via the post-attach check below).
         if (handshakeStarted) return
         handshakeStarted = true
+        peerHelloReceived = false
+        pendingKeyConfirmFrame = null
         _phase.value = Phase.HANDSHAKE
         startHandshakeDeadline()
         myKeyPair = SessionCrypto.generateEphemeralKeyPair()
@@ -580,8 +585,25 @@ class SessionManager(
     }
 
     private fun handleHandshakeFrame(frame: Frame) {
+        // A valid HELLO is the protocol preamble. TCP preserves send order, so
+        // accepting KEY_EXCHANGE first would mean the peer skipped validation
+        // of protocol version and codec negotiation.
+        if (!peerHelloReceived &&
+            frame.type != MessageType.HELLO &&
+            frame.type != MessageType.DISCONNECT
+        ) {
+            fail(
+                SessionError.PROTOCOL_ERROR,
+                "received frame type=${frame.type.toInt() and 0xFF} before HELLO",
+            )
+            return
+        }
         when (frame.type) {
             MessageType.HELLO -> {
+                if (peerHelloReceived) {
+                    fail(SessionError.PROTOCOL_ERROR, "duplicate HELLO")
+                    return
+                }
                 val peerVersion = frame.payload.getOrNull(0)?.toInt()?.and(0xFF)
                 val peerPrefValue = frame.payload.getOrNull(1)?.toInt()?.and(0xFF)
                 if (frame.payload.size != 2 || frame.payload[0] != Protocol.VERSION) {
@@ -600,6 +622,7 @@ class SessionManager(
                     )
                     return
                 }
+                peerHelloReceived = true
                 AppLog.log(
                     TAG,
                     "received compatible HELLO (protocolVersion=$peerVersion, codecPreference=$peerPrefValue)",
@@ -637,9 +660,10 @@ class SessionManager(
             }
             else -> {
                 Log.w(TAG, "unexpected ${frame.type} during handshake")
-                AppLog.log(
-                    TAG,
-                    "unexpected handshake frame (type=${frame.type.toInt() and 0xFF}, payloadBytes=${frame.payload.size})",
+                fail(
+                    SessionError.PROTOCOL_ERROR,
+                    "unexpected handshake frame (type=${frame.type.toInt() and 0xFF}, " +
+                        "payloadBytes=${frame.payload.size})",
                 )
             }
         }
@@ -728,7 +752,11 @@ class SessionManager(
             MessageType.DISCONNECT -> {
                 endSession(SessionError.PEER_REJECTED, notifyPeer = false)
             }
-            else -> Log.w(TAG, "unexpected ${frame.type} in SAS phase")
+            else -> fail(
+                SessionError.PROTOCOL_ERROR,
+                "unexpected SAS-phase frame (type=${frame.type.toInt() and 0xFF}, " +
+                    "payloadBytes=${frame.payload.size})",
+            )
         }
     }
 
