@@ -86,12 +86,22 @@ fun DiscoveryScreen(
     var pendingAction by remember { mutableStateOf<(() -> Unit)?>(null) }
     val permLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
-    ) {
+    ) { results ->
         // Clear the old action BEFORE invoking it: the action can open a
-        // second system prompt and install a new pending action.
+        // second system prompt and install a new pending action. Do not retry
+        // automatically when the user denied a permission; that would reopen
+        // the same system dialog in a loop.
         val action = pendingAction
         pendingAction = null
-        action?.invoke()
+        if (results.isNotEmpty() && results.values.all { it }) {
+            action?.invoke()
+        } else {
+            android.widget.Toast.makeText(
+                context,
+                context.getString(R.string.perm_denied_hint),
+                android.widget.Toast.LENGTH_LONG,
+            ).show()
+        }
         vm.refreshAvailability()
     }
     // System dialog that makes this phone visible to Bluetooth scans.
