@@ -1,3 +1,5 @@
+@file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+
 package com.hamseda.walkie.ui.screens
 
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -192,23 +194,25 @@ fun DiscoveryScreen(
             }
             // Permission rationale (shown before the system dialog when needed).
             // On API 37+, Wi-Fi Direct also needs local-network access to open
-            // P2P sockets — surfaced here before connect/listen.
+            // P2P sockets — surfaced here before connect/listen. Note: this
+            // block runs in LazyListScope (not @Composable), so resolve the
+            // string inside item {} below.
             val missingScan = missingForScan()
             val missingLocalNet =
                 PermissionHelper.missingLocalNetworkPermission(context)
-            val rationaleMessage = when {
+            val rationaleRes: Int? = when {
                 missingLocalNet.isNotEmpty() && activeType == TransportType.WIFI_DIRECT ->
-                    stringResource(R.string.perm_localnet_message)
+                    R.string.perm_localnet_message
                 missingScan.isNotEmpty() && activeType == TransportType.WIFI_DIRECT ->
-                    stringResource(R.string.perm_wifi_message)
+                    R.string.perm_wifi_message
                 missingScan.isNotEmpty() ->
-                    stringResource(R.string.perm_bt_message)
+                    R.string.perm_bt_message
                 else -> null
             }
-            if (rationaleMessage != null) {
+            if (rationaleRes != null) {
                 item {
                     PermissionRationaleCard(
-                        message = rationaleMessage,
+                        message = stringResource(rationaleRes),
                         onGrant = {
                             pendingAction = { vm.startScan() }
                             permLauncher.launch(
