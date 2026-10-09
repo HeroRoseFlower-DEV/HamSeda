@@ -657,18 +657,6 @@ class WifiDirectTransport(private val context: Context) : Transport {
                         }
                     }
                 }
-                WifiP2pManager.ACTION_WIFI_P2P_REQUEST_RESPONSE_CHANGED -> {
-                    // Android 13+ exposes whether a P2P connection request was
-                    // accepted by the system/peer approval flow. This is
-                    // diagnostic only; it never bypasses normal authentication.
-                    if (Build.VERSION.SDK_INT >= 33) {
-                        val accepted = intent.getBooleanExtra(
-                            WifiP2pManager.EXTRA_REQUEST_RESPONSE,
-                            false,
-                        )
-                        AppLog.log(TAG, "system connection-request response: accepted=$accepted")
-                    }
-                }
                 WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION -> {
                     if (PermissionHelper.missingWifiDirectPermissions(ctx).isNotEmpty()) return
 
@@ -727,9 +715,6 @@ class WifiDirectTransport(private val context: Context) : Transport {
             addAction(WifiP2pManager.WIFI_P2P_STATE_CHANGED_ACTION)
             addAction(WifiP2pManager.WIFI_P2P_PEERS_CHANGED_ACTION)
             addAction(WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION)
-            if (Build.VERSION.SDK_INT >= 33) {
-                addAction(WifiP2pManager.ACTION_WIFI_P2P_REQUEST_RESPONSE_CHANGED)
-            }
             addAction(WifiP2pManager.WIFI_P2P_THIS_DEVICE_CHANGED_ACTION)
         }
         try {
