@@ -4,6 +4,8 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.PackageManager
+import android.Manifest
 import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioFormat
@@ -16,6 +18,7 @@ import android.media.audiofx.AutomaticGainControl
 import android.media.audiofx.NoiseSuppressor
 import android.os.Build
 import android.util.Log
+import androidx.core.content.ContextCompat
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.abs
 import kotlin.math.min
@@ -111,6 +114,15 @@ class AudioEngine(private val context: Context) : AudioPipeline {
      */
     override fun startCapture(codec: AudioCodec, onFrame: (encoded: ByteArray, level: Float) -> Unit): Boolean {
         if (captureRunning.get()) return true
+        // The UI requests RECORD_AUDIO before PTT, but the engine must not
+        // assume it: fail closed with a clear error instead of throwing
+        // SecurityException (also satisfies lint's MissingPermission check).
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            pipelineListener?.onCaptureError("microphone permission not granted")
+            return false
+        }
         if (!requestFocus()) {
             Log.w(TAG, "could not gain audio focus")
         }
