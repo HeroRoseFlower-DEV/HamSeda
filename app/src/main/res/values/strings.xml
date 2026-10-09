@@ -118,6 +118,9 @@
     <string name="err_peer_busy">Your peer is talking; please wait.</string>
     <string name="err_transport_lost">Connection lost.</string>
     <string name="err_connect_failed">Could not connect to that phone. Make sure it is listening and nearby, then try again.</string>
+    <string name="err_bluetooth_scan_failed">Android refused to start Bluetooth discovery. Check the Nearby devices permission, toggle Bluetooth off and on, then retry.</string>
+    <string name="err_wifi_scan_failed">Android refused to start Wi-Fi Direct discovery. Check Nearby devices permission and make sure Wi-Fi is enabled, then retry.</string>
+    <string name="err_wifi_p2p_connect_rejected">Android rejected the Wi-Fi Direct connection request. Keep both phones nearby, enable Wi-Fi on both, retry, and accept the system invitation on the other phone.</string>
     <string name="err_peer_not_found">That phone is no longer visible. Scan again.</string>
     <string name="err_handshake_timeout">The phone did not answer in time. Try again.</string>
     <string name="err_peer_timeout">Peer stopped responding; connection closed.</string>
