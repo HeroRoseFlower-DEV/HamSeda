@@ -20,6 +20,7 @@ import com.hamseda.walkie.proto.FramedSocket
 import com.hamseda.walkie.proto.Protocol
 import com.hamseda.walkie.util.AppLog
 import com.hamseda.walkie.util.PermissionHelper
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -196,6 +197,16 @@ class WifiDirectTransport(private val context: Context) : Transport {
                 manager?.stopPeerDiscovery(channel, null)
             } catch (_: Exception) {}
 
+            // If the phones are already in a P2P group (e.g. connected via
+            // system settings), manager.connect() fails with a framework
+            // error — reuse the existing group instead of a new invitation.
+            val existing = requestConnectionInfoSync()
+            if (existing != null && existing.groupFormed) {
+                AppLog.log(TAG, "reusing existing p2p group; skipping invitation")
+                onConnectionInfo(existing)
+                return
+            }
+
             @Suppress("DEPRECATION") // WifiP2pConfig() works on API 26–36; the
             val config = WifiP2pConfig().apply { // Builder variant needs API 29+
                 deviceAddress = peer.id
@@ -250,8 +261,41 @@ class WifiDirectTransport(private val context: Context) : Transport {
             return
         }
         registerReceiver()
-        if (_state.value == TransportState.IDLE) {
+        // Pick up a group that already exists (e.g. formed via system
+        // settings before the app registered its receiver).
+        val existing = requestConnectionInfoSync()
+        if (existing != null && existing.groupFormed) {
+            AppLog.log(TAG, "picking up existing p2p group while listening")
+            onConnectionInfo(existing)
+        } else if (_state.value == TransportState.IDLE) {
             Log.i(TAG, "listening for incoming wi-fi direct groups")
+        }
+    }
+
+    /**
+     * Synchronously queries the current P2P connection state. Returns null
+     * when the query itself fails (missing permission, dead channel…).
+     */
+    @SuppressLint("MissingPermission")
+    private suspend fun requestConnectionInfoSync(): WifiP2pInfo? {
+        val mgr = manager
+        val ch = channel
+        if (mgr == null || ch == null) return null
+        if (PermissionHelper.missingWifiDirectPermissions(context).isNotEmpty()) return null
+        return try {
+            withTimeout(5_000) {
+                val deferred = CompletableDeferred<WifiP2pInfo?>()
+                try {
+                    mgr.requestConnectionInfo(ch) { info ->
+                        deferred.complete(info)
+                    }
+                } catch (e: Exception) {
+                    deferred.complete(null)
+                }
+                deferred.await()
+            }
+        } catch (_: Exception) {
+            null
         }
     }
 

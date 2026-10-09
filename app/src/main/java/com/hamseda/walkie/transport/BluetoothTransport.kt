@@ -21,6 +21,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -137,13 +138,36 @@ class BluetoothTransport(private val context: Context) : Transport {
         found.clear()
         _peers.value = emptyList()
         updateDiscoverable()
-        if (a.isDiscovering) a.cancelDiscovery()
+        // If a previous discovery is still running, keep it instead of
+        // cancel+restart: hammering startDiscovery() right after a cancel
+        // makes the stack return false.
+        if (a.isDiscovering) {
+            AppLog.log(TAG, "discovery already in progress; keeping it")
+            _state.value = TransportState.DISCOVERING
+            _error.value = null
+            return
+        }
+        AppLog.log(TAG, "starting discovery (adapterState=${a.state})")
         if (a.startDiscovery()) {
             AppLog.log(TAG, "discovery started")
             _state.value = TransportState.DISCOVERING
             _error.value = null
+            return
+        }
+        // One retry after a settle delay — the stack sometimes rejects an
+        // immediate start while still tearing down a previous session.
+        AppLog.log(TAG, "discovery start returned false; retrying after settle delay")
+        delay(1_000)
+        if (!a.isDiscovering && a.startDiscovery()) {
+            AppLog.log(TAG, "discovery started on retry")
+            _state.value = TransportState.DISCOVERING
+            _error.value = null
         } else {
-            AppLog.log(TAG, "discovery failed: startDiscovery() returned false")
+            AppLog.log(
+                TAG,
+                "discovery failed: startDiscovery() returned false " +
+                    "(adapterState=${a.state}, discovering=${a.isDiscovering})",
+            )
             _error.value = TransportError.ConnectFailed("bluetooth discovery failed to start")
         }
     }
