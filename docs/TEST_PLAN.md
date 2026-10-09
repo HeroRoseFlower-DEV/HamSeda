@@ -53,6 +53,11 @@ procedure and its device variations).
 - Deny microphone permission → clear recovery message, no nag loop.
 - Deny nearby-devices/Bluetooth permission → rationale card, then system
   settings path.
+- **Android 17 (API 37) local-network permission:** on a phone running
+  Android 17, tap a peer → the app shows the local-network rationale and the
+  system prompt. Grant → Wi-Fi Direct voice works. Deny → a clear
+  \"permission denied\" error, no silent stall. Revoke mid-session in system
+  Settings → session ends cleanly with the transport-lost message.
 
 ### 2.5 Offline & network audit
 - With the airplane+manual-radio procedure: full session works.

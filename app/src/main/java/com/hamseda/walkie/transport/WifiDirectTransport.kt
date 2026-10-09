@@ -152,7 +152,10 @@ class WifiDirectTransport(private val context: Context) : Transport {
     // ------------------------------------------------------------- connect
 
     override suspend fun connect(peer: PeerDevice) {
-        val missing = PermissionHelper.missingWifiDirectPermissions(context)
+        // Discovery permission AND local-network access (API 37+) — the P2P
+        // group socket is a local-network connection and would otherwise be
+        // silently blocked on Android 17.
+        val missing = PermissionHelper.missingWifiDirectConnectPermissions(context)
         if (missing.isNotEmpty()) {
             _error.value = TransportError.PermissionDenied(missing)
             return
@@ -219,6 +222,14 @@ class WifiDirectTransport(private val context: Context) : Transport {
         scope.launch {
             mutex.withLock {
                 if (framed != null) return@withLock // already have a socket
+                // The P2P group socket is a local-network connection: on
+                // API 37+ it is silently blocked without ACCESS_LOCAL_NETWORK.
+                val missing = PermissionHelper.missingLocalNetworkPermission(context)
+                if (missing.isNotEmpty()) {
+                    _error.value = TransportError.PermissionDenied(missing)
+                    _state.value = TransportState.FAILED
+                    return@withLock
+                }
                 _state.value = TransportState.AUTHENTICATING
                 socketJob?.cancel()
                 socketJob = scope.launch {

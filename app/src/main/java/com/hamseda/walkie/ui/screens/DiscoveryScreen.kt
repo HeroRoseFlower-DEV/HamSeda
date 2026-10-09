@@ -96,6 +96,13 @@ fun DiscoveryScreen(
         PermissionHelper.missingBluetoothPermissions(context, forDiscovery = true)
     }
 
+    /** Connect-time permissions: discovery + local-network access on API 37+. */
+    fun missingForConnect(): List<String> = if (activeType == TransportType.WIFI_DIRECT) {
+        PermissionHelper.missingWifiDirectConnectPermissions(context)
+    } else {
+        PermissionHelper.missingBluetoothPermissions(context, forDiscovery = false)
+    }
+
     fun doScan() {
         val missing = missingForScan()
         if (missing.isNotEmpty()) {
@@ -103,6 +110,26 @@ fun DiscoveryScreen(
             permLauncher.launch(missing.toTypedArray())
         } else {
             vm.startScan()
+        }
+    }
+
+    fun doConnectPeer(peer: com.hamseda.walkie.transport.PeerDevice) {
+        val missing = missingForConnect()
+        if (missing.isNotEmpty()) {
+            pendingAction = { vm.connectPeer(peer) }
+            permLauncher.launch(missing.toTypedArray())
+        } else {
+            vm.connectPeer(peer)
+        }
+    }
+
+    fun doListen() {
+        val missing = missingForConnect()
+        if (missing.isNotEmpty()) {
+            pendingAction = { vm.listenForIncoming() }
+            permLauncher.launch(missing.toTypedArray())
+        } else {
+            vm.listenForIncoming()
         }
     }
 
@@ -163,18 +190,30 @@ fun DiscoveryScreen(
                     onRetry = { vm.refreshAvailability() },
                 )
             }
-            // Permission rationale (shown before the system dialog when needed)
-            val missingNow = missingForScan()
-            if (missingNow.isNotEmpty()) {
+            // Permission rationale (shown before the system dialog when needed).
+            // On API 37+, Wi-Fi Direct also needs local-network access to open
+            // P2P sockets — surfaced here before connect/listen.
+            val missingScan = missingForScan()
+            val missingLocalNet =
+                PermissionHelper.missingLocalNetworkPermission(context)
+            val rationaleMessage = when {
+                missingLocalNet.isNotEmpty() && activeType == TransportType.WIFI_DIRECT ->
+                    stringResource(R.string.perm_localnet_message)
+                missingScan.isNotEmpty() && activeType == TransportType.WIFI_DIRECT ->
+                    stringResource(R.string.perm_wifi_message)
+                missingScan.isNotEmpty() ->
+                    stringResource(R.string.perm_bt_message)
+                else -> null
+            }
+            if (rationaleMessage != null) {
                 item {
                     PermissionRationaleCard(
-                        message = stringResource(
-                            if (activeType == TransportType.WIFI_DIRECT) R.string.perm_wifi_message
-                            else R.string.perm_bt_message,
-                        ),
+                        message = rationaleMessage,
                         onGrant = {
                             pendingAction = { vm.startScan() }
-                            permLauncher.launch(missingNow.toTypedArray())
+                            permLauncher.launch(
+                                (missingScan + missingLocalNet).distinct().toTypedArray(),
+                            )
                         },
                     )
                 }
@@ -204,19 +243,7 @@ fun DiscoveryScreen(
                         )
                     }
                     OutlinedButton(
-                        onClick = {
-                            val missing = if (activeType == TransportType.WIFI_DIRECT) {
-                                PermissionHelper.missingWifiDirectPermissions(context)
-                            } else {
-                                PermissionHelper.missingBluetoothPermissions(context, forDiscovery = false)
-                            }
-                            if (missing.isNotEmpty()) {
-                                pendingAction = { vm.listenForIncoming() }
-                                permLauncher.launch(missing.toTypedArray())
-                            } else {
-                                vm.listenForIncoming()
-                            }
-                        },
+                        onClick = { doListen() },
                         modifier = Modifier.weight(1f),
                         shape = RoundedCornerShape(14.dp),
                         enabled = phase == SessionManager.Phase.IDLE,
@@ -250,7 +277,7 @@ fun DiscoveryScreen(
                     PeerCard(
                         peer = peer,
                         connecting = transportState == TransportState.CONNECTING,
-                        onConnect = { vm.connectPeer(peer) },
+                        onConnect = { doConnectPeer(peer) },
                     )
                 }
             }

@@ -27,7 +27,7 @@ jobs:
         uses: gradle/actions/setup-gradle@v6
 
       # The ubuntu-24.04 runner image ships an Android SDK; install the
-      # exact platform + build-tools the project targets (API 36).
+      # exact platform + build-tools the project targets (API 37).
       - name: Set up Android SDK packages
         run: |
           set -e
@@ -41,7 +41,7 @@ jobs:
           echo "Using cmdline-tools: $CT"
           export PATH="$CT/bin:$PATH"
           yes | sdkmanager --licenses > /dev/null || true
-          sdkmanager "platforms;android-36" "build-tools;36.0.0" "platform-tools"
+          sdkmanager "platforms;android-37" "build-tools;36.0.0" "platform-tools"
 
       - name: Verify Gradle wrapper
         run: ./gradlew --version

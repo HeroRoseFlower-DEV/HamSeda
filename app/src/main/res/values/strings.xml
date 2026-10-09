@@ -87,6 +87,7 @@
     <string name="perm_title">Permission needed</string>
     <string name="perm_wifi_message">To find nearby phones with Wi-Fi Direct, Android requires this permission. Your location is never stored or sent anywhere.</string>
     <string name="perm_bt_message">To find and connect to a nearby phone with Bluetooth, Android requires these permissions.</string>
+    <string name="perm_localnet_message">On Android 17, connecting to a nearby phone over Wi-Fi Direct needs local-network access. HamSeda only talks to the peer you choose — nothing is sent to the internet.</string>
     <string name="perm_mic_message">To send voice, microphone access is needed; recording happens only while you hold the button.</string>
     <string name="perm_grant">Grant permission</string>
     <string name="perm_open_settings">Open settings</string>

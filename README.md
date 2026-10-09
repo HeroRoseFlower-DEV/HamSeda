@@ -51,13 +51,13 @@
 
 | مؤلفه | نسخه | دلیل انتخاب |
 |---|---|---|
-| Android Gradle Plugin | 8.10.1 | جدیدترین خط پایدار 8.x با پشتیبانی رسمی API 36؛ خط 9.x مدل پلاگین Kotlin را عوض کرده و مهاجرت آن هنوز اعتبارسنجی نشده |
+| Android Gradle Plugin | 8.10.1 | خط پایدار 8.x؛ با compileSdk 37 فقط یک هشدار advisory می‌دهد و بیلد موفق است |
 | Gradle Wrapper | 8.14.6 | سازگار با AGP 8.10.1 (فایل wrapper داخل ریپو کامیت شده) |
 | Kotlin | 2.0.20 | همان نسخه برای پلاگین اندروید و کامپایلر Compose |
 | JDK | 17 (Temurin) | موردنیاز AGP 8.x؛ در CI روی `ubuntu-24.04` |
-| compileSdk / targetSdk | 36 | جدیدترین SDK پایدار؛ گوگل‌پلی از ۲۰۲۶-۰۸-۳۱ برای به‌روزرسانی اپ‌ها targetSdk 36 می‌خواهد |
+| compileSdk / targetSdk | 37 | جدیدترین SDK پایدار (اندروید ۱۷)؛ دسترسی محلی شبکه در API 37 پیاده‌سازی شده است |
 | minSdk | 26 | طبق اسپک پروژه (اندروید ۸) |
-| Compose BOM | 2024.10.00 | جدیدترین قطار BOM سازگار با compileSdk 36 و Kotlin 2.0.20 (قطارهای جدیدتر Compose 1.11+ نیازمند compileSdk 37 هستند) |
+| Compose BOM | 2024.10.00 | قطار BOM سازگار با Kotlin 2.0.20 |
 | actions/checkout | v7 | آخرین major پایدار (اجرا روی Node 24) |
 | actions/setup-java | v6 | آخرین major پایدار |
 | actions/upload-artifact | v7 | آخرین major پایدار |
@@ -106,6 +106,7 @@ vendor داخل `app/src/main/java/org/concentus` آمده است؛ بدون ت�
 | مجوز | چرا لازم است |
 |---|---|
 | `INTERNET` | فقط برای سوکت‌های TCP محلی Wi-Fi Direct (ترافیک اینترنت: هرگز) |
+| `ACCESS_LOCAL_NETWORK` (فقط اندروید ۱۷+) | اندروید ۱۷ دسترسی به شبکه محلی را پیش‌فرض می‌بندد؛ سوکت Wi-Fi Direct بدون این مجوز بی‌صدا بلاک می‌شود. قبل از اتصال، با توضیح درخواست می‌شود |
 | `ACCESS_WIFI_STATE` / `CHANGE_WIFI_STATE` | عملیات Wi-Fi Direct |
 | `NEARBY_WIFI_DEVICES` (با پرچم `neverForLocation`، اندروید ۱۳+) | کشف Wi-Fi Direct بدون استفاده از موقعیت |
 | `ACCESS_FINE_LOCATION` (فقط تا اندروید ۱۲) | نیاز پلتفرم برای کشف Wi-Fi Direct در اندروید ۱۰–۱۲ |
@@ -194,7 +195,7 @@ APK دیباگ با کلید دیباگ امضا شده و برای **تست** �
 
 | مشکل | راه‌حل |
 |---|---|
-| `SDK location not found` در CI | ورک‌فلو خودش `platforms;android-36` و `build-tools;36.0.0` را نصب می‌کند؛ اگر رانر عوض شد، لاگ مرحله «Set up Android SDK packages» را ببینید |
+| `SDK location not found` در CI | ورک‌فلو خودش `platforms;android-37` و `build-tools;36.0.0` را نصب می‌کند؛ اگر رانر عوض شد، لاگ مرحله «Set up Android SDK packages» را ببینید |
 | خطای نسخه Gradle | فقط از wrapper کامیت‌شده (`./gradlew`) استفاده کنید، نه Gradle سیستمی |
 | `NEARBY_WIFI_DEVICES` روی اندروید ۱۲ به پایین | این مجوز فقط در ۱۳+ درخواست می‌شود؛ روی قدیمی‌ترها مجوز موقعیتِ محدودشده با `maxSdkVersion` اعمال می‌شود |
 | بیلد محلی بدون Android SDK | `local.properties` بسازید با `sdk.dir=...`؛ یا متغیر `ANDROID_HOME` را ست کنید |

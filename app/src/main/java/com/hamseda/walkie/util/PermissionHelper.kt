@@ -23,8 +23,17 @@ import androidx.core.content.ContextCompat
  * Microphone: RECORD_AUDIO, requested contextually when a voice session
  * starts. Notifications: POST_NOTIFICATIONS on API 33+ for the foreground
  * service notification.
+ *
+ * Local network (API 37+): Android 17 blocks local-network access by
+ * default for apps targeting API 37 — including TCP connections to Wi-Fi
+ * Direct group addresses. ACCESS_LOCAL_NETWORK must be declared and
+ * requested at runtime before any P2P socket is opened. Apps targeting
+ * API ≤ 36 keep implicit access through INTERNET.
  */
 object PermissionHelper {
+
+    /** API level where ACCESS_LOCAL_NETWORK enforcement begins. */
+    const val LOCAL_NETWORK_SDK = 37
 
     fun missingWifiDirectPermissions(context: Context): List<String> {
         val needed = when {
@@ -50,6 +59,25 @@ object PermissionHelper {
 
     fun missingMicrophonePermission(context: Context): List<String> =
         listOf(Manifest.permission.RECORD_AUDIO).filter { !isGranted(context, it) }
+
+    /**
+     * Local-network access (API 37+ only). Required before opening any
+     * Wi-Fi Direct TCP socket when targeting API 37 — without it the
+     * platform silently blocks connections to P2P group addresses.
+     */
+    fun missingLocalNetworkPermission(context: Context): List<String> =
+        if (Build.VERSION.SDK_INT >= LOCAL_NETWORK_SDK) {
+            listOf(Manifest.permission.ACCESS_LOCAL_NETWORK)
+                .filter { !isGranted(context, it) }
+        } else emptyList()
+
+    /**
+     * Everything Wi-Fi Direct needs for a full connect: discovery
+     * permissions plus local-network access on API 37+.
+     */
+    fun missingWifiDirectConnectPermissions(context: Context): List<String> =
+        (missingWifiDirectPermissions(context) + missingLocalNetworkPermission(context))
+            .distinct()
 
     fun missingNotificationPermission(context: Context): List<String> =
         if (Build.VERSION.SDK_INT >= 33) {

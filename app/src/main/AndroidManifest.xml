@@ -20,6 +20,11 @@
     <!-- Local peer-to-peer sockets only. Never used for internet traffic. -->
     <uses-permission android:name="android.permission.INTERNET" />
 
+    <!-- Android 17 (API 37): local-network access is blocked by default for
+         apps targeting API 37. Wi-Fi Direct group sockets are local-network
+         connections, so this must be granted before connecting. -->
+    <uses-permission android:name="android.permission.ACCESS_LOCAL_NETWORK" />
+
     <!-- Wi-Fi Direct radio state / P2P operations -->
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />

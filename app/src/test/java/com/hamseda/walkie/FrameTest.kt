@@ -24,8 +24,9 @@ class FrameTest {
 
     @Test
     fun `encode decode roundtrip preserves every field`() {
-        val decoded = Frame.decode(sampleFrame().encode())
-        assertEquals(sampleFrame(), decoded)
+        val frame = sampleFrame() // single instance: timestamp is millisecond-sensitive
+        val decoded = Frame.decode(frame.encode())
+        assertEquals(frame, decoded)
     }
 
     @Test
