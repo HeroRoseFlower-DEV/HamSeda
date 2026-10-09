@@ -109,7 +109,7 @@ class AudioEngine(private val context: Context) : AudioPipeline {
      * (for the transmit animation — real measured amplitude, not simulated).
      * Returns false if the recorder could not be started.
      */
-    fun startCapture(codec: AudioCodec, onFrame: (encoded: ByteArray, level: Float) -> Unit): Boolean {
+    override fun startCapture(codec: AudioCodec, onFrame: (encoded: ByteArray, level: Float) -> Unit): Boolean {
         if (captureRunning.get()) return true
         if (!requestFocus()) {
             Log.w(TAG, "could not gain audio focus")
@@ -128,15 +128,12 @@ class AudioEngine(private val context: Context) : AudioPipeline {
             .setChannelMask(AudioFormat.CHANNEL_IN_MONO)
             .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
             .build()
-        val attrs = AudioAttributes.Builder()
-            .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
-            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-            .build()
+        // Note: AudioRecord.Builder has no setAudioAttributes — routing and
+        // usage are driven by the VOICE_COMMUNICATION audio source.
         val rec = try {
             AudioRecord.Builder()
                 .setAudioSource(MediaRecorder.AudioSource.VOICE_COMMUNICATION)
                 .setAudioFormat(format)
-                .setAudioAttributes(attrs)
                 .setBufferSizeInBytes(minBuf * 4)
                 .build()
         } catch (e: Exception) {
@@ -187,7 +184,7 @@ class AudioEngine(private val context: Context) : AudioPipeline {
         return true
     }
 
-    fun stopCapture() {
+    override fun stopCapture() {
         captureRunning.set(false)
         try { captureThread?.join(500) } catch (_: InterruptedException) {}
         captureThread = null
@@ -198,7 +195,7 @@ class AudioEngine(private val context: Context) : AudioPipeline {
         abandonFocus()
     }
 
-    val isCapturing: Boolean get() = captureRunning.get()
+    override val isCapturing: Boolean get() = captureRunning.get()
 
     // ------------------------------------------------------------- playback
 
@@ -206,7 +203,7 @@ class AudioEngine(private val context: Context) : AudioPipeline {
      * Starts speaker playback fed from [buffer]. Lost frames are concealed
      * with last-frame repeat (decaying), then silence.
      */
-    fun startPlayback(codec: AudioCodec, buffer: JitterBuffer): Boolean {
+    override fun startPlayback(codec: AudioCodec, buffer: JitterBuffer): Boolean {
         if (playbackRunning.get()) return true
         val minBuf = AudioTrack.getMinBufferSize(
             AudioCodec.SAMPLE_RATE,
@@ -296,7 +293,7 @@ class AudioEngine(private val context: Context) : AudioPipeline {
         }
     }
 
-    fun stopPlayback() {
+    override fun stopPlayback() {
         playbackRunning.set(false)
         try { playbackThread?.join(500) } catch (_: InterruptedException) {}
         playbackThread = null
@@ -309,7 +306,7 @@ class AudioEngine(private val context: Context) : AudioPipeline {
 
     // ----------------------------------------------------------------- misc
 
-    fun setSpeakerphone(on: Boolean) {
+    override fun setSpeakerphone(on: Boolean) {
         speakerphoneOn = on
         applyAudioMode()
     }

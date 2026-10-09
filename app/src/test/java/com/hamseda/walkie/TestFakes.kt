@@ -88,7 +88,8 @@ class FakeAudioPipeline : AudioPipeline {
     var onFrame: ((ByteArray, Float) -> Unit)? = null
     var playbackCodec: AudioCodec? = null
     var playbackBuffer: JitterBuffer? = null
-    var speakerphone: Boolean = true
+    var speakerphoneOn: Boolean = true
+        private set
 
     override fun startCapture(
         codec: AudioCodec,
@@ -116,7 +117,7 @@ class FakeAudioPipeline : AudioPipeline {
     }
 
     override fun setSpeakerphone(on: Boolean) {
-        speakerphone = on
+        speakerphoneOn = on
     }
 
     override val isCapturing: Boolean get() = onFrame != null

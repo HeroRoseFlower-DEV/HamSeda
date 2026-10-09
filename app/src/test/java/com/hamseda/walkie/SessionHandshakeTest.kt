@@ -61,7 +61,7 @@ class SessionHandshakeTest {
         scopeA.cancel(); scopeB.cancel()
     }
 
-    private fun await(what: String, timeoutMs: Long = 8_000, cond: () -> Boolean) {
+    private fun Rig.await(what: String, timeoutMs: Long = 8_000, cond: () -> Boolean) {
         val end = System.currentTimeMillis() + timeoutMs
         while (!cond()) {
             if (System.currentTimeMillis() > end) throw AssertionError("timeout: $what")
@@ -188,7 +188,7 @@ class SessionHandshakeTest {
             rig.a.phase.value == SessionManager.Phase.IN_SESSION
         }
         // Simulate the radio dropping mid-call.
-        rig.ta.disconnect()
+        kotlinx.coroutines.runBlocking { rig.ta.disconnect() }
         rig.await("session torn down") {
             rig.a.phase.value == SessionManager.Phase.IDLE &&
                 rig.a.error.value == SessionManager.SessionError.TRANSPORT_LOST

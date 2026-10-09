@@ -123,6 +123,8 @@ class SessionManager(
     private var myRole: Byte = 0
     private var keyExchangeSent = false
     private var keyConfirmSent = false
+    /** True once beginHandshake ran for the current attempt (re-entrancy guard). */
+    private var handshakeStarted = false
     private var selfSasConfirmed = false
     private var myCodecPref: Byte = CodecId.OPUS
     private var activeCodecId: Byte = CodecId.OPUS
@@ -149,6 +151,9 @@ class SessionManager(
         myCodecPref = codecPref
         attachTransport(t, peer.displayName)
         _phase.value = Phase.CONNECTING_TRANSPORT
+        // The transport may already report CONNECTED (peer connected first);
+        // the state-flow collector below only fires on *changes*.
+        if (t.state.value == TransportState.CONNECTED) beginHandshake()
         scope.launch {
             try {
                 t.connect(peer)
@@ -164,6 +169,9 @@ class SessionManager(
         myCodecPref = codecPref
         attachTransport(t, "")
         _phase.value = Phase.CONNECTING_TRANSPORT
+        // The transport may already report CONNECTED (peer connected first);
+        // the state-flow collector below only fires on *changes*.
+        if (t.state.value == TransportState.CONNECTED) beginHandshake()
         scope.launch {
             try {
                 t.listen()
@@ -303,6 +311,7 @@ class SessionManager(
         myKeyPair = null
         peerPubBytes = null; peerNonce = null
         keyExchangeSent = false; keyConfirmSent = false
+        handshakeStarted = false
         selfSasConfirmed = false
         _sasCode.value = null
         _peerSasConfirmed.value = false
@@ -325,6 +334,10 @@ class SessionManager(
     // ------------------------------------------------------- handshake
 
     private fun beginHandshake() {
+        // Guarded: the transport may report CONNECTED twice (once via the
+        // state flow, once via the post-attach check below).
+        if (handshakeStarted) return
+        handshakeStarted = true
         _phase.value = Phase.HANDSHAKE
         myKeyPair = SessionCrypto.generateEphemeralKeyPair()
         myPubBytes = SessionCrypto.encodePublicKey(myKeyPair!!.public)
@@ -549,9 +562,9 @@ class SessionManager(
                     if (floor.holder != FloorController.Holder.PEER) {
                         return // not the floor holder — drop
                     }
-                    val pcm = SessionCrypto.open(k.audioKey, aadForReceive(frame), frame.payload)
+                    val encodedAudio = SessionCrypto.open(k.audioKey, aadForReceive(frame), frame.payload)
                     floor.onPeerAudio()
-                    jitter.push(frame.seq, pcm)
+                    jitter.push(frame.seq, encodedAudio)
                 }
                 MessageType.FLOOR_REQUEST -> {
                     val granted = floor.onPeerRequest()
@@ -713,16 +726,20 @@ class SessionManager(
 
     private fun sealedFrame(type: Byte, codecId: Byte, key: ByteArray, plaintext: ByteArray): ByteArray {
         val k = keys ?: throw IOException("no session keys")
+        // The AAD covers the frame header, which embeds the payload length —
+        // so the header must be built with the FINAL sealed length, not zero.
+        val sealedLen = SessionCrypto.sealedLength(plaintext.size)
         val frame = Frame(
             type = type,
             sessionId = k.sessionId,
             seq = nextSeq(),
             timestamp = clock(),
             codecId = codecId,
-            payload = ByteArray(0), // replaced below
+            payload = ByteArray(sealedLen), // placeholder; swapped for sealed bytes below
         )
         val aad = frame.headerBytes() + myRole
         val sealed = SessionCrypto.seal(key, aad, plaintext)
+        check(sealed.size == sealedLen) { "sealed length mismatch" }
         return frame.copy(payload = sealed).encode()
     }
 

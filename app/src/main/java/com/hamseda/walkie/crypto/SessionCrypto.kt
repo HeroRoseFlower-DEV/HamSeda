@@ -48,6 +48,12 @@ object SessionCrypto {
     /** Maximum accepted encoded public-key size (P-256 X.509 ≈ 91 bytes). */
     const val MAX_PUBKEY_BYTES = 256
 
+    /**
+     * Exact wire size of [seal]'s output for a given plaintext length:
+     * 12-byte nonce + ciphertext + 16-byte GCM tag.
+     */
+    fun sealedLength(plaintextLen: Int): Int = NONCE_LEN + plaintextLen + GCM_TAG_BITS / 8
+
     private val random = SecureRandom()
 
     // ------------------------------------------------------------------ keys

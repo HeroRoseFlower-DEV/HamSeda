@@ -66,11 +66,20 @@ class CodecTest {
         val energyOut = decoded.sumOf { (it.toInt() * it.toInt()).toDouble() }
         val ratio = energyOut / energyIn
         assertTrue("energy ratio out of bounds: $ratio", ratio in 0.25..4.0)
-        // And the waveform correlates strongly (not noise).
-        var dot = 0.0
-        for (i in pcm.indices) dot += pcm[i].toDouble() * decoded[i].toDouble()
-        val norm = Math.sqrt(energyIn * energyOut)
-        assertTrue("correlation too low: ${dot / norm}", dot / norm > 0.7)
+        // And the waveform correlates strongly (not noise). Opus has an
+        // algorithmic delay, so allow a lag when correlating.
+        var best = 0.0
+        for (lag in 0..160) {
+            var dot = 0.0
+            var eShift = 0.0
+            for (i in pcm.indices) {
+                val d = if (i + lag < decoded.size) decoded[i + lag].toDouble() else 0.0
+                dot += pcm[i].toDouble() * d
+                eShift += d * d
+            }
+            if (eShift > 0) best = maxOf(best, dot / Math.sqrt(energyIn * eShift))
+        }
+        assertTrue("correlation too low: $best", best > 0.7)
     }
 
     @Test
@@ -78,7 +87,11 @@ class CodecTest {
         val codec = OpusCodec()
         val silence = ShortArray(AudioCodec.FRAME_SAMPLES)
         val encSilence = codec.encode(silence)
-        assertArrayEquals(silence, codec.decode(encSilence))
+        // Lossy codec: decoded silence must be near-zero, not bit-exact.
+        val decodedSilence = codec.decode(encSilence)
+        assertEquals(AudioCodec.FRAME_SAMPLES, decodedSilence.size)
+        val peak = decodedSilence.maxOf { Math.abs(it.toInt()) }
+        assertTrue("silence decoded with peak $peak", peak < 200)
         // Stream several frames; decoder state must stay consistent.
         repeat(10) { i ->
             val pcm = sineFrame(phase = i * 0.7)
