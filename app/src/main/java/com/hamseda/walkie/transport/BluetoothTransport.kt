@@ -246,10 +246,22 @@ class BluetoothTransport(private val context: Context) : Transport {
                 return
             }
         }
+        val scanPermissionGranted = if (Build.VERSION.SDK_INT >= 31) {
+            PermissionHelper.isGranted(context, android.Manifest.permission.BLUETOOTH_SCAN)
+        } else null
+        val fineLocationGranted = if (Build.VERSION.SDK_INT in 29..30) {
+            PermissionHelper.isGranted(context, android.Manifest.permission.ACCESS_FINE_LOCATION)
+        } else null
+        val coarseLocationGranted = if (Build.VERSION.SDK_INT < 29) {
+            PermissionHelper.isGranted(context, android.Manifest.permission.ACCESS_COARSE_LOCATION)
+        } else null
         AppLog.log(
             TAG,
             "discovery failed after bounded retries: startDiscovery() returned false " +
-                "(adapterState=${a.state}, discovering=${a.isDiscovering}, bondedCandidates=${bondedCache.size})",
+                "(sdk=${Build.VERSION.SDK_INT}, adapterState=${a.state}, discovering=${a.isDiscovering}, " +
+                "scanPermissionGranted=$scanPermissionGranted, fineLocationGranted=$fineLocationGranted, " +
+                "coarseLocationGranted=$coarseLocationGranted, scanMode=${runCatching { a.scanMode }.getOrNull()}, " +
+                "bondedCandidates=${bondedCache.size})",
         )
         _error.value = TransportError.ConnectFailed("bluetooth discovery failed to start; retry or restart Bluetooth")
         _state.value = TransportState.FAILED
