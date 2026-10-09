@@ -124,8 +124,11 @@ class SessionSecurityTest {
     }
 
     private fun Rig.start() {
-        a.startOutgoing(ta, PeerDevice("b", "B", TransportType.WIFI_DIRECT))
+        // Subscribe the waiting endpoint before the initiating endpoint can
+        // send HELLO. This mirrors the real transport lifecycle and avoids
+        // dropping the first frame in the in-memory SharedFlow test harness.
         b.acceptIncoming(tb)
+        a.startOutgoing(ta, PeerDevice("b", "B", TransportType.WIFI_DIRECT))
     }
 
     private fun Rig.close() {
