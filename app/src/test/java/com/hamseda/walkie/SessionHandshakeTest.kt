@@ -52,8 +52,10 @@ class SessionHandshakeTest {
     }
 
     private fun Rig.start() {
-        a.startOutgoing(ta, PeerDevice("b", "B", TransportType.WIFI_DIRECT))
+        // Mirror real usage: the waiting phone attaches its inbound frame
+        // collector before the initiator can send HELLO on the new socket.
         b.acceptIncoming(tb)
+        a.startOutgoing(ta, PeerDevice("b", "B", TransportType.WIFI_DIRECT))
     }
 
     private fun Rig.close() {
