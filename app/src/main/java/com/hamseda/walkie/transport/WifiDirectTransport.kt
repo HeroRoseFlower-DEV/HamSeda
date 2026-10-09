@@ -381,6 +381,9 @@ class WifiDirectTransport(private val context: Context) : Transport {
                     }
                 }
                 WifiP2pManager.WIFI_P2P_PEERS_CHANGED_ACTION -> {
+                    // Permissions can be revoked mid-discovery; skip rather
+                    // than crash with SecurityException.
+                    if (PermissionHelper.missingWifiDirectPermissions(ctx).isNotEmpty()) return
                     manager?.requestPeers(channel) { list: WifiP2pDeviceList ->
                         _peers.value = list.deviceList.map { d: WifiP2pDevice ->
                             PeerDevice(
@@ -402,6 +405,7 @@ class WifiDirectTransport(private val context: Context) : Transport {
                         intent.getParcelableExtra(WifiP2pManager.EXTRA_NETWORK_INFO)
                     }
                     if (netInfo?.isConnected == true) {
+                        if (PermissionHelper.missingWifiDirectPermissions(ctx).isNotEmpty()) return
                         manager?.requestConnectionInfo(channel) { info: WifiP2pInfo ->
                             onConnectionInfo(info)
                         }
