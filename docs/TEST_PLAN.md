@@ -26,9 +26,10 @@ mobile data OFF, no internet (see README "تضمین آفلاین بودن" for 
 procedure and its device variations).
 
 ### 2.1 Wi-Fi Direct voice (primary path)
-1. Both phones: Discovery → Automatic → Scan → each sees the other.
-2. Phone A taps "اتصال امن" on B. Both show the 6-digit SAS.
-3. Read the codes aloud; confirm they match on both → session starts.
+1. Choose the same explicit transport on both phones for the first run (Wi-Fi Direct or Bluetooth; avoid Automatic initially because each phone may select a different transport).
+2. Phone B: Discovery → tap "Start waiting" and keep the screen open.
+3. Phone A: Discovery → tap "Scan"; verify B appears, then tap "اتصال امن" on B. Only A initiates the connection.
+4. Both show the 6-digit SAS. Read the codes aloud; confirm they match on both → session starts.
 4. A holds PTT 10 s and speaks; B hears. Release is immediate (< 300 ms
    perceived). B holds PTT; A hears.
 5. While A transmits, B presses PTT → B sees "peer busy", A keeps the floor.
@@ -40,11 +41,13 @@ procedure and its device variations).
 2. Session aborts on both; no audio path ever opens.
 
 ### 2.3 Bluetooth Classic voice
-1. Both phones: Settings → connection mode → Bluetooth (or Automatic with
-   Wi-Fi off). Enable Bluetooth via the system prompt (the app never toggles
-   radios itself).
-2. Scan → pair → SAS → PTT both directions. Note any audio artifacts vs
-   Wi-Fi Direct.
+1. Both phones: Settings → connection mode → Bluetooth. Enable Bluetooth via
+   the system prompt (the app never toggles radios itself).
+2. Phone B: Discovery → "Start waiting" → accept Android's discoverability
+   prompt and leave the screen open. Phone A scans and connects to B.
+3. Verify the 6-digit SAS, then test PTT in both directions. Note any audio
+   artifacts vs Wi-Fi Direct; ordinary audio accessories (e.g., headphones)
+   must not appear as phone candidates.
 
 ### 2.4 Interruptions & lifecycle
 - Incoming phone call during transmission → TX stops instantly (audio focus).
