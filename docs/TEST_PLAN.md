@@ -26,14 +26,14 @@ mobile data OFF, no internet (see README "تضمین آفلاین بودن" for 
 procedure and its device variations).
 
 ### 2.1 Wi-Fi Direct voice (primary path)
-1. Choose the same explicit transport on both phones for the first run (Wi-Fi Direct or Bluetooth; avoid Automatic initially because each phone may select a different transport).
+1. Choose **Wi-Fi Direct** explicitly on both phones for this test; avoid Automatic initially because each phone can select a different transport.
 2. Phone B: Discovery → tap "Start waiting" and keep the screen open.
 3. Phone A: Discovery → tap "Scan"; verify B appears, then tap "اتصال امن" on B. Only A initiates the connection.
 4. Both show the 6-digit SAS. Read the codes aloud; confirm they match on both → session starts.
-4. A holds PTT 10 s and speaks; B hears. Release is immediate (< 300 ms
-   perceived). B holds PTT; A hears.
-5. While A transmits, B presses PTT → B sees "peer busy", A keeps the floor.
-6. A walks out of range / disables Wi-Fi → both show "connection lost",
+5. A holds PTT for 10 s and speaks; B hears. Release is immediate (< 300 ms
+   perceived). B then holds PTT; A hears.
+6. While A transmits, B presses PTT → B sees "peer busy", A keeps the floor.
+7. A walks out of range / disables Wi-Fi → both show "connection lost",
    session ends, keys wiped (no crash, no stuck mic icon).
 
 ### 2.2 SAS mismatch (MITM simulation)
