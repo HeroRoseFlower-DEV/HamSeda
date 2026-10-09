@@ -1,0 +1,32 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- HamSeda mark: broadcast arcs + core dot in teal -->
+    <path
+        android:strokeWidth="6"
+        android:strokeLineCap="round"
+        android:strokeColor="#0E7C7B"
+        android:pathData="M40,40 A20,20 0 0 1 40,68" />
+    <path
+        android:strokeWidth="6"
+        android:strokeLineCap="round"
+        android:strokeColor="#0E7C7B"
+        android:pathData="M68,40 A20,20 0 0 0 68,68" />
+    <path
+        android:strokeWidth="6"
+        android:strokeLineCap="round"
+        android:strokeColor="#0E7C7B"
+        android:alpha="0.55"
+        android:pathData="M28,28 A38,38 0 0 1 28,80" />
+    <path
+        android:strokeWidth="6"
+        android:strokeLineCap="round"
+        android:strokeColor="#0E7C7B"
+        android:alpha="0.55"
+        android:pathData="M80,28 A38,38 0 0 0 80,80" />
+    <path
+        android:fillColor="#16233D"
+        android:pathData="M54,48m-7,0a7,7 0 1,0 14,0a7,7 0 1,0 -14,0" />
+</vector>

@@ -1,0 +1,183 @@
+package com.hamseda.walkie.ui.vm
+
+import android.content.Context
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.viewModelScope
+import com.hamseda.walkie.data.SettingsRepository
+import com.hamseda.walkie.proto.CodecId
+import com.hamseda.walkie.service.VoiceService
+import com.hamseda.walkie.session.SessionManager
+import com.hamseda.walkie.transport.PeerDevice
+import com.hamseda.walkie.transport.Transport
+import com.hamseda.walkie.transport.TransportManager
+import com.hamseda.walkie.transport.TransportPreference
+import com.hamseda.walkie.transport.TransportState
+import com.hamseda.walkie.transport.TransportType
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
+
+/** Dependencies every screen ViewModel needs. */
+data class VmDeps(
+    val appContext: Context,
+    val manager: SessionManager,
+    val transports: TransportManager,
+    val settings: SettingsRepository,
+)
+
+class HomeViewModel(private val deps: VmDeps) : ViewModel() {
+    val phase = deps.manager.phase
+    val peerName = deps.manager.peerName
+    val transportType = deps.manager.transportType
+    val isTransmitting = deps.manager.isTransmitting
+    val floorHolder = deps.manager.floorHolder
+    val voiceLevel = deps.manager.voiceLevel
+    val error = deps.manager.error
+
+    fun setPtt(pressed: Boolean) = deps.manager.setPttPressed(pressed)
+    fun endSession() {
+        deps.manager.endSession()
+        VoiceService.stop(deps.appContext)
+    }
+    fun clearError() = deps.manager.clearError()
+}
+
+@OptIn(ExperimentalCoroutinesApi::class)
+class DiscoveryViewModel(private val deps: VmDeps) : ViewModel() {
+    val preference = deps.transports.preference
+    val activeType = deps.transports.activeType
+    val choiceExplanation = deps.transports.choiceExplanation
+    val phase = deps.manager.phase
+
+    val peers: StateFlow<List<PeerDevice>> =
+        deps.transports.activeType.flatMapLatest { type ->
+            deps.transports.transportOf(type).peers
+        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    val transportState: StateFlow<TransportState> =
+        deps.transports.activeType.flatMapLatest { type ->
+            deps.transports.transportOf(type).state
+        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), TransportState.IDLE)
+
+    val transportError =
+        deps.transports.activeType.flatMapLatest { type ->
+            deps.transports.transportOf(type).error
+        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    val availability: StateFlow<com.hamseda.walkie.transport.Availability?> =
+        deps.transports.activeType.flatMapLatest { type ->
+            flowOf(deps.transports.transportOf(type).availability())
+        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    fun setPreference(p: TransportPreference) {
+        viewModelScope.launch {
+            deps.settings.setTransportPreference(p)
+            deps.transports.setPreference(p)
+        }
+    }
+
+    fun startScan() {
+        viewModelScope.launch { activeTransport().startDiscovery() }
+    }
+
+    fun stopScan() {
+        viewModelScope.launch { activeTransport().stopDiscovery() }
+    }
+
+    /** Outgoing secure session to [peer]. Starts the foreground service first. */
+    fun connectPeer(peer: PeerDevice) {
+        viewModelScope.launch {
+            VoiceService.start(deps.appContext)
+            val codec = deps.settings.codecPref()
+            deps.manager.startOutgoing(activeTransport(), peer, codec)
+        }
+    }
+
+    /** Listen for an incoming connection on the active transport. */
+    fun listenForIncoming() {
+        viewModelScope.launch {
+            VoiceService.start(deps.appContext)
+            val codec = deps.settings.codecPref()
+            deps.manager.acceptIncoming(activeTransport(), codec)
+        }
+    }
+
+    fun refreshAvailability() {
+        deps.transports.refreshRecommendation()
+    }
+
+    private fun activeTransport(): Transport = deps.transports.active
+}
+
+class PairingViewModel(private val deps: VmDeps) : ViewModel() {
+    val sasCode = deps.manager.sasCode
+    val peerConfirmed = deps.manager.peerSasConfirmed
+    val phase = deps.manager.phase
+
+    fun confirm(match: Boolean) = deps.manager.confirmSas(match)
+    fun cancel() {
+        deps.manager.endSession()
+        VoiceService.stop(deps.appContext)
+    }
+}
+
+class SettingsViewModel(private val deps: VmDeps) : ViewModel() {
+    val transportPreference = deps.settings.transportPreferenceFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), TransportPreference.AUTO_RECOMMEND)
+    val codecPref = deps.settings.codecPrefFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), CodecId.OPUS)
+    val speakerphone = deps.settings.speakerphoneFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
+    val vibration = deps.settings.vibrationFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
+    val theme = deps.settings.themeFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SettingsRepository.ThemeMode.SYSTEM)
+    val language = deps.settings.languageFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), "")
+
+    fun setTransportPreference(p: TransportPreference) {
+        viewModelScope.launch {
+            deps.settings.setTransportPreference(p)
+            deps.transports.setPreference(p)
+        }
+    }
+
+    fun setCodec(codecId: Byte) {
+        viewModelScope.launch { deps.settings.setCodecPref(codecId) }
+    }
+
+    fun setSpeakerphone(on: Boolean) {
+        viewModelScope.launch { deps.settings.setSpeakerphone(on) }
+    }
+
+    fun setVibration(on: Boolean) {
+        viewModelScope.launch { deps.settings.setVibration(on) }
+    }
+
+    fun setTheme(mode: SettingsRepository.ThemeMode) {
+        viewModelScope.launch { deps.settings.setTheme(mode) }
+    }
+
+    fun setLanguage(code: String, onChanged: () -> Unit) {
+        viewModelScope.launch {
+            deps.settings.setLanguage(code)
+            onChanged()
+        }
+    }
+}
+
+@Suppress("UNCHECKED_CAST")
+class VmFactory(private val deps: VmDeps) : ViewModelProvider.Factory {
+    override fun <T : ViewModel> create(modelClass: Class<T>): T = when {
+        modelClass.isAssignableFrom(HomeViewModel::class.java) -> HomeViewModel(deps)
+        modelClass.isAssignableFrom(DiscoveryViewModel::class.java) -> DiscoveryViewModel(deps)
+        modelClass.isAssignableFrom(PairingViewModel::class.java) -> PairingViewModel(deps)
+        modelClass.isAssignableFrom(SettingsViewModel::class.java) -> SettingsViewModel(deps)
+        else -> throw IllegalArgumentException("unknown VM ${modelClass.name}")
+    } as T
+}

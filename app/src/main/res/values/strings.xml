@@ -1,0 +1,122 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">HamSeda</string>
+
+    <!-- Home -->
+    <string name="home_connection">Connection</string>
+    <string name="status_idle">Not ready</string>
+    <string name="status_connecting">Connecting…</string>
+    <string name="status_handshake">Establishing secure session…</string>
+    <string name="status_verifying">Waiting for security code confirmation</string>
+    <string name="status_in_session">Connected — secure session active</string>
+    <string name="transport_wifi_direct">Wi-Fi Direct</string>
+    <string name="transport_bluetooth">Bluetooth</string>
+    <string name="transport_auto">Automatic (recommended)</string>
+    <string name="no_peer_title">Not connected to anyone yet</string>
+    <string name="no_peer_hint">Open “Find peer” to discover a nearby device and connect securely.</string>
+    <string name="btn_find_peer">Find peer</string>
+    <string name="connected_to">Connected to</string>
+    <string name="unknown_peer">Peer</string>
+    <string name="ptt_label">Hold to talk</string>
+    <string name="ptt_transmitting">Transmitting…</string>
+    <string name="ptt_hint">Hold the button and speak; release to stop.</string>
+    <string name="floor_free">Channel is free</string>
+    <string name="floor_you">You are talking</string>
+    <string name="floor_peer">Peer is talking</string>
+    <string name="btn_end_session">End call</string>
+    <string name="receiving_label">Receiving audio…</string>
+
+    <!-- Discovery -->
+    <string name="discovery_title">Find peer</string>
+    <string name="mode_label">Connection mode</string>
+    <string name="btn_scan">Scan</string>
+    <string name="btn_scanning">Scanning…</string>
+    <string name="btn_stop_scan">Stop scan</string>
+    <string name="discovery_no_peers">No devices found</string>
+    <string name="discovery_no_peers_hint">Make sure your peer has this screen open and the right radio (Wi-Fi/Bluetooth) enabled.</string>
+    <string name="peer_connect">Connect securely</string>
+    <string name="listening_title">Wait for your peer to connect</string>
+    <string name="listening_hint">If your peer connects to you, the secure request appears here.</string>
+    <string name="choice_explain_auto_wifi">Automatic: Wi-Fi Direct is available and was selected.</string>
+    <string name="choice_explain_auto_bt">Automatic: Wi-Fi Direct is unavailable; Bluetooth was selected.</string>
+    <string name="choice_explain_manual_wifi">Manual mode: Wi-Fi Direct.</string>
+    <string name="choice_explain_manual_bt">Manual mode: Bluetooth.</string>
+
+    <!-- Pairing / SAS -->
+    <string name="pairing_title">Security check</string>
+    <string name="pairing_explain">This code is also shown on your peer’s phone. Compare them together: if they match exactly, tap “Codes match”. If they differ, cancel — someone may be intercepting the connection.</string>
+    <string name="pairing_code_label">Session security code</string>
+    <string name="pairing_match">Codes match</string>
+    <string name="pairing_mismatch">Codes differ</string>
+    <string name="pairing_waiting_peer">Waiting for peer confirmation…</string>
+    <string name="pairing_cancel">Cancel connection</string>
+
+    <!-- Settings -->
+    <string name="settings_title">Settings</string>
+    <string name="settings_transport">Connection mode</string>
+    <string name="settings_codec">Audio codec</string>
+    <string name="codec_opus">Opus (default, efficient)</string>
+    <string name="codec_opus_desc">About 20 kbps; suits both connection modes.</string>
+    <string name="codec_pcm">Raw PCM (diagnostic)</string>
+    <string name="codec_pcm_desc">256 kbps; only suitable for Wi-Fi Direct.</string>
+    <string name="settings_speakerphone">Speakerphone output</string>
+    <string name="settings_vibration">Vibrate while transmitting</string>
+    <string name="settings_theme">Theme</string>
+    <string name="theme_system">System default</string>
+    <string name="theme_light">Light</string>
+    <string name="theme_dark">Dark</string>
+    <string name="settings_language">Language</string>
+    <string name="lang_system">System language</string>
+    <string name="lang_fa">فارسی</string>
+    <string name="lang_en">English</string>
+    <string name="settings_privacy">Privacy</string>
+    <string name="settings_about">About HamSeda</string>
+    <string name="about_text">HamSeda is an offline walkie-talkie: no internet, no account, no server. Voice travels only between two authenticated phones with end-to-end encryption.</string>
+    <string name="version_label">Version</string>
+
+    <!-- Privacy -->
+    <string name="privacy_title">Privacy</string>
+    <string name="privacy_p1">No account, no sign-in, no subscription.</string>
+    <string name="privacy_p2">No internet: everything (discovery, connection, calls) uses only the phone’s local radios.</string>
+    <string name="privacy_p3">No audio storage: no audio files, call history, or contact lists are saved.</string>
+    <string name="privacy_p4">Voice is sent only during an active session and only to the authenticated peer; the microphone never stays open outside the push-to-talk button.</string>
+    <string name="privacy_p5">Application-layer end-to-end encryption (ECDH on P-256, HKDF-SHA-256 key derivation, AES-256-GCM) on all audio and control frames; keys are ephemeral and wiped from memory when the session ends.</string>
+    <string name="privacy_p6">No behavioral analytics, ads, or cloud crash reporting.</string>
+
+    <!-- Permissions -->
+    <string name="perm_title">Permission needed</string>
+    <string name="perm_wifi_message">To find nearby phones with Wi-Fi Direct, Android requires this permission. Your location is never stored or sent anywhere.</string>
+    <string name="perm_bt_message">To find and connect to a nearby phone with Bluetooth, Android requires these permissions.</string>
+    <string name="perm_mic_message">To send voice, microphone access is needed; recording happens only while you hold the button.</string>
+    <string name="perm_grant">Grant permission</string>
+    <string name="perm_open_settings">Open settings</string>
+    <string name="perm_denied_hint">This cannot continue without the permission. You can enable it in the phone’s settings.</string>
+
+    <!-- Errors -->
+    <string name="err_auth_mismatch">Security verification failed; connection closed.</string>
+    <string name="err_peer_busy">Your peer is talking; please wait.</string>
+    <string name="err_transport_lost">Connection lost.</string>
+    <string name="err_peer_timeout">Peer stopped responding; connection closed.</string>
+    <string name="err_protocol">Protocol error; connection closed.</string>
+    <string name="err_mic">Microphone unavailable.</string>
+    <string name="err_peer_rejected">Peer rejected the connection.</string>
+    <string name="err_radio_disabled_wifi">Wi-Fi Direct is off; please enable it.</string>
+    <string name="err_radio_disabled_bt">Bluetooth is off; please enable it.</string>
+    <string name="err_unsupported">This phone does not support this connection mode.</string>
+
+    <!-- Notifications -->
+    <string name="notif_channel_name">HamSeda voice session</string>
+    <string name="notif_connecting">Connecting…</string>
+    <string name="notif_handshake">Establishing secure session…</string>
+    <string name="notif_verify">Waiting for security code confirmation</string>
+    <string name="notif_in_session">Secure session active</string>
+    <string name="notif_active">HamSeda is active</string>
+    <string name="notif_stop">Stop</string>
+
+    <!-- Common -->
+    <string name="ok">OK</string>
+    <string name="cancel">Cancel</string>
+    <string name="retry">Retry</string>
+    <string name="close">Close</string>
+    <string name="back">Back</string>
+</resources>

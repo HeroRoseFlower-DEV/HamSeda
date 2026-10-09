@@ -1,0 +1,14 @@
+# Gradle / Android
+.gradle/
+build/
+local.properties
+*.iml
+.idea/
+.DS_Store
+
+# Keystores — never commit signing keys
+*.jks
+*.keystore
+
+# Local SDK overrides
+local.properties
