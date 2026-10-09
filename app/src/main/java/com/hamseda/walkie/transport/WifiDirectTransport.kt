@@ -6,7 +6,6 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
-import android.net.NetworkInfo
 import android.net.wifi.WpsInfo
 import android.net.wifi.p2p.WifiP2pConfig
 import android.net.wifi.p2p.WifiP2pDevice
@@ -567,22 +566,27 @@ class WifiDirectTransport(private val context: Context) : Transport {
                     }
                 }
                 WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION -> {
-                    val netInfo: NetworkInfo? = if (Build.VERSION.SDK_INT >= 33) {
-                        intent.getParcelableExtra(
-                            WifiP2pManager.EXTRA_NETWORK_INFO,
-                            NetworkInfo::class.java,
-                        )
-                    } else {
-                        @Suppress("DEPRECATION")
-                        intent.getParcelableExtra(WifiP2pManager.EXTRA_NETWORK_INFO)
-                    }
-                    if (netInfo?.isConnected == true) {
-                        if (PermissionHelper.missingWifiDirectPermissions(ctx).isNotEmpty()) return
-                        manager?.requestConnectionInfo(channel) { info: WifiP2pInfo ->
+                    // Modern connection-state path (no deprecated NetworkInfo):
+                    // EXTRA_NETWORK_INFO is deprecated — query the framework
+                    // directly for the P2P connection state. onConnectionInfo
+                    // handles both outcomes: groupFormed -> open the socket,
+                    // !groupFormed -> common group-lost path. The query is
+                    // bounded (5 s) so a dead channel cannot wedge the
+                    // receiver.
+                    if (PermissionHelper.missingWifiDirectPermissions(ctx).isNotEmpty()) return
+                    scope.launch {
+                        val info = requestConnectionInfoSync()
+                        if (info != null) {
                             onConnectionInfo(info)
+                        } else {
+                            AppLog.log(TAG, "connection changed: connection info unavailable")
+                            if (_state.value == TransportState.CONNECTED ||
+                                _state.value == TransportState.AUTHENTICATING ||
+                                _state.value == TransportState.CONNECTING
+                            ) {
+                                handleGroupLost("p2p connection info unavailable")
+                            }
                         }
-                    } else {
-                        scope.launch { handleGroupLost("p2p group changed") }
                     }
                 }
             }
@@ -600,10 +604,15 @@ class WifiDirectTransport(private val context: Context) : Transport {
         registerReceiver()
         if (!p2pEnabled) {
             try {
-                val sticky = context.registerReceiver(
-                    null,
-                    IntentFilter(WifiP2pManager.WIFI_P2P_STATE_CHANGED_ACTION),
-                )
+                val stickyFilter = IntentFilter(WifiP2pManager.WIFI_P2P_STATE_CHANGED_ACTION)
+                // Null receiver: sticky lookup only. The exported flag is
+                // still declared on API 33+ for consistency with all other
+                // registrations (required when targeting API 34+).
+                val sticky = if (Build.VERSION.SDK_INT >= 33) {
+                    context.registerReceiver(null, stickyFilter, Context.RECEIVER_NOT_EXPORTED)
+                } else {
+                    context.registerReceiver(null, stickyFilter)
+                }
                 if (sticky != null) {
                     p2pEnabled = sticky.getIntExtra(
                         WifiP2pManager.EXTRA_WIFI_STATE, -1,

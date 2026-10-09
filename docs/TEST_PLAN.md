@@ -15,6 +15,7 @@
 | Framed socket | `FramedSocketTest` | delimiting, clean EOF → Closed, oversized envelope rejected, truncated frame → Error, oversized write rejected |
 | Full session | `SessionHandshakeTest` | handshake→SAS→IN_SESSION over loopback transport, matching SAS, PTT→grant→audio frames→release, SAS-mismatch abort, **MITM tamper → AUTH_MISMATCH**, abrupt transport loss → clean teardown |
 | Security (HS-01/02/05/07) | `SessionSecurityTest` | **bad-tag + huge seq does not poison replay window**; wrong session id dropped; duplicate rejected; concurrent malicious inputs don't race; **concurrent audio has unique monotonic wire seqs**; queue stays bounded; **playback failure → clean rollback (no fake IN_SESSION)**; **handshake/SAS timeouts fire (virtual time)** |
+| Modernization | `ModernizationTest` | **API 31+ audio routing decisions** (route→device-type mapping, wired/BT-SCO/speaker/earpiece priority); **Bluetooth discovered-peer TTL** (stale expiration boundaries). The framework calls behind them (`setCommunicationDevice`, `startDiscovery`) need hardware — see §2 |
 
 `./gradlew :app:lintDebug` must be clean; `./gradlew :app:assembleAndroidTest`
 verifies instrumented sources compile (execution needs hardware — see below).
@@ -43,7 +44,13 @@ procedure and its device variations).
 1. Both phones: Settings → connection mode → Bluetooth (or Automatic with
    Wi-Fi off). Enable Bluetooth via the system prompt (the app never toggles
    radios itself).
-2. Scan → pair → SAS → PTT both directions. Note any audio artifacts vs
+2. On the listening phone, the app requests **discoverability** via the
+   system dialog — accept it and note the finite duration; declining must
+   show the "not visible" hint, not a silent stall.
+3. Scan → the peer list must distinguish **paired** phones from **newly
+   discovered** ones. Discovered entries older than ~2 min without re-scan
+   expire (bounded TTL).
+4. Scan → pair → SAS → PTT both directions. Note any audio artifacts vs
    Wi-Fi Direct.
 
 ### 2.4 Interruptions & lifecycle

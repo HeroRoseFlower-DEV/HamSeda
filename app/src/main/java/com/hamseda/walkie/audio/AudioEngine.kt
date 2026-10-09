@@ -7,6 +7,7 @@ import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.Manifest
 import android.media.AudioAttributes
+import android.media.AudioDeviceInfo
 import android.media.AudioFocusRequest
 import android.media.AudioFormat
 import android.media.AudioManager
@@ -18,6 +19,7 @@ import android.media.audiofx.AutomaticGainControl
 import android.media.audiofx.NoiseSuppressor
 import android.os.Build
 import android.util.Log
+import androidx.annotation.RequiresApi
 import androidx.core.content.ContextCompat
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.abs
@@ -100,7 +102,19 @@ class AudioEngine(private val context: Context) : AudioPipeline {
             addAction(AudioManager.ACTION_HEADSET_PLUG)
             addAction(AudioManager.ACTION_AUDIO_BECOMING_NOISY)
         }
-        context.registerReceiver(routeReceiver, filter)
+        // API 33+: context-registered receivers must declare an exported
+        // flag; on API 34+ (this app targets 37) the 2-arg overload throws
+        // SecurityException. These are system broadcasts, which
+        // RECEIVER_NOT_EXPORTED still receives.
+        try {
+            if (Build.VERSION.SDK_INT >= 33) {
+                context.registerReceiver(routeReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+            } else {
+                context.registerReceiver(routeReceiver, filter)
+            }
+        } catch (e: SecurityException) {
+            Log.w(TAG, "route receiver registration rejected: ${e.message}")
+        }
         applyAudioMode()
     }
 
@@ -356,16 +370,64 @@ class AudioEngine(private val context: Context) : AudioPipeline {
             if (audioManager.mode != AudioManager.MODE_IN_COMMUNICATION) {
                 audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
             }
-            audioManager.isSpeakerphoneOn = speakerphoneOn && currentRoute != AudioRoute.WIRED_HEADSET
+            if (Build.VERSION.SDK_INT >= 31) {
+                applyCommunicationDevice()
+            } else {
+                @Suppress("DEPRECATION")
+                audioManager.isSpeakerphoneOn =
+                    speakerphoneOn && currentRoute != AudioRoute.WIRED_HEADSET
+            }
         } catch (e: SecurityException) {
             Log.w(TAG, "audio mode change rejected: ${e.message}")
         }
     }
 
-    private fun guessRoute(): AudioRoute =
-        if (audioManager.isWiredHeadsetOn) AudioRoute.WIRED_HEADSET
+    /**
+     * Modern endpoint selection (API 31+): explicitly choose the
+     * communication device instead of the legacy speakerphone flag.
+     * Falls back to the built-in speaker, then to platform default
+     * routing, so a missing/transient device never leaves routing
+     * undefined.
+     */
+    @RequiresApi(31)
+    private fun applyCommunicationDevice() {
+        val devices = try {
+            audioManager.availableCommunicationDevices
+        } catch (_: Exception) {
+            emptyList()
+        }
+        val wantTypes = deviceTypesForRoute(currentRoute) +
+            AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
+        val target = wantTypes.firstNotNullOfOrNull { want ->
+            devices.firstOrNull { it.type == want }
+        }
+        try {
+            if (target != null) {
+                if (!audioManager.setCommunicationDevice(target)) {
+                    audioManager.clearCommunicationDevice()
+                }
+            } else {
+                audioManager.clearCommunicationDevice()
+            }
+        } catch (e: SecurityException) {
+            Log.w(TAG, "setCommunicationDevice rejected: ${e.message}")
+        }
+    }
+
+    private fun guessRoute(): AudioRoute {
+        if (Build.VERSION.SDK_INT >= 31) {
+            val types = try {
+                audioManager.availableCommunicationDevices.map { it.type }.toSet()
+            } catch (_: Exception) {
+                emptySet()
+            }
+            return routeFromDeviceTypes(types, speakerphoneOn)
+        }
+        @Suppress("DEPRECATION")
+        return if (audioManager.isWiredHeadsetOn) AudioRoute.WIRED_HEADSET
         else if (audioManager.isBluetoothScoOn) AudioRoute.BLUETOOTH_SCO
         else if (speakerphoneOn) AudioRoute.SPEAKER else AudioRoute.EARPIECE
+    }
 
     private fun updateRoute(route: AudioRoute) {
         if (route != currentRoute) {
@@ -449,4 +511,36 @@ class AudioEngine(private val context: Context) : AudioPipeline {
         private const val MAX_CONSECUTIVE_READ_ERRORS = 10
         private const val READ_ERROR_BACKOFF_MS = 20L
     }
+}
+
+/**
+ * Pure routing decision for API 31+ communication-device selection:
+ * preferred [AudioDeviceInfo] types for a logical route, in priority
+ * order. Wired headsets may report as HEADSET or HEADPHONES.
+ * Unit tested (constants are compile-time inlined; no Android runtime needed).
+ */
+fun deviceTypesForRoute(route: AudioEngine.AudioRoute): List<Int> = when (route) {
+    AudioEngine.AudioRoute.WIRED_HEADSET -> listOf(
+        AudioDeviceInfo.TYPE_WIRED_HEADSET,
+        AudioDeviceInfo.TYPE_WIRED_HEADPHONES,
+    )
+    AudioEngine.AudioRoute.BLUETOOTH_SCO -> listOf(AudioDeviceInfo.TYPE_BLUETOOTH_SCO)
+    AudioEngine.AudioRoute.EARPIECE -> listOf(AudioDeviceInfo.TYPE_BUILTIN_EARPIECE)
+    AudioEngine.AudioRoute.SPEAKER -> listOf(AudioDeviceInfo.TYPE_BUILTIN_SPEAKER)
+}
+
+/**
+ * Pure route detection from API 31+ available-communication-device types.
+ * Priority: wired > Bluetooth SCO > speaker/earpiece user preference.
+ * Unit tested.
+ */
+fun routeFromDeviceTypes(
+    types: Set<Int>,
+    speakerphoneOn: Boolean,
+): AudioEngine.AudioRoute = when {
+    AudioDeviceInfo.TYPE_WIRED_HEADSET in types ||
+        AudioDeviceInfo.TYPE_WIRED_HEADPHONES in types -> AudioEngine.AudioRoute.WIRED_HEADSET
+    AudioDeviceInfo.TYPE_BLUETOOTH_SCO in types -> AudioEngine.AudioRoute.BLUETOOTH_SCO
+    speakerphoneOn -> AudioEngine.AudioRoute.SPEAKER
+    else -> AudioEngine.AudioRoute.EARPIECE
 }

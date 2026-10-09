@@ -11,6 +11,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.os.Build
+import android.os.SystemClock
 import android.util.Log
 import com.hamseda.walkie.proto.FrameException
 import com.hamseda.walkie.proto.FramedSocket
@@ -88,12 +89,31 @@ class BluetoothTransport(private val context: Context) : Transport {
     private var acceptThread: Thread? = null
     private var receiverRegistered = false
     private val found = mutableMapOf<String, PeerDevice>()
+    /** Last-seen timestamps for discovered (non-bonded) peers. */
+    private val foundSeenAt = mutableMapOf<String, Long>()
     private val bondedCache = mutableMapOf<String, PeerDevice>()
 
     /** Merges discovered + paired phones into the visible peer list. */
     private fun publishPeers() {
+        pruneFoundPeers(SystemClock.elapsedRealtime())
         _peers.value = found.values.toList() + bondedCache.values.filter {
             it.id !in found.keys
+        }
+    }
+
+    /**
+     * Drops discovered peers not re-seen within [FOUND_PEER_TTL_MS].
+     * Bonded peers live in [bondedCache] and are unaffected — a paired
+     * phone stays connectable even when it is not currently discoverable.
+     */
+    private fun pruneFoundPeers(nowMs: Long) {
+        val stale = stalePeerIds(foundSeenAt, nowMs, FOUND_PEER_TTL_MS)
+        if (stale.isNotEmpty()) {
+            AppLog.log(TAG, "expiring ${stale.size} stale discovered peer(s)")
+            stale.forEach { id ->
+                found.remove(id)
+                foundSeenAt.remove(id)
+            }
         }
     }
 
@@ -182,6 +202,7 @@ class BluetoothTransport(private val context: Context) : Transport {
         }
         registerReceiver()
         found.clear()
+        foundSeenAt.clear()
         _peers.value = emptyList()
         updateDiscoverable()
         // Paired phones are connectable without discovery — list them even
@@ -491,6 +512,7 @@ class BluetoothTransport(private val context: Context) : Transport {
             _error.value = null
             _peers.value = emptyList()
             found.clear()
+            foundSeenAt.clear()
         }
     }
 
@@ -534,6 +556,7 @@ class BluetoothTransport(private val context: Context) : Transport {
                         transport = TransportType.BLUETOOTH,
                     )
                     found[address] = peer
+                    foundSeenAt[address] = SystemClock.elapsedRealtime()
                     // Keep paired-but-not-discovered phones in the list too.
                     publishPeers()
                 }
@@ -578,5 +601,21 @@ class BluetoothTransport(private val context: Context) : Transport {
 
     companion object {
         private const val TAG = "HamSedaBluetooth"
+        /**
+         * Discovered (non-bonded) peers expire after this long without being
+         * re-seen. Classic discovery cycles are ~12 s; 120 s keeps peers
+         * across a few scans while bounding stale entries.
+         */
+        const val FOUND_PEER_TTL_MS = 120_000L
     }
 }
+
+/**
+ * Pure stale-peer computation: ids whose last-seen timestamp is older than
+ * [ttlMs] relative to [nowMs]. Unit tested.
+ */
+fun stalePeerIds(
+    lastSeenMs: Map<String, Long>,
+    nowMs: Long,
+    ttlMs: Long,
+): Set<String> = lastSeenMs.filterValues { nowMs - it > ttlMs }.keys.toSet()
