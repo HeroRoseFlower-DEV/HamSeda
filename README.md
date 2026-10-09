@@ -51,17 +51,17 @@
 
 | مؤلفه | نسخه | دلیل انتخاب |
 |---|---|---|
-| Android Gradle Plugin | 8.10.1 | خط پایدار 8.x؛ با compileSdk 37 فقط یک هشدار advisory می‌دهد و بیلد موفق است |
-| Gradle Wrapper | 8.14.6 | سازگار با AGP 8.10.1 (فایل wrapper داخل ریپو کامیت شده) |
-| Kotlin | 2.0.20 | همان نسخه برای پلاگین اندروید و کامپایلر Compose |
+| Android Gradle Plugin | 8.13.2 | آخرین 8.x پایدار (تأیید 2026-10-09) |
+| Gradle Wrapper | 8.14.6 | سازگار با AGP 8.13.2 (فایل wrapper داخل ریپو کامیت شده) |
+| Kotlin | 2.1.20 | همان نسخه برای پلاگین اندروید و کامپایلر Compose |
 | JDK | 17 (Temurin) | موردنیاز AGP 8.x؛ در CI روی `ubuntu-24.04` |
-| compileSdk / targetSdk | 37 | جدیدترین SDK پایدار (اندروید ۱۷)؛ دسترسی محلی شبکه در API 37 پیاده‌سازی شده است |
+| compileSdk / targetSdk | 37 | جدیدترین SDK پایدار (اندروید ۱۷)؛ بالاتر از الزام Play (API 36) |
 | minSdk | 26 | طبق اسپک پروژه (اندروید ۸) |
-| Compose BOM | 2024.10.00 | قطار BOM سازگار با Kotlin 2.0.20 |
-| actions/checkout | v7 | آخرین major پایدار (اجرا روی Node 24) |
-| actions/setup-java | v6 | آخرین major پایدار |
-| actions/upload-artifact | v7 | آخرین major پایدار |
-| gradle/actions/setup-gradle | v6 | کش وابستگی‌های Gradle |
+| Compose BOM | 2025.04.00 | سازگار با Kotlin 2.1.20 |
+| actions/checkout | v7.0.1 (SHA-pinned) | امنیت supply-chain |
+| actions/setup-java | v6.0.1 (SHA-pinned) | امنیت supply-chain |
+| actions/upload-artifact | v7.0.2 (SHA-pinned) | امنیت supply-chain + SHA-256 checksum |
+| gradle/actions/setup-gradle | v6.0.1 (SHA-pinned) | کش وابستگی‌های Gradle |
 
 **Opus:** به‌جای وابستگی به یک artifact خارجیِ غیرقابل‌اعتماد، سورس جاوای
 پروژه Concentus (پورت خالص جاوای کدک Opus، لایسنس BSD مشابه خود Opus) به‌صورت
@@ -175,7 +175,12 @@ vendor داخل `app/src/main/java/org/concentus` آمده است؛ بدون ت�
 1. در ریپازیتوری گیت‌هاب، تب **Actions** را باز کنید.
 2. روی آخرین اجرای موفق ورک‌فلو **«Build HamSeda APK»** کلیک کنید.
 3. به پایین صفحه بروید، بخش **Artifacts** → فایل **`HamSeda-debug-apk`** را دانلود کنید.
-4. فایل ZIP را باز کنید؛ داخل آن `app-debug.apk` است — روی گوشی نصب کنید.
+4. فایل ZIP را باز کنید؛ داخل آن `app-debug.apk` و `app-debug.apk.sha256` است.
+   قبل از نصب، هش را بررسی کنید:
+   ```bash
+   sha256sum app-debug.apk  # باید با محتوای app-debug.apk.sha256 یکی باشد
+   ```
+5. `app-debug.apk` را روی گوشی نصب کنید.
 
 اجرای دستی: تب Actions → «Build HamSeda APK» → دکمه **Run workflow**.
 
