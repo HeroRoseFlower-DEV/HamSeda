@@ -342,6 +342,7 @@ class BluetoothTransport(private val context: Context) : Transport {
     }
 
     /** Invalidates pending retries before cancelling the platform scan. */
+    @SuppressLint("MissingPermission")
     private fun invalidateDiscovery() {
         synchronized(discoveryLock) {
             discoveryGeneration++
