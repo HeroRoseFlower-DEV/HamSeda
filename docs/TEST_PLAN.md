@@ -6,14 +6,15 @@
 
 | Area | File | What's verified |
 |---|---|---|
-| Frame codec | `FrameTest` | roundtrip, 29-byte header, max payload, rejection of bad magic/version/type, truncation, length mismatch, oversize, clock skew |
+| Frame codec | `FrameTest` | roundtrip, 29-byte header, max payload, rejection of bad magic/version/type, truncation, length mismatch, oversize; **timestamps NOT validated (HS-08: offline clocks may differ)** |
 | Crypto | `CryptoTest` | mutual ECDH key agreement, HKDF determinism, AES-GCM roundtrip, tamper/wrong-key/wrong-AAD rejection, nonce uniqueness, SAS equality, transcript binding, role complementarity, malformed pubkey rejection, key wipe |
 | Replay protection | `CryptoTest` (ReplayProtectionTest) | in-order, duplicates, too-old, in-window reorder, far jump, reset |
 | Floor control | `FloorControlTest` | request→grant→release, busy deny, pending-vs-peer race, peer lease extension by audio, silent-peer timeout, self-TX cap, late grant ignored |
-| Jitter buffer | `JitterBufferTest` | priming, in-order playout, gap→Lost after wait, in-time gap fill, stale drop, queue cap, stats |
+| Jitter buffer | `JitterBufferTest` | priming, in-order playout, gap→Lost after wait, in-time gap fill, stale drop, queue cap, stats; **HS-10: stale/duplicate at full buffer does not evict useful frames** |
 | Codecs | `CodecTest` | PCM bit-exact roundtrip, Opus compression ratio, Opus energy preservation + correlation, silence, stream consistency, bad-input rejection |
 | Framed socket | `FramedSocketTest` | delimiting, clean EOF → Closed, oversized envelope rejected, truncated frame → Error, oversized write rejected |
 | Full session | `SessionHandshakeTest` | handshake→SAS→IN_SESSION over loopback transport, matching SAS, PTT→grant→audio frames→release, SAS-mismatch abort, **MITM tamper → AUTH_MISMATCH**, abrupt transport loss → clean teardown |
+| Security (HS-01/02/05/07) | `SessionSecurityTest` | **bad-tag + huge seq does not poison replay window**; wrong session id dropped; duplicate rejected; concurrent malicious inputs don't race; **concurrent audio has unique monotonic wire seqs**; queue stays bounded; **playback failure → clean rollback (no fake IN_SESSION)**; **handshake/SAS timeouts fire (virtual time)** |
 
 `./gradlew :app:lintDebug` must be clean; `./gradlew :app:assembleAndroidTest`
 verifies instrumented sources compile (execution needs hardware — see below).

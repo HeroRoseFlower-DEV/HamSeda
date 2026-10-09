@@ -30,7 +30,31 @@ protocol violation → drop the connection.
 ```
 
 Validation: magic, version == 1, known type, payloadLen bounds, exact
-`29 + payloadLen` total size, `|now - timestamp| <= 10 min`.
+`29 + payloadLen` total size. The timestamp is diagnostic only (HS-08) —
+it is NOT validated, because two offline phones may have different manual
+clock settings. Anti-replay relies on AEAD + sequence numbers.
+
+## Inbound processing order (HS-01)
+
+Every received frame is processed in this strict order:
+
+1. Structural validation (magic, version, type, lengths) — no state changes.
+2. Session-ID binding — no state changes.
+3. **AEAD authentication/decryption** — no state changes on failure.
+4. Replay-window check — mutates only for authenticated frames.
+5. Liveness timestamp update — only for authenticated frames.
+6. Type-specific dispatch using the authenticated plaintext.
+
+A frame that fails step 3 is dropped and counted, but cannot advance the
+replay window, refresh liveness, or affect the floor — even if it would
+have been ignored anyway (e.g. audio from a non-floor-holder).
+
+## Outbound ordering (HS-02)
+
+All outgoing messages flow through a single bounded channel (capacity 256)
+with one consumer coroutine. The consumer allocates the uint32 sequence,
+seals, and writes in FIFO order. Audio frames are dropped (counted) on a
+full queue to bound latency; control frames are never expected to overflow.
 
 ## Message types
 

@@ -148,6 +148,10 @@ fun PttButton(
         label = "ptt-scale",
     )
     val glowAlpha = if (transmitting) 0.25f + 0.35f * level else 0f
+    // L2: localized accessibility labels, not hardcoded English. Hoisted
+    // out of the semantics block (not a @Composable context).
+    val cdTransmitting = stringResource(R.string.ptt_transmitting)
+    val cdIdle = stringResource(R.string.ptt_label)
     Box(
         modifier = modifier,
         contentAlignment = Alignment.Center,
@@ -165,12 +169,7 @@ fun PttButton(
                 .size(168.dp)
                 .scale(scale)
                 .semantics {
-                    // L2: localized accessibility labels, not hardcoded English.
-                    contentDescription = if (transmitting) {
-                        stringResource(R.string.ptt_transmitting)
-                    } else {
-                        stringResource(R.string.ptt_label)
-                    }
+                    contentDescription = if (transmitting) cdTransmitting else cdIdle
                 }
                 .pointerInput(enabled) {
                     detectTapGestures(

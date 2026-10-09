@@ -1,8 +1,10 @@
 # Security & Threat Model — HamSeda
 
-> No security audit has been performed on this project. Nothing below claims
-> one. The design follows standard, well-reviewed primitives; the limitations
-> are stated plainly.
+> No independent security audit has been performed on this project. A
+> systematic code-level hardening pass (2026-10-09) fixed 11 audited findings
+> (HS-01…HS-11, see CHANGELOG) with regression tests, but external review is
+> still recommended before high-stakes use. Nothing below claims "fully
+> audited" or "100% secure."
 
 ## What is protected
 
@@ -14,12 +16,15 @@ completed the in-app pairing flow, against:
 | Passive interception of radio traffic | AES-256-GCM on every audio/control frame (application layer, independent of WPA2/Bluetooth link encryption) |
 | Active man-in-the-middle during pairing | Ephemeral ECDH (P-256) + transcript-bound KEY_CONFIRM + user-compared 6-digit SAS; mismatch aborts the session |
 | Replay / duplication of frames | Per-direction uint32 sequence numbers + 128-frame sliding window; stale/out-of-session frames dropped |
+| Unauthenticated state influence (HS-01) | Frames are AEAD-authenticated BEFORE the replay window, liveness, or floor state may change; even ignored frames are authenticated |
+| Out-of-order wire injection (HS-02) | Single serialized outbound pipeline: one consumer allocates sequences and writes; no per-frame coroutines |
 | Header tampering | The 29-byte frame header (+ sender role) is AES-GCM associated data |
 | Device-name spoofing | Bluetooth/Wi-Fi Direct names are display-only, never identity |
 | Crashed peer locking the channel | Floor-control leases with timeouts; single transmissions capped |
 | Hot-mic accidents | Microphone opens only on explicit PTT press; release stops immediately; no background capture mode exists |
 | Key/nonce reuse | Fresh 96-bit random nonce per frame; ephemeral session keys wiped on disconnect |
-| Data leakage via logs | No keys, audio, pairing material, or packet contents are logged |
+| Data leakage via logs | No keys, audio, pairing material, or packet contents are logged; MAC addresses are redacted from the diagnostic log |
+| Clock-skew DoS (HS-08) | Wall-clock timestamps are diagnostic only; authentication uses AEAD + sequences, so offline phones with different clocks still connect |
 
 ## Cryptographic construction
 
