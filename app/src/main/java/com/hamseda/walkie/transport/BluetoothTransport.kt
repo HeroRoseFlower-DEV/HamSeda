@@ -2,6 +2,7 @@ package com.hamseda.walkie.transport
 
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothClass
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothServerSocket
@@ -97,6 +98,22 @@ class BluetoothTransport(private val context: Context) : Transport {
         }
     }
 
+    /**
+     * A bonded headset/speaker is not a HamSeda peer. Exclude devices that
+     * advertise the Bluetooth Audio/Video major class from the candidate list
+     * so the app does not try RFCOMM against ordinary audio accessories.
+     *
+     * Unknown classes are intentionally retained: Android/vendor stacks may
+     * not expose a class for every phone, and the authenticated HamSeda
+     * handshake remains the definitive protocol check.
+     */
+    @SuppressLint("MissingPermission")
+    private fun isLikelyAudioAccessory(device: BluetoothDevice): Boolean = try {
+        device.bluetoothClass?.majorDeviceClass == BluetoothClass.Device.Major.AUDIO_VIDEO
+    } catch (_: SecurityException) {
+        false
+    }
+
     override fun availability(): Availability {
         val a = adapter ?: return Availability(false, false, "bluetooth_unsupported")
         // Register eagerly so the discoverability state is live as soon as
@@ -134,14 +151,16 @@ class BluetoothTransport(private val context: Context) : Transport {
         val a = adapter ?: return
         try {
             if (!a.isEnabled) return
-            val bonded = a.bondedDevices.map { d ->
-                val name = try {
-                    d.name?.ifBlank { d.address } ?: d.address
-                } catch (_: SecurityException) {
-                    d.address
+            val bonded = a.bondedDevices
+                .filterNot { isLikelyAudioAccessory(it) }
+                .map { d ->
+                    val name = try {
+                        d.name?.ifBlank { d.address } ?: d.address
+                    } catch (_: SecurityException) {
+                        d.address
+                    }
+                    PeerDevice(id = d.address, displayName = name, transport = TransportType.BLUETOOTH)
                 }
-                PeerDevice(id = d.address, displayName = name, transport = TransportType.BLUETOOTH)
-            }
             // HS-11: always reconcile. A successfully empty bonded set clears
             // the cache (stale peers must not linger); only a permission
             // failure leaves the old cache (unknown state, logged as such).
@@ -203,22 +222,37 @@ class BluetoothTransport(private val context: Context) : Transport {
             _error.value = null
             return
         }
-        // One retry after a settle delay — the stack sometimes rejects an
-        // immediate start while still tearing down a previous session.
-        AppLog.log(TAG, "discovery start returned false; retrying after settle delay")
-        delay(1_000)
-        if (!a.isDiscovering && a.startDiscovery()) {
-            AppLog.log(TAG, "discovery started on retry")
-            _state.value = TransportState.DISCOVERING
-            _error.value = null
-        } else {
+        // Bluetooth service readiness can lag behind STATE_ON on some OEM
+        // builds. Retry with bounded backoff rather than a single 1-second
+        // retry; keep every failure visible in diagnostics.
+        val retryDelaysMs = longArrayOf(750L, 1_500L, 3_000L)
+        for ((index, waitMs) in retryDelaysMs.withIndex()) {
             AppLog.log(
                 TAG,
-                "discovery failed: startDiscovery() returned false " +
+                "discovery start returned false; retry ${index + 1}/${retryDelaysMs.size} in ${waitMs}ms " +
                     "(adapterState=${a.state}, discovering=${a.isDiscovering})",
             )
-            _error.value = TransportError.ConnectFailed("bluetooth discovery failed to start")
+            delay(waitMs)
+            if (a.state != BluetoothAdapter.STATE_ON) {
+                AppLog.log(TAG, "discovery retry stopped: adapter no longer STATE_ON (state=${a.state})")
+                _state.value = TransportState.UNAVAILABLE
+                _error.value = TransportError.RadioDisabled(TransportType.BLUETOOTH)
+                return
+            }
+            if (a.isDiscovering || a.startDiscovery()) {
+                AppLog.log(TAG, if (a.isDiscovering) "discovery active after retry wait" else "discovery started on retry ${index + 1}")
+                _state.value = TransportState.DISCOVERING
+                _error.value = null
+                return
+            }
         }
+        AppLog.log(
+            TAG,
+            "discovery failed after bounded retries: startDiscovery() returned false " +
+                "(adapterState=${a.state}, discovering=${a.isDiscovering}, bondedCandidates=${bondedCache.size})",
+        )
+        _error.value = TransportError.ConnectFailed("bluetooth discovery failed to start; retry or restart Bluetooth")
+        _state.value = TransportState.FAILED
     }
 
     @SuppressLint("MissingPermission")
@@ -528,6 +562,10 @@ class BluetoothTransport(private val context: Context) : Transport {
                     } catch (_: SecurityException) {
                         null
                     }
+                    if (isLikelyAudioAccessory(device)) {
+                        AppLog.log(TAG, "ignoring non-phone Audio/Video Bluetooth device during discovery")
+                        return
+                    }
                     val peer = PeerDevice(
                         id = address,
                         displayName = name?.takeIf { it.isNotBlank() } ?: address,
@@ -537,7 +575,13 @@ class BluetoothTransport(private val context: Context) : Transport {
                     // Keep paired-but-not-discovered phones in the list too.
                     publishPeers()
                 }
+                BluetoothAdapter.ACTION_DISCOVERY_STARTED -> {
+                    AppLog.log(TAG, "system Bluetooth discovery started")
+                    _state.value = TransportState.DISCOVERING
+                    _error.value = null
+                }
                 BluetoothAdapter.ACTION_DISCOVERY_FINISHED -> {
+                    AppLog.log(TAG, "system Bluetooth discovery finished (visiblePeers=${_peers.value.size})")
                     if (_state.value == TransportState.DISCOVERING) {
                         _state.value = TransportState.IDLE
                     }
@@ -553,16 +597,24 @@ class BluetoothTransport(private val context: Context) : Transport {
         if (receiverRegistered) return
         val filter = IntentFilter().apply {
             addAction(BluetoothDevice.ACTION_FOUND)
+            addAction(BluetoothAdapter.ACTION_DISCOVERY_STARTED)
             addAction(BluetoothAdapter.ACTION_DISCOVERY_FINISHED)
             addAction(BluetoothAdapter.ACTION_SCAN_MODE_CHANGED)
         }
         try {
             if (Build.VERSION.SDK_INT >= 33) {
-                context.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
+                // ACTION_FOUND/DISCOVERY_FINISHED can originate from the
+                // privileged Bluetooth app UID rather than android's system
+                // UID. NOT_EXPORTED can silently block those broadcasts.
+                // The filter is restricted to platform Bluetooth actions;
+                // discovered peer identity is still established only by the
+                // authenticated HamSeda protocol handshake.
+                context.registerReceiver(receiver, filter, Context.RECEIVER_EXPORTED)
             } else {
                 context.registerReceiver(receiver, filter)
             }
             receiverRegistered = true
+            AppLog.log(TAG, "Bluetooth system receiver registered")
         } catch (e: Exception) {
             Log.w(TAG, "receiver register failed", e)
         }
