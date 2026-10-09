@@ -613,7 +613,15 @@ private fun transportErrorMessage(e: com.hamseda.walkie.transport.TransportError
                 else R.string.err_radio_disabled_bt,
             )
         is com.hamseda.walkie.transport.TransportError.ConnectFailed ->
-            stringResource(R.string.err_connect_failed)
+            when {
+                e.reason.contains("bluetooth discovery failed", ignoreCase = true) ->
+                    stringResource(R.string.err_bluetooth_scan_failed)
+                e.reason.startsWith("discovery failed:", ignoreCase = true) ->
+                    stringResource(R.string.err_wifi_scan_failed)
+                e.reason.contains("wi-fi direct connect rejected", ignoreCase = true) ->
+                    stringResource(R.string.err_wifi_p2p_connect_rejected)
+                else -> stringResource(R.string.err_connect_failed)
+            }
         is com.hamseda.walkie.transport.TransportError.ConnectionLost ->
             stringResource(R.string.err_transport_lost)
         is com.hamseda.walkie.transport.TransportError.PeerNotFound ->
