@@ -84,6 +84,14 @@ class BluetoothTransport(private val context: Context) : Transport {
     private var acceptThread: Thread? = null
     private var receiverRegistered = false
     private val found = mutableMapOf<String, PeerDevice>()
+    private val bondedCache = mutableMapOf<String, PeerDevice>()
+
+    /** Merges discovered + paired phones into the visible peer list. */
+    private fun publishPeers() {
+        _peers.value = found.values.toList() + bondedCache.values.filter {
+            it.id !in found.keys
+        }
+    }
 
     override fun availability(): Availability {
         val a = adapter ?: return Availability(false, false, "bluetooth_unsupported")
@@ -109,6 +117,35 @@ class BluetoothTransport(private val context: Context) : Transport {
             adapter?.scanMode == BluetoothAdapter.SCAN_MODE_CONNECTABLE_DISCOVERABLE
         } catch (_: SecurityException) {
             false
+        }
+    }
+
+    /**
+     * Lists already-paired phones as connectable peers. Discovery is not
+     * required to open an RFCOMM socket to a bonded device, so this keeps
+     * the app usable on devices where startDiscovery() misbehaves.
+     */
+    @SuppressLint("MissingPermission")
+    private fun refreshBondedPeers() {
+        val a = adapter ?: return
+        try {
+            if (!a.isEnabled) return
+            val bonded = a.bondedDevices.map { d ->
+                val name = try {
+                    d.name?.ifBlank { d.address } ?: d.address
+                } catch (_: SecurityException) {
+                    d.address
+                }
+                PeerDevice(id = d.address, displayName = name, transport = TransportType.BLUETOOTH)
+            }
+            if (bonded.isNotEmpty()) {
+                AppLog.log(TAG, "found ${bonded.size} paired device(s)")
+                bondedCache.clear()
+                bonded.forEach { bondedCache[it.id] = it }
+                publishPeers()
+            }
+        } catch (e: SecurityException) {
+            AppLog.log(TAG, "bonded-device list denied: ${e.message}")
         }
     }
 
@@ -138,6 +175,9 @@ class BluetoothTransport(private val context: Context) : Transport {
         found.clear()
         _peers.value = emptyList()
         updateDiscoverable()
+        // Paired phones are connectable without discovery — list them even
+        // if the discovery scan itself fails on this device.
+        refreshBondedPeers()
         // If a previous discovery is still running, keep it instead of
         // cancel+restart: hammering startDiscovery() right after a cancel
         // makes the stack return false.
@@ -452,7 +492,8 @@ class BluetoothTransport(private val context: Context) : Transport {
                         transport = TransportType.BLUETOOTH,
                     )
                     found[address] = peer
-                    _peers.value = found.values.toList()
+                    // Keep paired-but-not-discovered phones in the list too.
+                    publishPeers()
                 }
                 BluetoothAdapter.ACTION_DISCOVERY_FINISHED -> {
                     if (_state.value == TransportState.DISCOVERING) {

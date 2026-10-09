@@ -94,8 +94,8 @@ class WifiDirectTransport(private val context: Context) : Transport {
     private var socketJob: Job? = null
     private var connectWatchdog: Job? = null
 
-    private fun ensureInit(): Boolean {
-        if (manager != null) return true
+    private fun ensureInit(force: Boolean = false): Boolean {
+        if (!force && manager != null && channel != null) return true
         if (!context.packageManager.hasSystemFeature(PackageManager.FEATURE_WIFI_DIRECT)) {
             return false
         }
@@ -103,7 +103,18 @@ class WifiDirectTransport(private val context: Context) : Transport {
             val m = context.getSystemService(Context.WIFI_P2P_SERVICE) as? WifiP2pManager
                 ?: return false
             manager = m
-            channel = m.initialize(context, Looper.getMainLooper(), null)
+            // ChannelListener: if the framework kills the channel (wifi
+            // toggle, service restart…), drop the cached handles so the
+            // next operation re-initializes instead of failing silently.
+            channel = m.initialize(context, Looper.getMainLooper()) {
+                AppLog.log(TAG, "p2p channel lost; will re-initialize on next use")
+                scope.launch {
+                    mutex.withLock {
+                        channel = null
+                        manager = null
+                    }
+                }
+            }
             channel != null
         } catch (e: Exception) {
             Log.w(TAG, "wifi p2p init failed", e)
@@ -207,32 +218,26 @@ class WifiDirectTransport(private val context: Context) : Transport {
                 return
             }
 
-            @Suppress("DEPRECATION") // WifiP2pConfig() works on API 26–36; the
-            val config = WifiP2pConfig().apply { // Builder variant needs API 29+
-                deviceAddress = peer.id
-                wps.setup = WpsInfo.PBC
-                // Neutral owner intent: let negotiation decide; we handle
-                // both outcomes (see onConnectionInfo).
-                groupOwnerIntent = 7
+            val config = buildP2pConfig(peer)
+            // The framework rejects connect() with a generic ERROR when the
+            // channel went stale (wifi toggle, service restart…). Re-init
+            // and retry once before giving up.
+            var initiated = p2pConnect(config)
+            if (!initiated) {
+                AppLog.log(TAG, "re-initializing p2p channel and retrying connect")
+                ensureInit(force = true)
+                registerReceiver()
+                delay(500)
+                initiated = p2pConnect(config)
             }
-            manager?.connect(channel, config, object : WifiP2pManager.ActionListener {
-                override fun onSuccess() {
-                    AppLog.log(TAG, "p2p connect initiated; waiting for peer to accept the system invitation")
-                    Log.i(TAG, "p2p connect initiated to ${peer.id}")
-                }
-
-                override fun onFailure(reason: Int) {
-                    val name = reasonName(reason)
-                    AppLog.log(TAG, "p2p connect failed: $name")
-                    scope.launch {
-                        mutex.withLock {
-                            _error.value =
-                                TransportError.ConnectFailed("connect failed: $name")
-                            _state.value = TransportState.FAILED
-                        }
-                    }
-                }
-            })
+            if (!initiated) {
+                _error.value = TransportError.ConnectFailed(
+                    "wi-fi direct connect rejected by framework",
+                )
+                _state.value = TransportState.FAILED
+                return
+            }
+            AppLog.log(TAG, "p2p connect initiated; waiting for peer to accept the system invitation")
             // Watchdog: the framework reports nothing when the peer ignores
             // the system invitation prompt — fail visibly instead of hanging
             // in CONNECTING forever.
@@ -252,6 +257,63 @@ class WifiDirectTransport(private val context: Context) : Transport {
                     }
                 }
             }
+        }
+    }
+
+    /**
+     * Modern P2P connect config: WifiP2pConfig.Builder (API 29+); legacy
+     * constructor below that.
+     */
+    private fun buildP2pConfig(peer: PeerDevice): WifiP2pConfig {
+        return if (Build.VERSION.SDK_INT >= 29) {
+            WifiP2pConfig.Builder()
+                .setDeviceAddress(android.net.MacAddress.fromString(peer.id))
+                .build()
+                .apply {
+                    @Suppress("DEPRECATION")
+                    wps.setup = WpsInfo.PBC
+                }
+        } else {
+            @Suppress("DEPRECATION")
+            WifiP2pConfig().apply {
+                deviceAddress = peer.id
+                wps.setup = WpsInfo.PBC
+                // Neutral owner intent: let negotiation decide; we handle
+                // both outcomes (see onConnectionInfo).
+                groupOwnerIntent = 7
+            }
+        }
+    }
+
+    /**
+     * Suspends until the framework accepts or rejects the P2P invitation.
+     * Returns false on rejection or timeout (stale channel, busy…).
+     */
+    @SuppressLint("MissingPermission")
+    private suspend fun p2pConnect(config: WifiP2pConfig): Boolean {
+        val mgr = manager
+        val ch = channel
+        if (mgr == null || ch == null) return false
+        return try {
+            withTimeout(10_000) {
+                val done = CompletableDeferred<Boolean>()
+                mgr.connect(ch, config, object : WifiP2pManager.ActionListener {
+                    override fun onSuccess() {
+                        Log.i(TAG, "p2p connect accepted by framework")
+                        done.complete(true)
+                    }
+
+                    override fun onFailure(reason: Int) {
+                        val name = reasonName(reason)
+                        AppLog.log(TAG, "p2p connect failed: $name")
+                        done.complete(false)
+                    }
+                })
+                done.await()
+            }
+        } catch (_: Exception) {
+            AppLog.log(TAG, "p2p connect attempt timed out")
+            false
         }
     }
 
