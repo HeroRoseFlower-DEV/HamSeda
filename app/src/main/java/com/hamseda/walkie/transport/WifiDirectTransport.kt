@@ -439,9 +439,53 @@ class WifiDirectTransport(private val context: Context) : Transport {
         val host = info.groupOwnerAddress?.hostAddress
             ?: throw IOException("group owner address unavailable")
         Log.i(TAG, "client: connecting to group owner $host")
-        return Socket().also {
-            it.connect(InetSocketAddress(host, Protocol.WIFI_DIRECT_PORT), Protocol.CONNECT_TIMEOUT_MS)
+
+        // Both phones receive the group-formed callback independently. The
+        // client can reach this point a moment before the owner has bound its
+        // ServerSocket; a single TCP attempt then fails immediately with
+        // ECONNREFUSED even though Wi-Fi Direct itself succeeded. Retry
+        // short connection attempts until the same bounded connection deadline.
+        val deadlineNanos =
+            System.nanoTime() + Protocol.CONNECT_TIMEOUT_MS.toLong() * 1_000_000L
+        var lastFailure: IOException? = null
+        var loggedNotReady = false
+        while (true) {
+            val remainingNanos = deadlineNanos - System.nanoTime()
+            if (remainingNanos <= 0L) break
+            val timeoutMs = (remainingNanos / 1_000_000L)
+                .coerceAtLeast(1L)
+                .coerceAtMost(1_000L)
+                .toInt()
+            val client = Socket()
+            try {
+                client.connect(
+                    InetSocketAddress(host, Protocol.WIFI_DIRECT_PORT),
+                    timeoutMs,
+                )
+                client.tcpNoDelay = true
+                Log.i(TAG, "client: connected to group owner $host")
+                return client
+            } catch (e: IOException) {
+                lastFailure = e
+                try { client.close() } catch (_: IOException) {}
+                if (!loggedNotReady) {
+                    AppLog.log(TAG, "group owner socket not ready yet; retrying (${e.javaClass.simpleName})")
+                    loggedNotReady = true
+                }
+                if (deadlineNanos - System.nanoTime() <= 0L) break
+                try {
+                    Thread.sleep(200L)
+                } catch (e: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    throw IOException("client connection interrupted", e)
+                }
+            }
         }
+        throw IOException(
+            "could not connect to group owner $host:${Protocol.WIFI_DIRECT_PORT} " +
+                "within ${Protocol.CONNECT_TIMEOUT_MS}ms; lastError=${lastFailure?.message}",
+            lastFailure,
+        )
     }
 
     private suspend fun onSocketReady(socket: Socket) {
