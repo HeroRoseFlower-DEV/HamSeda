@@ -17,7 +17,6 @@ import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ChevronRight
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material3.Card
@@ -189,7 +188,7 @@ fun SettingsScreen(
                         fontWeight = FontWeight.Medium,
                         modifier = Modifier.weight(1f),
                     )
-                    Icon(Icons.AutoMirrored.Filled.ChevronRight, contentDescription = null)
+                    Icon(Icons.Filled.ChevronLeft, contentDescription = null)
                 }
                 Row(
                     modifier = Modifier
@@ -204,7 +203,7 @@ fun SettingsScreen(
                         fontWeight = FontWeight.Medium,
                         modifier = Modifier.weight(1f),
                     )
-                    Icon(Icons.AutoMirrored.Filled.ChevronRight, contentDescription = null)
+                    Icon(Icons.Filled.ChevronLeft, contentDescription = null)
                 }
             }
 

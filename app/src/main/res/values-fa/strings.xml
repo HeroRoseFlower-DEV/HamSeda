@@ -144,4 +144,5 @@
     <string name="close">بستن</string>
     <string name="back">بازگشت</string>
     <string name="discoverable_declined">قابل‌مشاهده شدن رد شد — گوشی شما برای اسکن بلوتوث قابل‌مشاهده نخواهد بود.</string>
+    <string name="err_playback">بلندگو در دسترس نیست — پخش صدا شروع نشد.</string>
 </resources>

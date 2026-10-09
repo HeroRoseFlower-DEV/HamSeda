@@ -144,4 +144,5 @@
     <string name="close">Close</string>
     <string name="back">Back</string>
     <string name="discoverable_declined">Visibility declined — your phone will not be discoverable to Bluetooth scans.</string>
+    <string name="err_playback">Speaker unavailable — could not start audio playback.</string>
 </resources>

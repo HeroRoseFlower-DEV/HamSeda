@@ -260,5 +260,6 @@ private fun errorStringRes(e: SessionManager.SessionError): Int = when (e) {
     SessionManager.SessionError.PEER_TIMEOUT -> R.string.err_peer_timeout
     SessionManager.SessionError.PROTOCOL_ERROR -> R.string.err_protocol
     SessionManager.SessionError.MIC_UNAVAILABLE -> R.string.err_mic
+    SessionManager.SessionError.PLAYBACK_UNAVAILABLE -> R.string.err_playback
     SessionManager.SessionError.PEER_REJECTED -> R.string.err_peer_rejected
 }
