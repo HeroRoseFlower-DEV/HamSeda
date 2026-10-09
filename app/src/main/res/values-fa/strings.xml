@@ -118,6 +118,9 @@
     <string name="err_peer_busy">هم‌صحبت دارد صحبت می‌کند؛ کمی صبر کن.</string>
     <string name="err_transport_lost">اتصال قطع شد.</string>
     <string name="err_connect_failed">اتصال به آن گوشی برقرار نشد. مطمئن شوید گوشی مقابل در حالت شنیدن است و نزدیک است، سپس دوباره تلاش کنید.</string>
+    <string name="err_bluetooth_scan_failed">اندروید شروع جست‌وجوی بلوتوث را نپذیرفت. دسترسی «دستگاه‌های نزدیک» را بررسی کن، بلوتوث را یک بار خاموش و روشن کن و دوباره تلاش کن.</string>
+    <string name="err_wifi_scan_failed">اندروید شروع جست‌وجوی وای‌فای دایرکت را نپذیرفت. دسترسی «دستگاه‌های نزدیک» را بررسی کن و مطمئن شو وای‌فای روشن است.</string>
+    <string name="err_wifi_p2p_connect_rejected">اندروید درخواست وای‌فای دایرکت را رد کرد. هر دو گوشی را نزدیک نگه دارید، وای‌فای را روشن کنید، دوباره تلاش کنید و دعوت سیستمی را روی گوشی مقابل بپذیرید.</string>
     <string name="err_peer_not_found">آن گوشی دیگر قابل مشاهده نیست. دوباره جستجو کنید.</string>
     <string name="err_handshake_timeout">گوشی مقابل به‌موقع پاسخ نداد. دوباره تلاش کنید.</string>
     <string name="err_peer_timeout">هم‌صحبت پاسخ نداد؛ اتصال قطع شد.</string>
