@@ -149,4 +149,5 @@
     <string name="back">بازگشت</string>
     <string name="discoverable_declined">قابل‌مشاهده شدن رد شد — گوشی شما برای اسکن بلوتوث قابل‌مشاهده نخواهد بود.</string>
     <string name="err_playback">بلندگو در دسترس نیست — پخش صدا شروع نشد.</string>
+    <string name="err_restart_timeout">نشست قبلی هنوز در حال بسته‌شدن است. کمی صبر کن و دوباره تلاش کن.</string>
 </resources>
