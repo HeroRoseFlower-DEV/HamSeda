@@ -114,8 +114,11 @@ class DiscoveryViewModel(private val deps: VmDeps) : ViewModel() {
 
     fun setPreference(p: TransportPreference) {
         viewModelScope.launch {
-            deps.settings.setTransportPreference(p)
+            if (deps.manager.phase.value != SessionManager.Phase.IDLE) return@launch
+            // Switch synchronously before the first suspension so a session
+            // started concurrently always captures the selected transport.
             deps.transports.setPreference(p)
+            deps.settings.setTransportPreference(p)
         }
     }
 
@@ -187,10 +190,15 @@ class SettingsViewModel(private val deps: VmDeps) : ViewModel() {
     val language = deps.settings.languageFlow
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), "")
 
+    val phase = deps.manager.phase
+
     fun setTransportPreference(p: TransportPreference) {
         viewModelScope.launch {
-            deps.settings.setTransportPreference(p)
+            if (deps.manager.phase.value != SessionManager.Phase.IDLE) return@launch
+            // Transport changes are immediate; persist after selection so the
+            // currently active session cannot be silently moved to another radio.
             deps.transports.setPreference(p)
+            deps.settings.setTransportPreference(p)
         }
     }
 
