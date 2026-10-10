@@ -23,7 +23,9 @@ import com.hamseda.walkie.util.AppLog
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
@@ -83,6 +85,9 @@ class SessionManager(
     // ------------------------------------------------------- observable state
 
     private val lifecycleLock = Any()
+    /** Independent cleanup survives VoiceService cancelling its child scope in onDestroy(). */
+    private val cleanupJob = SupervisorJob()
+    private val cleanupScope = CoroutineScope(cleanupJob + Dispatchers.IO)
     private val _phase = MutableStateFlow(Phase.IDLE)
     val phase: StateFlow<Phase> = _phase.asStateFlow()
 
@@ -285,6 +290,8 @@ class SessionManager(
         scope.launch {
             try {
                 t.connect(peer)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 fail(SessionError.TRANSPORT_LOST)
             }
@@ -303,6 +310,8 @@ class SessionManager(
         scope.launch {
             try {
                 t.listen()
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 fail(SessionError.TRANSPORT_LOST)
             }
@@ -486,30 +495,27 @@ class SessionManager(
      * onDestroy is about to cancel). Transport close runs best-effort.
      */
     fun close() {
-        val wasActive = synchronized(lifecycleLock) {
-            val active = _phase.value != Phase.IDLE && _phase.value != Phase.ENDED
-            _phase.value = Phase.ENDED
-            active
-        }
+        synchronized(lifecycleLock) { _phase.value = Phase.ENDED }
         cancelDeadlines()
         stopSender()
         try { audio.stopCapture() } catch (_: Exception) {}
         try { audio.stopPlayback() } catch (_: Exception) {}
         keys?.wipe(); keys = null
         myKeyPair = null
-        scope.launch {
-            // NonCancellable: serviceScope.cancel() in onDestroy must not
-            // abort the transport disconnect.
+
+        // This must not use the service's child scope: VoiceService.onDestroy()
+        // cancels that scope immediately after close() returns. Serialize final
+        // transport cleanup with an in-flight teardown and keep it non-cancellable.
+        cleanupScope.launch {
             withContext(NonCancellable) {
-                try { transport?.disconnect() } catch (_: Exception) {}
-                detachTransport()
+                teardownMutex.withLock {
+                    try { transport?.disconnect() } catch (_: Exception) {}
+                    detachTransport()
+                    _transportType.value = null
+                    synchronized(lifecycleLock) { _phase.value = Phase.IDLE }
+                }
             }
-            _phase.value = Phase.IDLE
-        }
-        if (!wasActive) {
-            // Nothing was running; still detach for a clean slate.
-            detachTransport()
-            _phase.value = Phase.IDLE
+            cleanupJob.cancel()
         }
     }
 
