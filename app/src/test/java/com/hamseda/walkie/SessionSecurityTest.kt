@@ -1,6 +1,7 @@
 package com.hamseda.walkie
 
 import com.hamseda.walkie.audio.OpusCodec
+import com.hamseda.walkie.audio.JitterBuffer
 import com.hamseda.walkie.proto.Frame
 import com.hamseda.walkie.proto.MessageType
 import com.hamseda.walkie.session.FloorController
@@ -124,8 +125,11 @@ class SessionSecurityTest {
     }
 
     private fun Rig.start() {
-        a.startOutgoing(ta, PeerDevice("b", "B", TransportType.WIFI_DIRECT))
+        // Subscribe the waiting endpoint before the initiating endpoint can
+        // send HELLO. This mirrors the real transport lifecycle and avoids
+        // dropping the first frame in the in-memory SharedFlow test harness.
         b.acceptIncoming(tb)
+        a.startOutgoing(ta, PeerDevice("b", "B", TransportType.WIFI_DIRECT))
     }
 
     private fun Rig.close() {
@@ -139,6 +143,133 @@ class SessionSecurityTest {
             if (System.currentTimeMillis() > end) throw AssertionError("timeout: $what")
             Thread.sleep(10)
         }
+    }
+
+    @Test
+    fun `malformed SAS confirmation does not terminate inbound collector`() {
+        val rig = newRig()
+        rig.start()
+        rig.await("both endpoints waiting for SAS") {
+            rig.a.phase.value == SessionManager.Phase.AWAITING_SAS_CONFIRM &&
+                rig.b.phase.value == SessionManager.Phase.AWAITING_SAS_CONFIRM
+        }
+
+        val failuresBefore = rig.b.authFailures.value
+        val malformed = Frame(
+            type = MessageType.SAS_CONFIRM,
+            sessionId = ByteArray(8),
+            seq = 1L,
+            timestamp = System.currentTimeMillis(),
+            codecId = 0xFF.toByte(),
+            payload = ByteArray(0), // Missing nonce/tag; authentication must fail safely.
+        ).encode()
+        assertTrue(rig.tb.inject(malformed))
+        rig.await("malformed SAS frame counted") {
+            rig.b.authFailures.value > failuresBefore
+        }
+        assertEquals(SessionManager.Phase.AWAITING_SAS_CONFIRM, rig.b.phase.value)
+
+        // Bad data must not kill the collector; valid confirmations still work.
+        rig.a.confirmSas(true)
+        rig.b.confirmSas(true)
+        rig.await("session recovered after malformed SAS frame") {
+            rig.a.phase.value == SessionManager.Phase.IN_SESSION &&
+                rig.b.phase.value == SessionManager.Phase.IN_SESSION
+        }
+        rig.close()
+    }
+
+    @Test
+    fun `malformed authenticated control payload fails closed`() {
+        val rig = newRig()
+        rig.start()
+        rig.await("sas phase") {
+            rig.a.phase.value == SessionManager.Phase.AWAITING_SAS_CONFIRM &&
+                rig.b.phase.value == SessionManager.Phase.AWAITING_SAS_CONFIRM
+        }
+        rig.a.confirmSas(true)
+        rig.b.confirmSas(true)
+        rig.await("in session") {
+            rig.a.phase.value == SessionManager.Phase.IN_SESSION &&
+                rig.b.phase.value == SessionManager.Phase.IN_SESSION
+        }
+
+        val enqueueControl = SessionManager::class.java.getDeclaredMethod(
+            "enqueueControl",
+            java.lang.Byte.TYPE,
+            ByteArray::class.java,
+        )
+        enqueueControl.isAccessible = true
+        // PING is defined as an 8-byte timestamp. This frame is authenticated,
+        // but its malformed body must neither refresh liveness nor be echoed.
+        enqueueControl.invoke(rig.a, MessageType.PING, byteArrayOf(1))
+        rig.await("invalid payload rejected") {
+            rig.b.phase.value == SessionManager.Phase.IDLE &&
+                rig.b.error.value == SessionManager.SessionError.PROTOCOL_ERROR
+        }
+        rig.close()
+    }
+
+    @Test
+    fun `audio jitter sequence ignores interleaved control frames`() {
+        val rig = newRig()
+        rig.start()
+        rig.await("sas phase") {
+            rig.a.phase.value == SessionManager.Phase.AWAITING_SAS_CONFIRM &&
+                rig.b.phase.value == SessionManager.Phase.AWAITING_SAS_CONFIRM
+        }
+        rig.a.confirmSas(true)
+        rig.b.confirmSas(true)
+        rig.await("in session") {
+            rig.a.phase.value == SessionManager.Phase.IN_SESSION &&
+                rig.b.phase.value == SessionManager.Phase.IN_SESSION
+        }
+        rig.a.setPttPressed(true)
+        rig.await("transmitting and peer holds floor") {
+            rig.audioA.isCapturing && rig.b.floorHolder.value == FloorController.Holder.PEER
+        }
+
+        val codec = OpusCodec()
+        val encoded = codec.encode(ShortArray(320) { 7 })
+        repeat(2) {
+            rig.audioA.onFrame?.invoke(encoded, 0.5f)
+            val expected = it + 1L
+            rig.await("audio $expected buffered") {
+                (rig.audioB.playbackBuffer?.received ?: 0L) >= expected
+            }
+        }
+
+        // Inject a real, authenticated control frame through the same ordered
+        // sender. It consumes a wire sequence number but is not an audio packet.
+        val enqueueControl = SessionManager::class.java.getDeclaredMethod(
+            "enqueueControl",
+            java.lang.Byte.TYPE,
+            ByteArray::class.java,
+        )
+        enqueueControl.isAccessible = true
+        enqueueControl.invoke(rig.a, MessageType.PING, ByteArray(8))
+
+        repeat(2) {
+            rig.audioA.onFrame?.invoke(encoded, 0.5f)
+        }
+        rig.await("all audio frames buffered") {
+            (rig.audioB.playbackBuffer?.received ?: 0L) >= 4L
+        }
+
+        // The jitter buffer must receive dense audio-only sequence numbers,
+        // otherwise the PING looks like a lost audio frame and stalls playout.
+        val buffer = requireNotNull(rig.audioB.playbackBuffer)
+        val played = (0 until 4).map { buffer.takeNext() }
+        assertTrue(
+            "control-frame sequence gaps must not stall audio playout",
+            played.all { it is JitterBuffer.TakeResult.Frame },
+        )
+        assertEquals(
+            listOf(0L, 1L, 2L, 3L),
+            played.map { (it as JitterBuffer.TakeResult.Frame).packet.seq },
+        )
+        codec.close()
+        rig.close()
     }
 
     @Test
@@ -333,6 +464,10 @@ class SessionSecurityTest {
             thread {
                 repeat(perThread) {
                     rig.audioA.onFrame?.invoke(frame, 0.5f)
+                    // Keep aggregate producer throughput below the deliberately
+                    // bounded real-time audio queue so this test measures wire
+                    // sequence serialization rather than intentional overload drops.
+                    Thread.sleep(10)
                 }
             }
         }
@@ -376,8 +511,8 @@ class SessionSecurityTest {
             }
         }
         threads.forEach { it.join() }
-        // 2000 frames through a 256-slot queue: must complete without
-        // hanging or breaking the session.
+        // Excess audio is dropped once the 32-frame pending-audio budget
+        // is full; this overload must not hang or break the session.
         Thread.sleep(1000)
         assertEquals(SessionManager.Phase.IN_SESSION, rig.a.phase.value)
         assertEquals(SessionManager.Phase.IN_SESSION, rig.b.phase.value)

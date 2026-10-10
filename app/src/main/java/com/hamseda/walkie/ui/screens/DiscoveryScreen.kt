@@ -86,30 +86,41 @@ fun DiscoveryScreen(
     var pendingAction by remember { mutableStateOf<(() -> Unit)?>(null) }
     val permLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
-    ) {
-        // Re-run whatever the user tried to do; transports re-check.
-        pendingAction?.invoke()
+    ) { results ->
+        // Clear the old action BEFORE invoking it: the action can open a
+        // second system prompt and install a new pending action. Do not retry
+        // automatically when the user denied a permission; that would reopen
+        // the same system dialog in a loop.
+        val action = pendingAction
         pendingAction = null
+        if (results.isNotEmpty() && results.values.all { it }) {
+            action?.invoke()
+        } else {
+            android.widget.Toast.makeText(
+                context,
+                context.getString(R.string.perm_denied_hint),
+                android.widget.Toast.LENGTH_LONG,
+            ).show()
+        }
         vm.refreshAvailability()
     }
     // System dialog that makes this phone visible to Bluetooth scans.
-    // Needs BLUETOOTH_ADVERTISE on API 31+ (requested via the permission
-    // flow before listen/scan).
+    // BLUETOOTH_ADVERTISE is requested only when this dialog is needed.
     val discoverableLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
     ) { result ->
+        val action = pendingAction
+        pendingAction = null
         if (result.resultCode == android.app.Activity.RESULT_OK) {
-            pendingAction?.invoke()
+            action?.invoke()
         } else {
-            // L5: declining the dialog silently dropped the pending action.
-            // Tell the user why nothing happened.
+            // Declining visibility leaves the app in listen-not-ready state.
             android.widget.Toast.makeText(
                 context,
                 context.getString(R.string.discoverable_declined),
                 android.widget.Toast.LENGTH_LONG,
             ).show()
         }
-        pendingAction = null
     }
 
     fun requestDiscoverable(then: () -> Unit) {
@@ -131,12 +142,13 @@ fun DiscoveryScreen(
         PermissionHelper.missingBluetoothPermissions(context, forDiscovery = true)
     }
 
-    /** Connect-time permissions: discovery + local-network access on API 37+. */
-    fun missingForConnect(): List<String> = if (activeType == TransportType.WIFI_DIRECT) {
-        PermissionHelper.missingWifiDirectConnectPermissions(context)
-    } else {
-        PermissionHelper.missingBluetoothPermissions(context, forDiscovery = false)
-    }
+    /** Permissions required before starting the microphone foreground service/session. */
+    fun missingForSessionStart(): List<String> =
+        (if (activeType == TransportType.WIFI_DIRECT) {
+            PermissionHelper.missingWifiDirectConnectPermissions(context)
+        } else {
+            PermissionHelper.missingBluetoothPermissions(context, forDiscovery = false)
+        } + PermissionHelper.missingMicrophonePermission(context)).distinct()
 
     fun doScan() {
         val missing = missingForScan()
@@ -149,7 +161,7 @@ fun DiscoveryScreen(
     }
 
     fun doConnectPeer(peer: com.hamseda.walkie.transport.PeerDevice) {
-        val missing = missingForConnect()
+        val missing = missingForSessionStart()
         if (missing.isNotEmpty()) {
             pendingAction = { vm.connectPeer(peer) }
             permLauncher.launch(missing.toTypedArray())
@@ -159,15 +171,25 @@ fun DiscoveryScreen(
     }
 
     fun doListen() {
-        val missing = missingForConnect()
+        val missing = missingForSessionStart()
         if (missing.isNotEmpty()) {
-            pendingAction = { vm.listenForIncoming() }
+            // Re-enter this whole flow after permission grant so Bluetooth
+            // discoverability is still requested before opening the listener.
+            pendingAction = { doListen() }
             permLauncher.launch(missing.toTypedArray())
             return
         }
-        // Bluetooth classic only finds *discoverable* phones: make this
-        // phone visible first, then open the RFCOMM server socket.
+        // Bluetooth Classic scans only find discoverable phones. Request the
+        // additional permission only if this screen needs to make the phone
+        // visible; outgoing scans/connections do not need ADVERTISE.
         if (activeType == TransportType.BLUETOOTH && !discoverable) {
+            val missingAdvertise =
+                PermissionHelper.missingBluetoothAdvertisePermission(context)
+            if (missingAdvertise.isNotEmpty()) {
+                pendingAction = { doListen() }
+                permLauncher.launch(missingAdvertise.toTypedArray())
+                return
+            }
             requestDiscoverable { vm.listenForIncoming() }
         } else {
             vm.listenForIncoming()
@@ -213,7 +235,17 @@ fun DiscoveryScreen(
                 ModeSelector(
                     preference = preference,
                     onSelect = vm::setPreference,
+                    enabled = phase == SessionManager.Phase.IDLE,
                 )
+            }
+            if (phase != SessionManager.Phase.IDLE) {
+                item {
+                    Text(
+                        text = stringResource(R.string.transport_locked_hint),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
             if (choiceExplanation.isNotEmpty()) {
                 item {
@@ -465,6 +497,7 @@ private fun ScanCard(
 private fun ModeSelector(
     preference: TransportPreference,
     onSelect: (TransportPreference) -> Unit,
+    enabled: Boolean,
 ) {
     val options = listOf(
         Triple(TransportPreference.AUTO_RECOMMEND, R.string.transport_auto, Icons.Filled.Radar),
@@ -482,13 +515,14 @@ private fun ModeSelector(
                         .fillMaxWidth()
                         .selectable(
                             selected = preference == pref,
+                            enabled = enabled,
                             onClick = { onSelect(pref) },
                             role = Role.RadioButton,
                         )
                         .padding(horizontal = 16.dp, vertical = 10.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    RadioButton(selected = preference == pref, onClick = null)
+                    RadioButton(selected = preference == pref, onClick = null, enabled = enabled)
                     Spacer(Modifier.width(8.dp))
                     Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
                     Spacer(Modifier.width(12.dp))
@@ -613,7 +647,15 @@ private fun transportErrorMessage(e: com.hamseda.walkie.transport.TransportError
                 else R.string.err_radio_disabled_bt,
             )
         is com.hamseda.walkie.transport.TransportError.ConnectFailed ->
-            stringResource(R.string.err_connect_failed)
+            when {
+                e.reason.contains("bluetooth discovery failed", ignoreCase = true) ->
+                    stringResource(R.string.err_bluetooth_scan_failed)
+                e.reason.startsWith("discovery failed:", ignoreCase = true) ->
+                    stringResource(R.string.err_wifi_scan_failed)
+                e.reason.contains("wi-fi direct connect rejected", ignoreCase = true) ->
+                    stringResource(R.string.err_wifi_p2p_connect_rejected)
+                else -> stringResource(R.string.err_connect_failed)
+            }
         is com.hamseda.walkie.transport.TransportError.ConnectionLost ->
             stringResource(R.string.err_transport_lost)
         is com.hamseda.walkie.transport.TransportError.PeerNotFound ->

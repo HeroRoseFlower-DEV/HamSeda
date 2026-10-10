@@ -85,6 +85,22 @@ class FloorControlTest {
     }
 
     @Test
+    fun `self grant lease lasts to the configured hard cap`() {
+        val clock = Clock()
+        val (c, _) = controller(clock)
+        assertTrue(c.requestFloor())
+        c.onGrant(FloorController.MAX_SELF_TX_MS)
+
+        clock.now += FloorController.PEER_LEASE_MS + 1_000
+        c.checkTimeouts()
+        assertEquals("self lease must not expire at the peer's shorter lease", FloorController.Holder.SELF, c.holder)
+
+        clock.now = FloorController.MAX_SELF_TX_MS + 1
+        c.checkTimeouts()
+        assertEquals(FloorController.Holder.NONE, c.holder)
+    }
+
+    @Test
     fun `double grant is ignored`() {
         val clock = Clock()
         val (c, events) = controller(clock)

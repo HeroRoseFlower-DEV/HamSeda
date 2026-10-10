@@ -11,6 +11,7 @@ import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import javax.crypto.AEADBadTagException
+import java.util.Locale
 
 class CryptoTest {
 
@@ -129,6 +130,22 @@ class CryptoTest {
     }
 
     @Test
+    fun `SAS digits are stable across device locales`() {
+        val oldLocale = Locale.getDefault()
+        val seed = ByteArray(32) { (it * 7).toByte() }
+        try {
+            Locale.setDefault(Locale.forLanguageTag("fa-IR"))
+            val fa = SessionCrypto.shortAuthString(seed)
+            Locale.setDefault(Locale.US)
+            val en = SessionCrypto.shortAuthString(seed)
+            assertEquals(fa, en)
+            assertTrue(fa.matches(Regex("[0-9]{6}")))
+        } finally {
+            Locale.setDefault(oldLocale)
+        }
+    }
+
+    @Test
     fun `different transcripts give different SAS with overwhelming probability`() {
         val (a, _, _) = ecdhPair()
         val (_, b2, _) = ecdhPair()
@@ -219,6 +236,38 @@ class ReplayProtectionTest {
         assertTrue(r.accept(1000))
         assertTrue(r.accept(1001))
         assertFalse(r.accept(3)) // ancient history
+    }
+
+    @Test
+    fun `uint32 rollover accepts new frames and rejects duplicates`() {
+        val r = ReplayProtection(windowSize = 8)
+        assertTrue(r.accept(0xFFFFFFFEL))
+        assertTrue(r.accept(0xFFFFFFFFL))
+        assertTrue(r.accept(0L))
+        assertTrue(r.accept(1L))
+        assertFalse(r.accept(0xFFFFFFFFL))
+        assertFalse(r.accept(0L))
+        assertFalse(r.accept(0xFFFFFFF0L)) // more than one window behind
+    }
+
+    @Test
+    fun `uint32 rollover still allows unseen in-window reordering once`() {
+        val r = ReplayProtection(windowSize = 8)
+        assertTrue(r.accept(0xFFFFFFFEL))
+        assertTrue(r.accept(1L))
+        assertTrue(r.accept(0L))
+        assertTrue(r.accept(0xFFFFFFFFL))
+        assertFalse(r.accept(0L))
+        assertFalse(r.accept(0xFFFFFFFFL))
+    }
+
+    @Test
+    fun `large forward jump across rollover clears the old replay window`() {
+        val r = ReplayProtection(windowSize = 8)
+        assertTrue(r.accept(0xFFFFFFFEL))
+        assertTrue(r.accept(20L)) // forward distance is 22 across rollover
+        assertFalse(r.accept(0xFFFFFFFEL))
+        assertTrue(r.accept(21L))
     }
 
     @Test

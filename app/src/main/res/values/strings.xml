@@ -67,6 +67,7 @@
     <!-- Settings -->
     <string name="settings_title">Settings</string>
     <string name="settings_transport">Connection mode</string>
+    <string name="transport_locked_hint">Connection mode cannot be changed during an active session.</string>
     <string name="settings_codec">Audio codec</string>
     <string name="codec_opus">Opus (default, efficient)</string>
     <string name="codec_opus_desc">About 20 kbps; suits both connection modes.</string>
@@ -118,10 +119,13 @@
     <string name="err_peer_busy">Your peer is talking; please wait.</string>
     <string name="err_transport_lost">Connection lost.</string>
     <string name="err_connect_failed">Could not connect to that phone. Make sure it is listening and nearby, then try again.</string>
+    <string name="err_bluetooth_scan_failed">Android refused to start Bluetooth discovery. Check the Nearby devices permission, toggle Bluetooth off and on, then retry.</string>
+    <string name="err_wifi_scan_failed">Android refused to start Wi-Fi Direct discovery. Check Nearby devices permission and make sure Wi-Fi is enabled, then retry.</string>
+    <string name="err_wifi_p2p_connect_rejected">Android rejected the Wi-Fi Direct connection request. Keep both phones nearby, enable Wi-Fi on both, retry, and accept the system invitation on the other phone.</string>
     <string name="err_peer_not_found">That phone is no longer visible. Scan again.</string>
     <string name="err_handshake_timeout">The phone did not answer in time. Try again.</string>
     <string name="err_peer_timeout">Peer stopped responding; connection closed.</string>
-    <string name="err_protocol">Protocol error; connection closed.</string>
+    <string name="err_protocol">The handshake from the other phone is incompatible or invalid. Install the same latest HamSeda APK on both phones, then retry.</string>
     <string name="err_mic">Microphone unavailable.</string>
     <string name="err_peer_rejected">Peer rejected the connection.</string>
     <string name="err_radio_disabled_wifi">Wi-Fi Direct is off; please enable it.</string>
@@ -145,4 +149,5 @@
     <string name="back">Back</string>
     <string name="discoverable_declined">Visibility declined — your phone will not be discoverable to Bluetooth scans.</string>
     <string name="err_playback">Speaker unavailable — could not start audio playback.</string>
+    <string name="err_restart_timeout">The previous session is still closing. Wait a moment and try again.</string>
 </resources>

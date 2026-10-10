@@ -132,4 +132,20 @@ class JitterBufferTest {
         assertEquals(droppedBefore + 1, jb.droppedStale)
         assertEquals(4, jb.bufferedFrames())
     }
+    @Test
+    fun `hs12 queue overflow advances past an evicted expected frame`() {
+        val clock = Clock()
+        val jb = JitterBuffer(targetFrames = 2, maxFrames = 3, maxWaitMs = 100, nowMs = clock::get)
+        jb.push(0, payload(0))
+        jb.push(1, payload(1))
+        jb.push(2, payload(2))
+        assertEquals(0L, (jb.takeNext() as JitterBuffer.TakeResult.Frame).packet.seq)
+        // Queue is [1,2,3], nextSeq=1. Pushing 4 evicts expected seq 1.
+        jb.push(3, payload(3))
+        jb.push(4, payload(4))
+        val next = jb.takeNext()
+        assertTrue("playhead should skip the evicted frame without a timeout", next is JitterBuffer.TakeResult.Frame)
+        assertEquals(2L, (next as JitterBuffer.TakeResult.Frame).packet.seq)
+    }
+
 }

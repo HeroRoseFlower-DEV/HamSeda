@@ -12,6 +12,20 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 
+/** Maps persisted or caller-supplied codec IDs to one of the supported codecs. */
+internal fun normalizeCodecPreference(value: Int?): Byte = when (value) {
+    CodecId.OPUS.toInt() -> CodecId.OPUS
+    CodecId.PCM16.toInt() -> CodecId.PCM16
+    else -> CodecId.OPUS
+}
+
+/** A corrupted or obsolete persisted locale must not reach Locale construction. */
+internal fun normalizeLanguageCode(value: String?): String = when (value) {
+    "fa" -> "fa"
+    "en" -> "en"
+    else -> ""
+}
+
 private val Context.dataStore by preferencesDataStore("hamseda_settings")
 
 /**
@@ -38,7 +52,7 @@ class SettingsRepository(private val context: Context) {
         }
 
     val codecPrefFlow: Flow<Byte> =
-        context.dataStore.data.map { (it[Keys.CODEC] ?: CodecId.OPUS.toInt()).toByte() }
+        context.dataStore.data.map { normalizeCodecPreference(it[Keys.CODEC]) }
 
     val speakerphoneFlow: Flow<Boolean> =
         context.dataStore.data.map { it[Keys.SPEAKERPHONE] ?: true }
@@ -54,7 +68,7 @@ class SettingsRepository(private val context: Context) {
 
     /** "fa", "en", or "" for system default. */
     val languageFlow: Flow<String> =
-        context.dataStore.data.map { it[Keys.LANGUAGE] ?: "" }
+        context.dataStore.data.map { normalizeLanguageCode(it[Keys.LANGUAGE]) }
 
     suspend fun transportPreference(): TransportPreference = transportPreferenceFlow.first()
     suspend fun codecPref(): Byte = codecPrefFlow.first()
@@ -64,7 +78,7 @@ class SettingsRepository(private val context: Context) {
     }
 
     suspend fun setCodecPref(v: Byte) {
-        context.dataStore.edit { it[Keys.CODEC] = v.toInt() }
+        context.dataStore.edit { it[Keys.CODEC] = normalizeCodecPreference(v.toInt()).toInt() }
     }
 
     suspend fun setSpeakerphone(v: Boolean) {
@@ -81,10 +95,6 @@ class SettingsRepository(private val context: Context) {
 
     /** L10: only validated language codes are persisted. */
     suspend fun setLanguage(v: String) {
-        val safe = when (v) {
-            "fa", "en", "" -> v
-            else -> ""
-        }
-        context.dataStore.edit { it[Keys.LANGUAGE] = safe }
+        context.dataStore.edit { it[Keys.LANGUAGE] = normalizeLanguageCode(v) }
     }
 }

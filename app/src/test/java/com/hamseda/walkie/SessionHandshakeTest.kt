@@ -52,8 +52,10 @@ class SessionHandshakeTest {
     }
 
     private fun Rig.start() {
-        a.startOutgoing(ta, PeerDevice("b", "B", TransportType.WIFI_DIRECT))
+        // Mirror real usage: the waiting phone attaches its inbound frame
+        // collector before the initiator can send HELLO on the new socket.
         b.acceptIncoming(tb)
+        a.startOutgoing(ta, PeerDevice("b", "B", TransportType.WIFI_DIRECT))
     }
 
     private fun Rig.close() {
@@ -67,6 +69,42 @@ class SessionHandshakeTest {
             if (System.currentTimeMillis() > end) throw AssertionError("timeout: $what")
             Thread.sleep(10)
         }
+    }
+
+    @Test
+    fun `key exchange before HELLO is rejected`() {
+        val wrongOrder = newRig(interceptB = { bytes ->
+            val frame = Frame.decode(bytes)
+            if (frame.type == MessageType.HELLO) {
+                frame.copy(type = MessageType.KEY_EXCHANGE).encode()
+            } else {
+                bytes
+            }
+        })
+        wrongOrder.start()
+        wrongOrder.await("KEY_EXCHANGE before HELLO rejected") {
+            wrongOrder.a.phase.value == SessionManager.Phase.IDLE &&
+                wrongOrder.a.error.value == SessionManager.SessionError.PROTOCOL_ERROR
+        }
+        wrongOrder.close()
+    }
+
+    @Test
+    fun `unsupported HELLO codec is rejected`() {
+        val badCodec = newRig(interceptB = { bytes ->
+            val frame = Frame.decode(bytes)
+            if (frame.type == MessageType.HELLO && frame.payload.size == 2) {
+                frame.copy(payload = frame.payload.copyOf().apply { this[1] = 0x7F.toByte() }).encode()
+            } else {
+                bytes
+            }
+        })
+        badCodec.start()
+        badCodec.await("unsupported HELLO codec rejected") {
+            badCodec.a.phase.value == SessionManager.Phase.IDLE &&
+                badCodec.a.error.value == SessionManager.SessionError.PROTOCOL_ERROR
+        }
+        badCodec.close()
     }
 
     @Test

@@ -135,7 +135,7 @@ object SessionCrypto {
         val digest = mac.doFinal(SAS_INFO.toByteArray())
         var acc = 0L
         for (i in 0 until 6) acc = (acc shl 8) or (digest[i].toLong() and 0xFF)
-        return "%06d".format(acc % 1_000_000)
+        return String.format(java.util.Locale.ROOT, "%06d", acc % 1_000_000)
     }
 
     fun newNonce16(): ByteArray = ByteArray(16).also(random::nextBytes)
