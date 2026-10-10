@@ -62,6 +62,9 @@ class AudioEngine(private val context: Context) : AudioPipeline {
     private var track: AudioTrack? = null
 
     private var focusRequest: AudioFocusRequest? = null
+    /** Audio routing is global to the device; restore the previous state when this app stops audio. */
+    private var previousAudioMode: Int? = null
+    private var previousSpeakerphoneOn: Boolean? = null
     private var effects = mutableListOf<android.media.audiofx.AudioEffect>()
 
     @Volatile
@@ -101,7 +104,6 @@ class AudioEngine(private val context: Context) : AudioPipeline {
             addAction(AudioManager.ACTION_AUDIO_BECOMING_NOISY)
         }
         context.registerReceiver(routeReceiver, filter)
-        applyAudioMode()
     }
 
     // -------------------------------------------------------------- capture
@@ -161,9 +163,9 @@ class AudioEngine(private val context: Context) : AudioPipeline {
             return false
         }
         attachEffects(rec.audioSessionId)
-        applyAudioMode()
         recorder = rec
         captureRunning.set(true)
+        applyAudioMode(force = true)
         captureThread = Thread({
             val frame = ShortArray(AudioCodec.FRAME_SAMPLES)
             try {
@@ -229,13 +231,19 @@ class AudioEngine(private val context: Context) : AudioPipeline {
 
     override fun stopCapture() {
         captureRunning.set(false)
-        try { captureThread?.join(500) } catch (_: InterruptedException) {}
+        val worker = captureThread
+        // Audio errors can invoke stopCapture from the capture callback itself.
+        // Joining the current thread would stall the callback for the full timeout.
+        if (worker != null && worker !== Thread.currentThread()) {
+            try { worker.join(500) } catch (_: InterruptedException) {}
+        }
         captureThread = null
         try { recorder?.stop() } catch (_: IllegalStateException) {}
         recorder?.release()
         recorder = null
         releaseEffects()
         abandonFocus()
+        restoreAudioModeIfIdle()
     }
 
     override val isCapturing: Boolean get() = captureRunning.get()
@@ -278,7 +286,7 @@ class AudioEngine(private val context: Context) : AudioPipeline {
             at.release()
             return false
         }
-        applyAudioMode()
+        applyAudioMode(force = true)
         // Audio playback must start before we report success to SessionManager.
         // Previously the worker thread could fail at AudioTrack.play() only
         // after startPlayback() had already returned true.
@@ -287,6 +295,7 @@ class AudioEngine(private val context: Context) : AudioPipeline {
         } catch (e: IllegalStateException) {
             Log.w(TAG, "AudioTrack play failed: ${e.message}")
             at.release()
+            restoreAudioModeIfIdle()
             return false
         }
         track = at
@@ -347,6 +356,7 @@ class AudioEngine(private val context: Context) : AudioPipeline {
         try { track?.stop() } catch (_: IllegalStateException) {}
         track?.release()
         track = null
+        restoreAudioModeIfIdle()
     }
 
     val isPlaying: Boolean get() = playbackRunning.get()
@@ -358,14 +368,37 @@ class AudioEngine(private val context: Context) : AudioPipeline {
         applyAudioMode()
     }
 
-    private fun applyAudioMode() {
+    private fun applyAudioMode(force: Boolean = false) {
+        // VoiceService is bound for UI state even while idle. Never change
+        // device-wide routing until playback/capture actually starts.
+        if (!force && !captureRunning.get() && !playbackRunning.get()) return
         try {
+            if (previousAudioMode == null) {
+                previousAudioMode = audioManager.mode
+                previousSpeakerphoneOn = audioManager.isSpeakerphoneOn
+            }
             if (audioManager.mode != AudioManager.MODE_IN_COMMUNICATION) {
                 audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
             }
             audioManager.isSpeakerphoneOn = speakerphoneOn && currentRoute != AudioRoute.WIRED_HEADSET
         } catch (e: SecurityException) {
             Log.w(TAG, "audio mode change rejected: ${e.message}")
+        }
+    }
+
+    private fun restoreAudioModeIfIdle() {
+        if (captureRunning.get() || playbackRunning.get()) return
+        val mode = previousAudioMode
+        val speaker = previousSpeakerphoneOn
+        if (mode == null && speaker == null) return
+        try {
+            if (speaker != null) audioManager.isSpeakerphoneOn = speaker
+            if (mode != null) audioManager.mode = mode
+        } catch (e: SecurityException) {
+            Log.w(TAG, "audio mode restore rejected: ${e.message}")
+        } finally {
+            previousAudioMode = null
+            previousSpeakerphoneOn = null
         }
     }
 
@@ -443,9 +476,6 @@ class AudioEngine(private val context: Context) : AudioPipeline {
         try {
             context.unregisterReceiver(routeReceiver)
         } catch (_: IllegalArgumentException) {}
-        try {
-            audioManager.mode = AudioManager.MODE_NORMAL
-        } catch (_: SecurityException) {}
     }
 
     companion object {
