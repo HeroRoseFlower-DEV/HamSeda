@@ -597,11 +597,6 @@ class BluetoothTransport(private val context: Context) : Transport {
             }
             closeSocketLocked()
             btSocket = socket
-            val remote = try {
-                socket.remoteDevice?.address ?: "unknown"
-            } catch (_: SecurityException) {
-                "unknown"
-            }
             AppLog.log(TAG, "RFCOMM socket ready")
             framed = FramedSocket.fromStreams(socket.inputStream, socket.outputStream) {
                 scope.launch { handleLost("peer closed the connection") }
