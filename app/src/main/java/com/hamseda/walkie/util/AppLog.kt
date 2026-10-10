@@ -22,6 +22,8 @@ object AppLog {
 
     /** Matches Bluetooth/Wi-Fi MAC addresses like `aa:bb:cc:11:22:33`. */
     private val MAC_RE = Regex("(?i)\\b([0-9a-f]{2}:){5}[0-9a-f]{2}\\b")
+    /** Redacts local Wi-Fi Direct addresses that can appear in socket errors. */
+    private val IPV4_RE = Regex("""\\b(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)(?:\\.(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)){3}\\b""")
 
     data class Entry(val time: String, val tag: String, val message: String)
 
@@ -33,7 +35,8 @@ object AppLog {
     @Synchronized
     fun log(tag: String, message: String) {
         // Redact persistent device identifiers before they hit the buffer.
-        val safe = MAC_RE.replace(message, "** : ** : ** : ** : ** : **")
+        val withoutMacs = MAC_RE.replace(message, "[MAC]")
+        val safe = IPV4_RE.replace(withoutMacs, "[IP]")
         val e = Entry(timeFmt.format(Date()), tag, safe)
         buffer.addLast(e)
         while (buffer.size > MAX_ENTRIES) buffer.removeFirst()
