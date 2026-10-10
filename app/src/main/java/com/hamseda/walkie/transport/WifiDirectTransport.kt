@@ -447,7 +447,7 @@ class WifiDirectTransport(private val context: Context) : Transport {
             }
             return
         }
-        AppLog.log(TAG, "p2p group formed (owner=${info.isGroupOwner}, addr=${info.groupOwnerAddress?.hostAddress})")
+        AppLog.log(TAG, "p2p group formed (owner=${info.isGroupOwner})")
         scope.launch {
             mutex.withLock {
                 if (expectedGeneration != operationGeneration.get()) return@withLock
@@ -539,14 +539,14 @@ class WifiDirectTransport(private val context: Context) : Transport {
             it.bind(InetSocketAddress(groupAddress, Protocol.WIFI_DIRECT_PORT))
             serverSocket = it
         }
-        Log.i(TAG, "group owner: accepting on P2P address $groupAddress:${Protocol.WIFI_DIRECT_PORT}")
+        Log.i(TAG, "group owner: accepting on P2P interface (port ${Protocol.WIFI_DIRECT_PORT})")
         return server.accept().also { Log.i(TAG, "group owner: peer socket accepted") }
     }
 
     private fun connectAsClient(info: WifiP2pInfo): Socket {
         val host = info.groupOwnerAddress?.hostAddress
             ?: throw IOException("group owner address unavailable")
-        Log.i(TAG, "client: connecting to group owner $host")
+        Log.i(TAG, "client: connecting to Wi-Fi Direct group owner")
 
         // Both phones receive the group-formed callback independently. The
         // client can reach this point a moment before the owner has bound its
@@ -571,7 +571,7 @@ class WifiDirectTransport(private val context: Context) : Transport {
                     timeoutMs,
                 )
                 client.tcpNoDelay = true
-                Log.i(TAG, "client: connected to group owner $host")
+                Log.i(TAG, "client: connected to Wi-Fi Direct group owner")
                 return client
             } catch (e: IOException) {
                 lastFailure = e
