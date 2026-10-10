@@ -149,7 +149,10 @@ class DiscoveryViewModel(private val deps: VmDeps) : ViewModel() {
     /** Listen for an incoming connection on the active transport. */
     fun listenForIncoming() {
         viewModelScope.launch {
-            restartIdle()
+            // Do not present a new listening attempt as active if the prior
+            // session failed to finish teardown and the manager is not IDLE.
+            if (!restartIdle()) return@launch
+
             VoiceService.start(deps.appContext)
             val codec = deps.settings.codecPref()
             deps.manager.acceptIncoming(activeTransport(), codec)

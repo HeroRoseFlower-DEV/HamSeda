@@ -234,7 +234,7 @@ class WifiDirectTransport(private val context: Context) : Transport {
             AppLog.log(
                 TAG,
                 "p2p connect preflight: sdk=${Build.VERSION.SDK_INT}, wifiEnabled=$wifiEnabled, " +
-                    "p2pEnabled=$p2pEnabled, channelReady=${channel != null}, peer=${peer.displayName} (${peer.id})",
+                    "p2pEnabled=$p2pEnabled, channelReady=${channel != null}, peerSelected=true",
             )
             // Do not call stopPeerDiscovery() immediately before connect().
             // The P2P framework ends discovery as part of connection setup;

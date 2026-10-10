@@ -239,6 +239,38 @@ class ReplayProtectionTest {
     }
 
     @Test
+    fun `uint32 rollover accepts new frames and rejects duplicates`() {
+        val r = ReplayProtection(windowSize = 8)
+        assertTrue(r.accept(0xFFFFFFFEL))
+        assertTrue(r.accept(0xFFFFFFFFL))
+        assertTrue(r.accept(0L))
+        assertTrue(r.accept(1L))
+        assertFalse(r.accept(0xFFFFFFFFL))
+        assertFalse(r.accept(0L))
+        assertFalse(r.accept(0xFFFFFFF0L)) // more than one window behind
+    }
+
+    @Test
+    fun `uint32 rollover still allows unseen in-window reordering once`() {
+        val r = ReplayProtection(windowSize = 8)
+        assertTrue(r.accept(0xFFFFFFFEL))
+        assertTrue(r.accept(1L))
+        assertTrue(r.accept(0L))
+        assertTrue(r.accept(0xFFFFFFFFL))
+        assertFalse(r.accept(0L))
+        assertFalse(r.accept(0xFFFFFFFFL))
+    }
+
+    @Test
+    fun `large forward jump across rollover clears the old replay window`() {
+        val r = ReplayProtection(windowSize = 8)
+        assertTrue(r.accept(0xFFFFFFFEL))
+        assertTrue(r.accept(20L)) // forward distance is 22 across rollover
+        assertFalse(r.accept(0xFFFFFFFEL))
+        assertTrue(r.accept(21L))
+    }
+
+    @Test
     fun `reset clears state`() {
         val r = ReplayProtection()
         assertTrue(r.accept(7))

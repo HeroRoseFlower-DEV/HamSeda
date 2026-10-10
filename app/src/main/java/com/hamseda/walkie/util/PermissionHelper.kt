@@ -53,8 +53,14 @@ object PermissionHelper {
             // requested only immediately before this phone is made visible.
             needed += Manifest.permission.BLUETOOTH_CONNECT
         } else if (forDiscovery && Build.VERSION.SDK_INT >= 23) {
-            // API 23–30 required location for classic discovery.
-            needed += Manifest.permission.ACCESS_COARSE_LOCATION
+            // Apps targeting API 29+ must hold FINE location to call
+            // BluetoothAdapter.startDiscovery() on Android 10/11 (API 29–30).
+            // COARSE remains sufficient only for the legacy API 23–28 path.
+            needed += if (Build.VERSION.SDK_INT >= 29) {
+                Manifest.permission.ACCESS_FINE_LOCATION
+            } else {
+                Manifest.permission.ACCESS_COARSE_LOCATION
+            }
         }
         return needed.filter { !isGranted(context, it) }
     }
