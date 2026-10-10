@@ -21,7 +21,7 @@ class JitterBuffer(
     private val maxFrames: Int = 25,
     private val maxLateMs: Long = 400,
     private val maxWaitMs: Long = 120,
-    private val nowMs: () -> Long = System::currentTimeMillis,
+    private val nowMs: () -> Long = { System.nanoTime() / 1_000_000L },
 ) {
     data class Packet(val seq: Long, val receivedAt: Long, val payload: ByteArray)
 
@@ -60,9 +60,17 @@ class JitterBuffer(
             return
         }
         if (queue.size >= maxFrames) {
-            // Runaway protection: drop the oldest queued frame.
-            queue.pollFirstEntry()
-            droppedStale++
+            // Runaway protection: drop the oldest queued frame. If it was the
+            // expected frame, advance the playhead now; otherwise one evicted
+            // packet can make playback wait one maxWaitMs interval per stale seq.
+            val evicted = queue.pollFirstEntry()
+            if (evicted != null) {
+                if (nextSeq != -1L && evicted.key >= nextSeq) {
+                    nextSeq = evicted.key + 1
+                    waitStartedAt = now
+                }
+                droppedStale++
+            }
         }
         queue[seq] = Packet(seq, now, payload)
     }
