@@ -23,7 +23,7 @@ object AppLog {
     /** Matches Bluetooth/Wi-Fi MAC addresses like `aa:bb:cc:11:22:33`. */
     private val MAC_RE = Regex("(?i)\\b([0-9a-f]{2}:){5}[0-9a-f]{2}\\b")
     /** Redacts local Wi-Fi Direct addresses that can appear in socket errors. */
-    private val IPV4_RE = Regex("""\\b(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)(?:\\.(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)){3}\\b""")
+    private val IPV4_RE = Regex("""\b(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?:\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}\b""")
 
     data class Entry(val time: String, val tag: String, val message: String)
 
