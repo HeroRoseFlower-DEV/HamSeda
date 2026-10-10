@@ -14,8 +14,8 @@ import java.util.Locale
  * connection fails on a user's phone, the log shows exactly which step
  * failed instead of a generic error banner.
  *
- * Privacy: MAC addresses are redacted before storage (M1). Never contains
- * audio, keys, or other personal data — only step/result labels.
+ * Privacy: Bluetooth MAC and IPv4 addresses are redacted before storage.
+ * Peer names, audio, keys, and pairing material are not logged.
  */
 object AppLog {
     private const val MAX_ENTRIES = 300
