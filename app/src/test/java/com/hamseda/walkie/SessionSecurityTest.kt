@@ -433,6 +433,10 @@ class SessionSecurityTest {
             thread {
                 repeat(perThread) {
                     rig.audioA.onFrame?.invoke(frame, 0.5f)
+                    // Keep aggregate producer throughput below the deliberately
+                    // bounded real-time audio queue so this test measures wire
+                    // sequence serialization rather than intentional overload drops.
+                    Thread.sleep(10)
                 }
             }
         }
@@ -476,8 +480,8 @@ class SessionSecurityTest {
             }
         }
         threads.forEach { it.join() }
-        // 2000 frames through a 256-slot queue: must complete without
-        // hanging or breaking the session.
+        // Excess audio is dropped once the 32-frame pending-audio budget
+        // is full; this overload must not hang or break the session.
         Thread.sleep(1000)
         assertEquals(SessionManager.Phase.IN_SESSION, rig.a.phase.value)
         assertEquals(SessionManager.Phase.IN_SESSION, rig.b.phase.value)
