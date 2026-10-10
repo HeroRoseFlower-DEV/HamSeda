@@ -1,6 +1,7 @@
 package com.hamseda.walkie
 
 import com.hamseda.walkie.audio.OpusCodec
+import com.hamseda.walkie.audio.JitterBuffer
 import com.hamseda.walkie.proto.Frame
 import com.hamseda.walkie.proto.MessageType
 import com.hamseda.walkie.session.FloorController
@@ -175,6 +176,68 @@ class SessionSecurityTest {
             rig.a.phase.value == SessionManager.Phase.IN_SESSION &&
                 rig.b.phase.value == SessionManager.Phase.IN_SESSION
         }
+        rig.close()
+    }
+
+    @Test
+    fun `audio jitter sequence ignores interleaved control frames`() {
+        val rig = newRig()
+        rig.start()
+        rig.await("sas phase") {
+            rig.a.phase.value == SessionManager.Phase.AWAITING_SAS_CONFIRM &&
+                rig.b.phase.value == SessionManager.Phase.AWAITING_SAS_CONFIRM
+        }
+        rig.a.confirmSas(true)
+        rig.b.confirmSas(true)
+        rig.await("in session") {
+            rig.a.phase.value == SessionManager.Phase.IN_SESSION &&
+                rig.b.phase.value == SessionManager.Phase.IN_SESSION
+        }
+        rig.a.setPttPressed(true)
+        rig.await("transmitting and peer holds floor") {
+            rig.audioA.isCapturing && rig.b.floorHolder.value == FloorController.Holder.PEER
+        }
+
+        val codec = OpusCodec()
+        val encoded = codec.encode(ShortArray(320) { 7 })
+        repeat(2) {
+            rig.audioA.onFrame?.invoke(encoded, 0.5f)
+            val expected = it + 1L
+            rig.await("audio $expected buffered") {
+                (rig.audioB.playbackBuffer?.received ?: 0L) >= expected
+            }
+        }
+
+        // Inject a real, authenticated control frame through the same ordered
+        // sender. It consumes a wire sequence number but is not an audio packet.
+        val enqueueControl = SessionManager::class.java.getDeclaredMethod(
+            "enqueueControl",
+            java.lang.Byte.TYPE,
+            ByteArray::class.java,
+        )
+        enqueueControl.isAccessible = true
+        enqueueControl.invoke(rig.a, MessageType.PING, ByteArray(8))
+
+        repeat(2) {
+            rig.audioA.onFrame?.invoke(encoded, 0.5f)
+        }
+        rig.await("all audio frames buffered") {
+            (rig.audioB.playbackBuffer?.received ?: 0L) >= 4L
+        }
+
+        // The jitter buffer must receive dense audio-only sequence numbers,
+        // otherwise the PING looks like a lost audio frame and stalls playout.
+        val buffer = requireNotNull(rig.audioB.playbackBuffer)
+        val played = (0 until 4).map { buffer.takeNext() }
+        assertTrue(
+            "control-frame sequence gaps must not stall audio playout",
+            played.all { it is JitterBuffer.TakeResult.Frame },
+        )
+        assertEquals(
+            listOf(0L, 1L, 2L, 3L),
+            played.map { (it as JitterBuffer.TakeResult.Frame).packet.seq },
+        )
+        codec.close()
         rig.close()
     }
 
