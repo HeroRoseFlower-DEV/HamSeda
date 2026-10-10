@@ -147,7 +147,7 @@ class SessionManager(
     private var receivedAudioSeq: Long = 0
     private val replay = ReplayProtection()
     private val jitter = JitterBuffer()
-    private val floor = FloorController(clock, this)
+    private val floor = FloorController(elapsedClock, this)
 
     /**
      * Monotonic session generation (HS-07). Incremented on every
