@@ -156,7 +156,7 @@ class WifiDirectTransport(private val context: Context) : Transport {
             _state.value = TransportState.UNAVAILABLE
             return
         }
-        if (!ensureInit())
+        if (!ensureInit()) {
             _state.value = TransportState.UNAVAILABLE
             _error.value = TransportError.Unsupported("wifi_direct_unsupported")
             return
