@@ -953,6 +953,14 @@ class SessionManager(
             _authFailures.value += 1
             return
         }
+        // Validate authenticated payload shape before consuming replay-window
+        // state or refreshing liveness. A malformed grant must never turn into
+        // a default lease, and malformed pings must not keep a bad peer alive.
+        val payloadError = validateSessionPayload(frame, plaintext)
+        if (payloadError != null) {
+            fail(SessionError.PROTOCOL_ERROR, payloadError)
+            return
+        }
         // 3. Replay check — mutates the window only for authenticated frames.
         if (!replay.accept(frame.seq)) {
             _authFailures.value += 1 // duplicate / replayed / too old
@@ -1015,6 +1023,63 @@ class SessionManager(
                 verifyKeyConfirmPayload(plaintext)
             }
             else -> Log.w(TAG, "unexpected ${frame.type} in session")
+        }
+    }
+
+    /** Returns a protocol error for an authenticated but malformed session payload. */
+    private fun validateSessionPayload(frame: Frame, plaintext: ByteArray): String? {
+        if (frame.type != MessageType.AUDIO && frame.codecId != 0xFF.toByte()) {
+            return "non-audio frame used a codec id"
+        }
+        return when (frame.type) {
+            MessageType.AUDIO -> when {
+                frame.codecId != activeCodecId -> "audio codec does not match negotiated codec"
+                plaintext.isEmpty() -> "empty audio payload"
+                activeCodecId == CodecId.PCM16 && plaintext.size != AudioCodec.FRAME_BYTES_PCM ->
+                    "invalid PCM frame length"
+                else -> null
+            }
+            MessageType.FLOOR_REQUEST, MessageType.FLOOR_RELEASE ->
+                if (plaintext.isEmpty()) null else "unexpected floor-control payload"
+            MessageType.FLOOR_GRANT -> {
+                if (plaintext.size != 4) {
+                    "invalid FLOOR_GRANT length"
+                } else {
+                    val lease = ByteBuffer.wrap(plaintext).order(ByteOrder.BIG_ENDIAN).int.toLong()
+                    if (lease in 1L..FloorController.MAX_SELF_TX_MS) null
+                    else "invalid FLOOR_GRANT lease"
+                }
+            }
+            MessageType.FLOOR_DENY -> {
+                if (plaintext.size != 1) {
+                    "invalid FLOOR_DENY length"
+                } else if (plaintext[0] in setOf(
+                        DenyReason.PEER_BUSY,
+                        DenyReason.NOT_AUTHENTICATED,
+                        DenyReason.SESSION_ENDED,
+                    )
+                ) null else "unknown FLOOR_DENY reason"
+            }
+            MessageType.PING, MessageType.PONG ->
+                if (plaintext.size == 8) null else "invalid liveness payload length"
+            MessageType.SAS_CONFIRM ->
+                if (plaintext.isEmpty()) null else "invalid SAS_CONFIRM payload"
+            MessageType.KEY_CONFIRM ->
+                if (plaintext.size == 32) null else "invalid KEY_CONFIRM payload length"
+            MessageType.DISCONNECT -> {
+                if (plaintext.size != 1) {
+                    "invalid DISCONNECT length"
+                } else if (plaintext[0] in setOf(
+                        DisconnectReason.USER_HANGUP,
+                        DisconnectReason.AUTH_MISMATCH,
+                        DisconnectReason.PROTOCOL_ERROR,
+                        DisconnectReason.TRANSPORT_LOST,
+                        DisconnectReason.PEER_TIMEOUT,
+                    )
+                ) null else "unknown DISCONNECT reason"
+            }
+            // ERROR is reserved by v1 and intentionally carries an opaque payload.
+            else -> null
         }
     }
 
