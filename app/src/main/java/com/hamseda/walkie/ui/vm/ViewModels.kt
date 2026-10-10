@@ -90,15 +90,21 @@ class DiscoveryViewModel(private val deps: VmDeps) : ViewModel() {
      * SessionManager's `if (phase != IDLE) return` guard and *silently does
      * nothing* — the button looks dead.
      */
-    private suspend fun restartIdle() {
-        if (deps.manager.phase.value == SessionManager.Phase.IDLE) return
+    private suspend fun restartIdle(): Boolean {
+        if (deps.manager.phase.value == SessionManager.Phase.IDLE) return true
         deps.manager.endSession()
-        try {
+        return try {
             withTimeout(5_000) {
                 deps.manager.phase.first { it == SessionManager.Phase.IDLE }
             }
+            true
         } catch (_: TimeoutCancellationException) {
-            // Proceed anyway; startOutgoing/acceptIncoming re-check IDLE.
+            android.widget.Toast.makeText(
+                deps.appContext,
+                deps.appContext.getString(com.hamseda.walkie.R.string.err_restart_timeout),
+                android.widget.Toast.LENGTH_LONG,
+            ).show()
+            false
         }
     }
 
@@ -133,7 +139,7 @@ class DiscoveryViewModel(private val deps: VmDeps) : ViewModel() {
     /** Outgoing secure session to [peer]. Starts the foreground service first. */
     fun connectPeer(peer: PeerDevice) {
         viewModelScope.launch {
-            restartIdle()
+            if (!restartIdle()) return@launch
             VoiceService.start(deps.appContext)
             val codec = deps.settings.codecPref()
             deps.manager.startOutgoing(activeTransport(), peer, codec)
