@@ -411,7 +411,7 @@ class BluetoothTransport(private val context: Context) : Transport {
             pendingConnectSocket = socketRef
             _state.value = TransportState.CONNECTING
             _error.value = null
-            AppLog.log(TAG, "connecting to ${peer.displayName} (${peer.id})")
+            AppLog.log(TAG, "connecting to selected Bluetooth peer")
             try {
                 a.cancelDiscovery()
             } catch (_: SecurityException) {}
@@ -459,7 +459,7 @@ class BluetoothTransport(private val context: Context) : Transport {
                         socket = null
                         return@launch
                     }
-                    AppLog.log(TAG, "rfcomm connected to ${peer.id}")
+                    AppLog.log(TAG, "RFCOMM connection established")
                     onSocketReady(socket, expectedGeneration = attempt)
                     socket = null // onSocketReady accepted or closed the socket
                 } catch (e: CancellationException) {
@@ -602,7 +602,7 @@ class BluetoothTransport(private val context: Context) : Transport {
             } catch (_: SecurityException) {
                 "unknown"
             }
-            AppLog.log(TAG, "socket ready (peer=$remote)")
+            AppLog.log(TAG, "RFCOMM socket ready")
             framed = FramedSocket.fromStreams(socket.inputStream, socket.outputStream) {
                 scope.launch { handleLost("peer closed the connection") }
             }
