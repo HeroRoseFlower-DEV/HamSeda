@@ -11,6 +11,7 @@ import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import javax.crypto.AEADBadTagException
+import java.util.Locale
 
 class CryptoTest {
 
@@ -126,6 +127,22 @@ class CryptoTest {
         assertEquals(sasA, sasB)
         assertEquals(6, sasA.length)
         assertTrue(sasA.all { it.isDigit() })
+    }
+
+    @Test
+    fun `SAS digits are stable across device locales`() {
+        val oldLocale = Locale.getDefault()
+        val seed = ByteArray(32) { (it * 7).toByte() }
+        try {
+            Locale.setDefault(Locale.forLanguageTag("fa-IR"))
+            val fa = SessionCrypto.shortAuthString(seed)
+            Locale.setDefault(Locale.US)
+            val en = SessionCrypto.shortAuthString(seed)
+            assertEquals(fa, en)
+            assertTrue(fa.matches(Regex("[0-9]{6}")))
+        } finally {
+            Locale.setDefault(oldLocale)
+        }
     }
 
     @Test
