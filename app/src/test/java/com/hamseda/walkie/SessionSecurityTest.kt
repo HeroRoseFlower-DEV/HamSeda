@@ -6,6 +6,7 @@ import com.hamseda.walkie.proto.Frame
 import com.hamseda.walkie.proto.MessageType
 import com.hamseda.walkie.session.FloorController
 import com.hamseda.walkie.session.SessionManager
+import com.hamseda.walkie.session.SessionError
 import com.hamseda.walkie.transport.PeerDevice
 import com.hamseda.walkie.transport.TransportType
 import kotlinx.coroutines.CoroutineScope
@@ -175,6 +176,37 @@ class SessionSecurityTest {
         rig.await("session recovered after malformed SAS frame") {
             rig.a.phase.value == SessionManager.Phase.IN_SESSION &&
                 rig.b.phase.value == SessionManager.Phase.IN_SESSION
+        }
+        rig.close()
+    }
+
+    @Test
+    fun `malformed authenticated control payload fails closed`() {
+        val rig = newRig()
+        rig.start()
+        rig.await("sas phase") {
+            rig.a.phase.value == SessionManager.Phase.AWAITING_SAS_CONFIRM &&
+                rig.b.phase.value == SessionManager.Phase.AWAITING_SAS_CONFIRM
+        }
+        rig.a.confirmSas(true)
+        rig.b.confirmSas(true)
+        rig.await("in session") {
+            rig.a.phase.value == SessionManager.Phase.IN_SESSION &&
+                rig.b.phase.value == SessionManager.Phase.IN_SESSION
+        }
+
+        val enqueueControl = SessionManager::class.java.getDeclaredMethod(
+            "enqueueControl",
+            java.lang.Byte.TYPE,
+            ByteArray::class.java,
+        )
+        enqueueControl.isAccessible = true
+        // PING is defined as an 8-byte timestamp. This frame is authenticated,
+        // but its malformed body must neither refresh liveness nor be echoed.
+        enqueueControl.invoke(rig.a, MessageType.PING, byteArrayOf(1))
+        rig.await("invalid payload rejected") {
+            rig.b.phase.value == SessionManager.Phase.IDLE &&
+                rig.b.error.value == SessionError.PROTOCOL_ERROR
         }
         rig.close()
     }
