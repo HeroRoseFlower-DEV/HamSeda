@@ -320,7 +320,7 @@ class SessionManager(
     /** Outgoing session: connect the transport, then run the handshake. */
     fun startOutgoing(t: Transport, peer: PeerDevice, codecPref: Byte = CodecId.OPUS) {
         if (!claimSessionStart("startOutgoing")) return
-        AppLog.log(TAG, "outgoing session to ${peer.displayName} via ${t.type}")
+        AppLog.log(TAG, "outgoing session start via ${t.type}")
         myCodecPref = codecPref
         attachTransport(t, peer.displayName)
         // The transport may already report CONNECTED (peer connected first);
