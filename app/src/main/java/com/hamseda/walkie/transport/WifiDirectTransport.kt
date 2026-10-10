@@ -482,7 +482,7 @@ class WifiDirectTransport(private val context: Context) : Transport {
                 socketJob = scope.launch {
                     try {
                         val socket = withTimeout(Protocol.CONNECT_TIMEOUT_MS.toLong()) {
-                            if (info.isGroupOwner) acceptAsOwner() else connectAsClient(info)
+                            if (info.isGroupOwner) acceptAsOwner(info) else connectAsClient(info)
                         }
                         AppLog.log(TAG, "p2p socket established")
                         onSocketReady(socket, expectedGeneration)
@@ -527,12 +527,19 @@ class WifiDirectTransport(private val context: Context) : Transport {
         }
     }
 
-    private fun acceptAsOwner(): Socket {
-        val server = ServerSocket(Protocol.WIFI_DIRECT_PORT).also {
+    private fun acceptAsOwner(info: WifiP2pInfo): Socket {
+        // Bind only to the P2P group-owner interface. Binding ServerSocket(port)
+        // uses 0.0.0.0 and exposes the listener on unrelated LAN/VPN interfaces,
+        // where another local process/device could occupy the port and DoS pairing.
+        val groupAddress = info.groupOwnerAddress
+            ?: throw IOException("group owner address unavailable")
+        val server = ServerSocket().also {
+            it.reuseAddress = false
             it.soTimeout = Protocol.CONNECT_TIMEOUT_MS
+            it.bind(InetSocketAddress(groupAddress, Protocol.WIFI_DIRECT_PORT))
             serverSocket = it
         }
-        Log.i(TAG, "group owner: accepting on port ${Protocol.WIFI_DIRECT_PORT}")
+        Log.i(TAG, "group owner: accepting on P2P address $groupAddress:${Protocol.WIFI_DIRECT_PORT}")
         return server.accept().also { Log.i(TAG, "group owner: peer socket accepted") }
     }
 
