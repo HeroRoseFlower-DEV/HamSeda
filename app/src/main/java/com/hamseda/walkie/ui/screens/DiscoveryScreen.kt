@@ -235,7 +235,17 @@ fun DiscoveryScreen(
                 ModeSelector(
                     preference = preference,
                     onSelect = vm::setPreference,
+                    enabled = phase == SessionManager.Phase.IDLE,
                 )
+            }
+            if (phase != SessionManager.Phase.IDLE) {
+                item {
+                    Text(
+                        text = stringResource(R.string.transport_locked_hint),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
             if (choiceExplanation.isNotEmpty()) {
                 item {
@@ -487,6 +497,7 @@ private fun ScanCard(
 private fun ModeSelector(
     preference: TransportPreference,
     onSelect: (TransportPreference) -> Unit,
+    enabled: Boolean,
 ) {
     val options = listOf(
         Triple(TransportPreference.AUTO_RECOMMEND, R.string.transport_auto, Icons.Filled.Radar),
@@ -504,13 +515,14 @@ private fun ModeSelector(
                         .fillMaxWidth()
                         .selectable(
                             selected = preference == pref,
+                            enabled = enabled,
                             onClick = { onSelect(pref) },
                             role = Role.RadioButton,
                         )
                         .padding(horizontal = 16.dp, vertical = 10.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    RadioButton(selected = preference == pref, onClick = null)
+                    RadioButton(selected = preference == pref, onClick = null, enabled = enabled)
                     Spacer(Modifier.width(8.dp))
                     Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
                     Spacer(Modifier.width(12.dp))
