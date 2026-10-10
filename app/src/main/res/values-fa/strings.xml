@@ -67,6 +67,7 @@
     <!-- Settings -->
     <string name="settings_title">تنظیمات</string>
     <string name="settings_transport">حالت اتصال</string>
+    <string name="transport_locked_hint">در زمان فعال بودن نشست، حالت اتصال قابل تغییر نیست.</string>
     <string name="settings_codec">کدک صوتی</string>
     <string name="codec_opus">اپوس (پیش‌فرض، کم‌حجم)</string>
     <string name="codec_opus_desc">حدود ۲۰ کیلوبیت بر ثانیه؛ مناسب هر دو حالت اتصال.</string>
