@@ -153,9 +153,10 @@ class WifiDirectTransport(private val context: Context) : Transport {
         val missing = PermissionHelper.missingWifiDirectPermissions(context)
         if (missing.isNotEmpty()) {
             _error.value = TransportError.PermissionDenied(missing)
+            _state.value = TransportState.UNAVAILABLE
             return
         }
-        if (!ensureInit()) {
+        if (!ensureInit())
             _state.value = TransportState.UNAVAILABLE
             _error.value = TransportError.Unsupported("wifi_direct_unsupported")
             return
