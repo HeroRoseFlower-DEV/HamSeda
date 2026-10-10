@@ -21,6 +21,7 @@ import com.hamseda.walkie.transport.TransportState
 import com.hamseda.walkie.transport.TransportType
 import com.hamseda.walkie.util.AppLog
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
@@ -65,7 +66,9 @@ import java.security.MessageDigest
 class SessionManager(
     private val scope: CoroutineScope,
     private val audio: AudioPipeline,
+    /** Wall clock is used only for wire timestamps; elapsed durations use a monotonic clock. */
     private val clock: () -> Long = System::currentTimeMillis,
+    private val elapsedClock: () -> Long = { System.nanoTime() / 1_000_000L },
 ) : FloorController.Listener, AudioPipeline.PipelineListener {
 
     enum class Phase {
@@ -79,6 +82,7 @@ class SessionManager(
 
     // ------------------------------------------------------- observable state
 
+    private val lifecycleLock = Any()
     private val _phase = MutableStateFlow(Phase.IDLE)
     val phase: StateFlow<Phase> = _phase.asStateFlow()
 
@@ -139,6 +143,8 @@ class SessionManager(
     private var codec: AudioCodec? = null
 
     private var sendSeq: Long = 0
+    /** Dense audio-only sequence for playout; wire seq also numbers control frames. */
+    private var receivedAudioSeq: Long = 0
     private val replay = ReplayProtection()
     private val jitter = JitterBuffer()
     private val floor = FloorController(clock, this)
@@ -269,14 +275,10 @@ class SessionManager(
 
     /** Outgoing session: connect the transport, then run the handshake. */
     fun startOutgoing(t: Transport, peer: PeerDevice, codecPref: Byte = CodecId.OPUS) {
-        if (_phase.value != Phase.IDLE) {
-            AppLog.log(TAG, "startOutgoing ignored: phase=${_phase.value}")
-            return
-        }
+        if (!claimSessionStart("startOutgoing")) return
         AppLog.log(TAG, "outgoing session to ${peer.displayName} via ${t.type}")
         myCodecPref = codecPref
         attachTransport(t, peer.displayName)
-        _phase.value = Phase.CONNECTING_TRANSPORT
         // The transport may already report CONNECTED (peer connected first);
         // the state-flow collector below only fires on *changes*.
         if (t.state.value == TransportState.CONNECTED) beginHandshake()
@@ -291,14 +293,10 @@ class SessionManager(
 
     /** Incoming session: the transport is already listening for a peer. */
     fun acceptIncoming(t: Transport, codecPref: Byte = CodecId.OPUS) {
-        if (_phase.value != Phase.IDLE) {
-            AppLog.log(TAG, "acceptIncoming ignored: phase=${_phase.value}")
-            return
-        }
+        if (!claimSessionStart("acceptIncoming")) return
         AppLog.log(TAG, "listening for incoming via ${t.type}")
         myCodecPref = codecPref
         attachTransport(t, "")
-        _phase.value = Phase.CONNECTING_TRANSPORT
         // The transport may already report CONNECTED (peer connected first);
         // the state-flow collector below only fires on *changes*.
         if (t.state.value == TransportState.CONNECTED) beginHandshake()
@@ -311,6 +309,27 @@ class SessionManager(
         }
     }
 
+    /** Atomically claims an idle manager so simultaneous Connect/Listen taps cannot race. */
+    private fun claimSessionStart(operation: String): Boolean = synchronized(lifecycleLock) {
+        if (_phase.value != Phase.IDLE) {
+            AppLog.log(TAG, "$operation ignored: phase=${_phase.value}")
+            false
+        } else {
+            _phase.value = Phase.CONNECTING_TRANSPORT
+            true
+        }
+    }
+
+    /** Transition to ENDED once per active attempt; repeated failures must not queue stale teardowns. */
+    private fun markEndedIfActive(): Boolean = synchronized(lifecycleLock) {
+        if (_phase.value == Phase.IDLE || _phase.value == Phase.ENDED) {
+            false
+        } else {
+            _phase.value = Phase.ENDED
+            true
+        }
+    }
+
     private fun attachTransport(t: Transport, peerName: String) {
         detachTransport()
         sessionGeneration++
@@ -320,7 +339,13 @@ class SessionManager(
         _transportType.value = t.type
         _error.value = null
         transportWasConnected = false
-        transportWatchJob = scope.launch {
+        // SharedFlow(extraBufferCapacity) does NOT retain emissions when there are
+        // zero subscribers. Subscribe synchronously before the state watcher can
+        // begin the handshake and before connect()/listen() can produce frames.
+        collectJob = scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            t.incomingFrames.collect { bytes -> onRawFrame(bytes) }
+        }
+        transportWatchJob = scope.launch(start = CoroutineStart.UNDISPATCHED) {
             t.state.collect { st ->
                 _transportState.value = st
                 when (st) {
@@ -345,9 +370,6 @@ class SessionManager(
                     else -> Unit
                 }
             }
-        }
-        collectJob = scope.launch {
-            t.incomingFrames.collect { bytes -> onRawFrame(bytes) }
         }
     }
 
@@ -407,8 +429,7 @@ class SessionManager(
         notifyPeer: Boolean = true,
         disconnectReason: Byte = DisconnectReason.USER_HANGUP,
     ) {
-        if (_phase.value == Phase.IDLE || _phase.value == Phase.ENDED) return
-        _phase.value = Phase.ENDED
+        if (!markEndedIfActive()) return
         // Enqueue DISCONNECT while the sender is still running; the flush
         // delay below gives it a bounded window to go out.
         if (notifyPeer && keys != null) {
@@ -435,6 +456,7 @@ class SessionManager(
         floor.reset()
         jitter.reset()
         replay.reset()
+        receivedAudioSeq = 0
         keys?.wipe(); keys = null
         codec?.close(); codec = null
         myKeyPair = null
@@ -455,7 +477,7 @@ class SessionManager(
         } catch (_: Exception) {}
         detachTransport()
         _transportType.value = null
-        _phase.value = Phase.IDLE
+        synchronized(lifecycleLock) { _phase.value = Phase.IDLE }
     }
 
     /**
@@ -464,8 +486,11 @@ class SessionManager(
      * onDestroy is about to cancel). Transport close runs best-effort.
      */
     fun close() {
-        val wasActive = _phase.value != Phase.IDLE && _phase.value != Phase.ENDED
-        _phase.value = Phase.ENDED
+        val wasActive = synchronized(lifecycleLock) {
+            val active = _phase.value != Phase.IDLE && _phase.value != Phase.ENDED
+            _phase.value = Phase.ENDED
+            active
+        }
         cancelDeadlines()
         stopSender()
         try { audio.stopCapture() } catch (_: Exception) {}
@@ -503,7 +528,7 @@ class SessionManager(
         myPubBytes = SessionCrypto.encodePublicKey(myKeyPair!!.public)
         myNonce = SessionCrypto.newNonce16()
         sendSeq = 0
-        lastPeerSeen = clock()
+        lastPeerSeen = elapsedClock()
         // HELLO payload: protocol version (1) + codec preference (1)
         val hello = byteArrayOf(Protocol.VERSION, myCodecPref)
         enqueuePlain(MessageType.HELLO, hello)
@@ -758,7 +783,7 @@ class SessionManager(
                     return
                 }
                 _peerSasConfirmed.value = true
-                lastPeerSeen = clock()
+                lastPeerSeen = elapsedClock()
                 maybeEnterSession()
             }
             MessageType.DISCONNECT -> {
@@ -815,7 +840,8 @@ class SessionManager(
         codec = AudioCodec.create(activeCodecId).also { it.reset() }
         jitter.reset()
         replay.reset()
-        lastPeerSeen = clock()
+        lastPeerSeen = elapsedClock()
+        receivedAudioSeq = 0
         // HS-05: never report voice readiness if playback fails to start.
         // Roll the session back cleanly instead of a fake IN_SESSION.
         val playbackOk = try {
@@ -840,7 +866,7 @@ class SessionManager(
             while (isActive && _phase.value == Phase.IN_SESSION) {
                 delay(1_000)
                 floor.checkTimeouts()
-                val now = clock()
+                val now = elapsedClock()
                 if (now - lastPeerSeen > Protocol.PEER_TIMEOUT_MS) {
                     endSession(SessionError.PEER_TIMEOUT, notifyPeer = false)
                     return@launch
@@ -848,7 +874,7 @@ class SessionManager(
                 if (now - lastPingSent > Protocol.PING_INTERVAL_MS) {
                     lastPingSent = now
                     val ping = ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN)
-                        .putLong(now).array()
+                        .putLong(clock()).array()
                     enqueueControl(MessageType.PING, ping)
                 }
             }
@@ -888,7 +914,7 @@ class SessionManager(
             return
         }
         // 4. Authenticated liveness.
-        lastPeerSeen = clock()
+        lastPeerSeen = elapsedClock()
         // 5. Dispatch using the already-authenticated plaintext.
         when (frame.type) {
             MessageType.AUDIO -> {
@@ -896,7 +922,7 @@ class SessionManager(
                     return // not the floor holder — drop (already authenticated)
                 }
                 floor.onPeerAudio()
-                jitter.push(frame.seq, plaintext)
+                jitter.push(receivedAudioSeq++, plaintext)
             }
             MessageType.FLOOR_REQUEST -> {
                 val granted = floor.onPeerRequest()
@@ -904,7 +930,7 @@ class SessionManager(
                 val t = if (granted) MessageType.FLOOR_GRANT else MessageType.FLOOR_DENY
                 val payload = if (granted) {
                     ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN)
-                        .putInt(FloorController.PEER_LEASE_MS.toInt()).array()
+                        .putInt(FloorController.MAX_SELF_TX_MS.toInt()).array()
                 } else byteArrayOf(DenyReason.PEER_BUSY)
                 enqueueControl(t, payload)
             }
@@ -983,7 +1009,7 @@ class SessionManager(
         // HS-02: the capture callback only ENQUEUES; the single outbound
         // sender allocates sequences and writes. No per-frame coroutines.
         val ok = audio.startCapture(c) { encoded, level ->
-            val now = clock()
+            val now = elapsedClock()
             if (now - lastLevelPush > 120) {
                 lastLevelPush = now
                 _voiceLevel.value = level
@@ -1061,6 +1087,9 @@ class SessionManager(
     }
 
     private fun fail(error: SessionError, detail: String? = null) {
+        // Mark ENDED synchronously before scheduling cleanup. A burst of bad
+        // frames must not queue multiple teardowns that could affect a new session.
+        if (!markEndedIfActive()) return
         if (detail.isNullOrBlank()) {
             AppLog.log(TAG, "session failed: $error")
         } else {
