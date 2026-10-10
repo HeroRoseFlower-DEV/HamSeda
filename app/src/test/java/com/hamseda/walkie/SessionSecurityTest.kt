@@ -6,7 +6,6 @@ import com.hamseda.walkie.proto.Frame
 import com.hamseda.walkie.proto.MessageType
 import com.hamseda.walkie.session.FloorController
 import com.hamseda.walkie.session.SessionManager
-import com.hamseda.walkie.session.SessionError
 import com.hamseda.walkie.transport.PeerDevice
 import com.hamseda.walkie.transport.TransportType
 import kotlinx.coroutines.CoroutineScope
@@ -206,7 +205,7 @@ class SessionSecurityTest {
         enqueueControl.invoke(rig.a, MessageType.PING, byteArrayOf(1))
         rig.await("invalid payload rejected") {
             rig.b.phase.value == SessionManager.Phase.IDLE &&
-                rig.b.error.value == SessionError.PROTOCOL_ERROR
+                rig.b.error.value == SessionManager.SessionError.PROTOCOL_ERROR
         }
         rig.close()
     }
