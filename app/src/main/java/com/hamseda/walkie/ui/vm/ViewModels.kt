@@ -163,7 +163,11 @@ class DiscoveryViewModel(private val deps: VmDeps) : ViewModel() {
     }
 
     fun refreshAvailability() {
-        deps.transports.refreshRecommendation()
+        // Retrying availability must not change the selected radio beneath an
+        // active session; only recompute AUTO_RECOMMEND while idle.
+        if (deps.manager.phase.value == SessionManager.Phase.IDLE) {
+            deps.transports.refreshRecommendation()
+        }
         availabilityRefresh.value += 1
     }
 
