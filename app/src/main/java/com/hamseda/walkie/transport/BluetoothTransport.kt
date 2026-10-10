@@ -208,7 +208,11 @@ class BluetoothTransport(private val context: Context) : Transport {
         val missing = PermissionHelper.missingBluetoothPermissions(context, forDiscovery = true)
         if (missing.isNotEmpty()) {
             AppLog.log(TAG, "discovery blocked: missing permissions $missing")
-            updateDiscoveryOutcome(attempt, error = TransportError.PermissionDenied(missing))
+            updateDiscoveryOutcome(
+                attempt,
+                state = TransportState.UNAVAILABLE,
+                error = TransportError.PermissionDenied(missing),
+            )
             return
         }
         val a = adapter ?: run {
