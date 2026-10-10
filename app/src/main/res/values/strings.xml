@@ -149,4 +149,5 @@
     <string name="back">Back</string>
     <string name="discoverable_declined">Visibility declined — your phone will not be discoverable to Bluetooth scans.</string>
     <string name="err_playback">Speaker unavailable — could not start audio playback.</string>
+    <string name="err_restart_timeout">The previous session is still closing. Wait a moment and try again.</string>
 </resources>
