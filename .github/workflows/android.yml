@@ -55,10 +55,11 @@ jobs:
             || sdkmanager "platforms;android-37.0" "build-tools;36.0.0" "platform-tools"
 
       - name: Verify Gradle wrapper
-        # Verify the wrapper JAR before executing it; checksum published by Gradle.
+        # This checked-in wrapper JAR matches Gradle's published official 8.12.1 checksum.
+        # The wrapper distribution itself is separately pinned to 8.14.6 below.
         run: |
           set -e
-          echo "ad16bca46cb71bb5887c546860d93992aeee35c1fdaf4a242b0a612375d937e0  gradle/wrapper/gradle-wrapper.jar" | sha256sum --check --strict
+          echo "2db75c40782f5e8ba1fc278a5574bab070adccb2d21ca5a6e5ed840888448046  gradle/wrapper/gradle-wrapper.jar" | sha256sum --check --strict
           ./gradlew --version
 
       - name: Run unit tests

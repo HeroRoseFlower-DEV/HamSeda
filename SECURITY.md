@@ -88,7 +88,7 @@ is no TLS network to pin to — by design).
 - Opus packets are bounded to the local encoder's maximum at both the authenticated session-validation and decoder boundaries.
 - The SAS screen blocks screenshots/recent-task snapshots while visible and disables confirmation until a code has actually been generated.
 - Diagnostic text is capped before normalization and address-redaction regexes run.
-- The Gradle wrapper JAR and distribution ZIP are checksum-verified, and Dependabot is configured for Gradle/GitHub Actions update monitoring.
+- The checked-in Gradle wrapper JAR is matched against its official published checksum (the repo currently carries the 8.12.1 wrapper binary); the Gradle distribution ZIP is separately checksum-pinned to 8.14.6. Dependabot monitors Gradle and GitHub Actions updates.
 
 ## Reporting
 
