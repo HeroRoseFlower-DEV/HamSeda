@@ -111,7 +111,11 @@ fun DiscoveryScreen(
     ) { result ->
         val action = pendingAction
         pendingAction = null
-        if (result.resultCode == android.app.Activity.RESULT_OK) {
+        // ACTION_REQUEST_DISCOVERABLE returns the accepted duration in
+        // seconds (e.g. 300), not Activity.RESULT_OK (-1). Any positive
+        // result means Android accepted discoverability; 0 / RESULT_CANCELED
+        // means it was denied or the system could not enable it.
+        if (result.resultCode > 0) {
             action?.invoke()
         } else {
             // The RFCOMM listener is already active at this point. If the user
