@@ -17,7 +17,9 @@ import android.media.audiofx.AcousticEchoCanceler
 import android.media.audiofx.AutomaticGainControl
 import android.media.audiofx.NoiseSuppressor
 import android.os.Build
+import android.os.Process
 import android.util.Log
+import com.hamseda.walkie.util.AppLog
 import androidx.core.content.ContextCompat
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.abs
@@ -149,7 +151,7 @@ class AudioEngine(private val context: Context) : AudioPipeline {
             AudioRecord.Builder()
                 .setAudioSource(MediaRecorder.AudioSource.VOICE_COMMUNICATION)
                 .setAudioFormat(format)
-                .setBufferSizeInBytes(minBuf * 4)
+                .setBufferSizeInBytes(maxOf(minBuf, AudioCodec.FRAME_BYTES_PCM * 3))
                 .build()
         } catch (e: Exception) {
             abandonFocus()
@@ -166,7 +168,17 @@ class AudioEngine(private val context: Context) : AudioPipeline {
         recorder = rec
         captureRunning.set(true)
         applyAudioMode(force = true)
+        AppLog.log(
+            TAG,
+            "capture initialized: sampleRate=${AudioCodec.SAMPLE_RATE}, frameMs=20, " +
+                "bufferBytes=${maxOf(minBuf, AudioCodec.FRAME_BYTES_PCM * 3)}",
+        )
         captureThread = Thread({
+            try {
+                Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
+            } catch (e: Exception) {
+                Log.w(TAG, "could not set capture audio priority: ${e.javaClass.simpleName}")
+            }
             val frame = ShortArray(AudioCodec.FRAME_SAMPLES)
             try {
                 rec.startRecording()
@@ -275,7 +287,7 @@ class AudioEngine(private val context: Context) : AudioPipeline {
             AudioTrack.Builder()
                 .setAudioAttributes(attrs)
                 .setAudioFormat(format)
-                .setBufferSizeInBytes(minBuf * 4)
+                .setBufferSizeInBytes(maxOf(minBuf, AudioCodec.FRAME_BYTES_PCM * 3))
                 .setTransferMode(AudioTrack.MODE_STREAM)
                 .build()
         } catch (e: Exception) {
@@ -300,11 +312,21 @@ class AudioEngine(private val context: Context) : AudioPipeline {
         }
         track = at
         playbackRunning.set(true)
+        AppLog.log(
+            TAG,
+            "playback initialized: bufferFrames=${at.bufferSizeInFrames}, " +
+                "capacityFrames=${at.bufferCapacityInFrames}, frameMs=20",
+        )
         playbackThread = Thread({
+            try {
+                Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
+            } catch (e: Exception) {
+                Log.w(TAG, "could not set playback audio priority: ${e.javaClass.simpleName}")
+            }
             val silence = ShortArray(AudioCodec.FRAME_SAMPLES)
             var last: ShortArray? = null
             var plcCount = 0
-            while (playbackRunning.get()) {
+            playback@ while (playbackRunning.get()) {
                 when (val r = buffer.takeNext()) {
                     is JitterBuffer.TakeResult.Frame -> {
                         val pcm = try {
@@ -314,18 +336,38 @@ class AudioEngine(private val context: Context) : AudioPipeline {
                             null
                         }
                         if (pcm != null) {
-                            at.write(pcm, 0, pcm.size)
+                            if (!writePcm(at, pcm)) {
+                                reportPlaybackWriteFailure()
+                                break@playback
+                            }
                             last = pcm
                             plcCount = 0
                         } else {
-                            conceal(at, last, silence, plcCount).also { plcCount = it }
+                            val next = conceal(at, last, silence, plcCount)
+                            if (next == null) {
+                                reportPlaybackWriteFailure()
+                                break@playback
+                            }
+                            plcCount = next
                         }
                     }
                     is JitterBuffer.TakeResult.Lost -> {
-                        conceal(at, last, silence, plcCount).also { plcCount = it }
+                        val next = conceal(at, last, silence, plcCount)
+                        if (next == null) {
+                            reportPlaybackWriteFailure()
+                            break@playback
+                        }
+                        plcCount = next
+                        if (buffer.lost % JITTER_DIAGNOSTIC_INTERVAL == 0L) {
+                            AppLog.log(
+                                TAG,
+                                "audio jitter diagnostics: lost=${buffer.lost}, " +
+                                    "staleDropped=${buffer.droppedStale}, buffered=${buffer.bufferedFrames()}",
+                            )
+                        }
                     }
                     JitterBuffer.TakeResult.NotReady -> {
-                        try { Thread.sleep(5) } catch (_: InterruptedException) { break }
+                        try { Thread.sleep(2) } catch (_: InterruptedException) { break@playback }
                     }
                 }
             }
@@ -333,20 +375,47 @@ class AudioEngine(private val context: Context) : AudioPipeline {
         return true
     }
 
+    /** Write an entire PCM frame without silently truncating a partial write. */
+    private fun writePcm(at: AudioTrack, pcm: ShortArray): Boolean {
+        var offset = 0
+        while (offset < pcm.size && playbackRunning.get()) {
+            val written = at.write(
+                pcm,
+                offset,
+                pcm.size - offset,
+                AudioTrack.WRITE_BLOCKING,
+            )
+            if (written <= 0) {
+                if (playbackRunning.get()) {
+                    AppLog.log(TAG, "AudioTrack write failed: result=$written, offset=$offset, samples=${pcm.size}")
+                }
+                return false
+            }
+            offset += written
+        }
+        return offset == pcm.size
+    }
+
+    private fun reportPlaybackWriteFailure() {
+        if (playbackRunning.compareAndSet(true, false)) {
+            val reason = "AudioTrack failed during streaming playback"
+            AppLog.log(TAG, reason)
+            pipelineListener?.onPlaybackError(reason)
+        }
+    }
+
     private fun conceal(
         at: AudioTrack,
         last: ShortArray?,
         silence: ShortArray,
         plcCount: Int,
-    ): Int {
-        return if (last != null && plcCount < MAX_PLC_FRAMES) {
-            val decayed = ShortArray(last.size) { i -> (last[i] * PLC_DECAY).toInt().toShort() }
-            at.write(decayed, 0, decayed.size)
-            plcCount + 1
+    ): Int? {
+        val pcm = if (last != null && plcCount < MAX_PLC_FRAMES) {
+            ShortArray(last.size) { i -> (last[i] * PLC_DECAY).toInt().toShort() }
         } else {
-            at.write(silence, 0, silence.size)
-            plcCount + 1
+            ShortArray(AudioCodec.FRAME_SAMPLES)
         }
+        return if (writePcm(at, pcm)) plcCount + 1 else null
     }
 
     override fun stopPlayback() {
@@ -482,6 +551,7 @@ class AudioEngine(private val context: Context) : AudioPipeline {
         private const val TAG = "HamSedaAudio"
         private const val MAX_PLC_FRAMES = 5
         private const val PLC_DECAY = 0.85f
+        private const val JITTER_DIAGNOSTIC_INTERVAL = 25L
         /** HS-09: bounded retries for transient AudioRecord.read errors. */
         private const val MAX_CONSECUTIVE_READ_ERRORS = 10
         private const val READ_ERROR_BACKOFF_MS = 20L

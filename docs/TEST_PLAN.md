@@ -74,8 +74,20 @@ procedure and its device variations).
 
 ### 2.6 Performance (before any numeric claim)
 - Measure end-to-end latency (mouth-to-ear) on real devices before quoting it.
+- Confirm diagnostics report a playback buffer close to the platform minimum
+  and a 2-frame initial jitter target. Compare clarity and underruns against
+  the prior APK on both Wi-Fi Direct and Bluetooth Classic.
+- Repeat with the screen locked for 5 minutes and verify voice remains smooth;
+  the active-session partial CPU wake lock should be acquired and released on
+  teardown. Record the battery cost.
+- Force sender backpressure in a test build and verify the outbound queue stays
+  freshness-first: old pending audio is evicted, recent audio survives, and
+  control frames remain queued in order.
 - 10-minute continuous session: watch CPU/battery/thermal in Android Studio
   profiler; note anomalies per device model.
+- RF range and transmit power are hardware / Android-framework controlled.
+  Do not claim that the APK boosts antenna power; measure range, drop rate and
+  reconnect behavior on physical devices at increasing distances.
 
 ## 3. Version matrix
 

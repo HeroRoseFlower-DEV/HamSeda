@@ -5,17 +5,20 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.annotation.SuppressLint
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Binder
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.hamseda.walkie.MainActivity
 import com.hamseda.walkie.R
 import com.hamseda.walkie.audio.AudioEngine
 import com.hamseda.walkie.session.SessionManager
+import com.hamseda.walkie.util.AppLog
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -39,6 +42,7 @@ class VoiceService : Service() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     private lateinit var audioEngine: AudioEngine
+    private var sessionCpuWakeLock: PowerManager.WakeLock? = null
     lateinit var sessionManager: SessionManager
         private set
 
@@ -61,8 +65,12 @@ class VoiceService : Service() {
         serviceScope.launch {
             sessionManager.phase.collect { phase ->
                 if (phase == SessionManager.Phase.IDLE) {
+                    setSessionCpuAwake(false)
                     stopForegroundCompat()
                 } else {
+                    // Keep voice processing scheduled with the display off.
+                    // This improves background reliability, not radio transmit power.
+                    setSessionCpuAwake(true)
                     ensureForeground(phase)
                 }
             }
@@ -97,6 +105,7 @@ class VoiceService : Service() {
     override fun onBind(intent: Intent?): IBinder = binder
 
     override fun onDestroy() {
+        setSessionCpuAwake(false)
         try {
             sessionManager.close()
         } catch (_: Exception) {}
@@ -105,6 +114,39 @@ class VoiceService : Service() {
         } catch (_: Exception) {}
         serviceScope.cancel()
         super.onDestroy()
+    }
+
+    @Synchronized
+    @SuppressLint("WakelockTimeout")
+    private fun setSessionCpuAwake(awake: Boolean) {
+        if (awake) {
+            val lock = sessionCpuWakeLock ?: run {
+                val powerManager = getSystemService(POWER_SERVICE) as PowerManager
+                powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "HamSeda:VoiceSession")
+                    .apply { setReferenceCounted(false) }
+                    .also { sessionCpuWakeLock = it }
+            }
+            try {
+                if (!lock.isHeld) {
+                    lock.acquire()
+                    AppLog.log(TAG, "partial CPU wake lock acquired for active voice session")
+                }
+            } catch (e: RuntimeException) {
+                Log.w(TAG, "could not acquire session wake lock: ${e.message}")
+            }
+        } else {
+            val lock = sessionCpuWakeLock
+            if (lock != null) {
+                try {
+                    if (lock.isHeld) lock.release()
+                } catch (e: RuntimeException) {
+                    Log.w(TAG, "could not release session wake lock: ${e.message}")
+                } finally {
+                    sessionCpuWakeLock = null
+                }
+                AppLog.log(TAG, "partial CPU wake lock released")
+            }
+        }
     }
 
     private fun ensureForeground(phase: SessionManager.Phase) {

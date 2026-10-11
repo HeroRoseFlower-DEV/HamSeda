@@ -20,6 +20,9 @@
     <!-- Local peer-to-peer sockets only. Never used for internet traffic. -->
     <uses-permission android:name="android.permission.INTERNET" />
 
+    <!-- Keep active voice processing scheduled while the display is off. -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
     <!-- Android 17 (API 37): local-network access is blocked by default for
          apps targeting API 37. Wi-Fi Direct group sockets are local-network
          connections, so this must be granted before connecting. -->
