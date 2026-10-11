@@ -1,6 +1,5 @@
 package com.hamseda.walkie
 
-import com.hamseda.walkie.audio.OpusCodec
 import com.hamseda.walkie.proto.Frame
 import com.hamseda.walkie.proto.MessageType
 import com.hamseda.walkie.proto.Protocol
@@ -169,9 +168,9 @@ class SessionHandshakeTest {
         }
 
         // Drive three encoded frames through A's capture callback.
-        val opus = OpusCodec()
-        val pcm = ShortArray(320) { (it % 100).toShort() }
-        val encoded = opus.encode(pcm)
+        // Session/framing tests treat encoded audio as opaque bytes. Native Opus
+        // encode/decode behavior is tested on Android in OpusCodecInstrumentedTest.
+        val encoded = ByteArray(48) { (it * 17 + 3).toByte() }
         repeat(3) { rig.audioA.onFrame?.invoke(encoded, 0.5f) }
         rig.await("audio arrived") {
             (rig.audioB.playbackBuffer?.bufferedFrames() ?: 0) >= 1
@@ -182,7 +181,6 @@ class SessionHandshakeTest {
         rig.await("floor free") {
             rig.b.floorHolder.value == FloorController.Holder.NONE
         }
-        opus.close()
         rig.close()
     }
 
@@ -269,8 +267,9 @@ class SessionHandshakeTest {
         }
         rig.a.setPttPressed(true)
         rig.await("transmitting") { rig.audioA.isCapturing }
-        val opus = OpusCodec()
-        rig.audioA.onFrame?.invoke(opus.encode(ShortArray(320) { 7 }), 0.5f)
+        // The session security test does not exercise audio compression itself.
+        val encoded = ByteArray(48) { (it * 17 + 3).toByte() }
+        rig.audioA.onFrame?.invoke(encoded, 0.5f)
         rig.await("wire frame captured") { lastAudioWire != null }
 
         val failuresBefore = rig.b.authFailures.value
