@@ -565,14 +565,16 @@ class SessionSecurityTest {
         val perThread = 25
         val threads = 8
         val frame = ByteArray(60) { 3 }
-        val workers = (0 until threads).map {
+        val workers = (0 until threads).map { workerIndex ->
             thread {
+                // Stagger producer starts and pace each producer so the aggregate
+                // rate stays below the bounded freshness queue / loopback sender.
+                // The callbacks remain concurrent, but intentional overload drops
+                // cannot invalidate this test's all-frames-delivered assertion.
+                Thread.sleep(workerIndex * 25L)
                 repeat(perThread) {
                     rig.audioA.onFrame?.invoke(frame, 0.5f)
-                    // Keep aggregate producer throughput below the deliberately
-                    // bounded real-time audio queue so this test measures wire
-                    // sequence serialization rather than intentional overload drops.
-                    Thread.sleep(10)
+                    Thread.sleep(100)
                 }
             }
         }
