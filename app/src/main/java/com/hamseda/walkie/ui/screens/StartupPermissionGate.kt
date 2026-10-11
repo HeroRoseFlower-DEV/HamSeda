@@ -81,14 +81,15 @@ fun StartupPermissionGate(content: @Composable () -> Unit) {
     val localNetworkPermissions = PermissionHelper.missingLocalNetworkPermission(context)
     val microphonePermissions = PermissionHelper.missingMicrophonePermission(context)
 
+    // Bluetooth and nearby Wi-Fi permissions belong to Android's Nearby
+    // Devices permission group. Request them together so Android can present
+    // the correct combined system prompt instead of a misleading partial flow.
+    val nearbyDevicePermissions = (bluetoothPermissions + wifiPermissions).distinct()
+
     val nextStep = when {
-        bluetoothPermissions.isNotEmpty() -> PermissionStep(
-            bluetoothPermissions,
-            R.string.startup_permissions_bluetooth,
-        )
-        wifiPermissions.isNotEmpty() -> PermissionStep(
-            wifiPermissions,
-            R.string.startup_permissions_wifi,
+        nearbyDevicePermissions.isNotEmpty() -> PermissionStep(
+            nearbyDevicePermissions,
+            R.string.startup_permissions_nearby,
         )
         localNetworkPermissions.isNotEmpty() -> PermissionStep(
             localNetworkPermissions,
