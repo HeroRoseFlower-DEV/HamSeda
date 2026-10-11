@@ -112,6 +112,11 @@
     <string name="startup_permissions_open_settings">Open app settings</string>
     <string name="startup_permissions_denied">Some permissions were not granted. HamSeda cannot start until the required permissions are enabled.</string>
     <string name="startup_permissions_settings_hint">If Android no longer shows a permission prompt, open app settings and enable the required permissions there.</string>
+    <string name="startup_permissions_requesting">Requesting the next required permission from Android…</string>
+    <string name="startup_permissions_bluetooth">Bluetooth: scan for nearby phones, connect to paired phones, and make this phone discoverable.</string>
+    <string name="startup_permissions_wifi">Wi-Fi Direct: discover and connect directly to nearby phones.</string>
+    <string name="startup_permissions_local_network">Local network: allow the direct Wi-Fi connection on Android 17 and newer.</string>
+    <string name="startup_permissions_microphone">Microphone: allow push-to-talk voice. Audio capture still runs only during a voice session while you hold the talk button.</string>
 
     <!-- Permissions -->
     <string name="perm_title">Permission needed</string>
