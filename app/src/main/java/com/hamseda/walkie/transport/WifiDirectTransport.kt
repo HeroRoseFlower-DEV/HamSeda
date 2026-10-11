@@ -525,6 +525,10 @@ class WifiDirectTransport(private val context: Context) : Transport {
                             if (operationGeneration.get() == expectedGeneration &&
                                 _state.value == TransportState.AUTHENTICATING
                             ) {
+                                // A timed-out socket setup must not be restarted
+                                // by a duplicate group-formed broadcast.
+                                operationGeneration.incrementAndGet()
+                                listeningRequested = false
                                 closeSocketLocked()
                                 _error.value = TransportError.ConnectFailed(
                                     "socket setup timed out",
@@ -543,6 +547,10 @@ class WifiDirectTransport(private val context: Context) : Transport {
                             if (operationGeneration.get() == expectedGeneration &&
                                 _state.value == TransportState.AUTHENTICATING
                             ) {
+                                // A failed socket setup ends this attempt. Ignore
+                                // delayed callbacks until the user starts a new one.
+                                operationGeneration.incrementAndGet()
+                                listeningRequested = false
                                 closeSocketLocked()
                                 _error.value = TransportError.ConnectFailed(
                                     "socket failed: ${e.message}",
