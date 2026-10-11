@@ -1282,6 +1282,11 @@ class WifiDirectTransport(private val context: Context) : Transport {
         }
     }
 
+    // The filter includes API 33+/34 Wi-Fi-module broadcasts only on the
+    // SDK levels where they exist. We use RECEIVER_EXPORTED on API 33+ because
+    // the privileged Wi-Fi module sends these events, and the legacy overload
+    // only on API <33 where those newer actions cannot be added at runtime.
+    @SuppressLint("UnspecifiedRegisterReceiverFlag")
     private fun registerReceiver() {
         if (receiverRegistered) return
         val filter = IntentFilter().apply {
