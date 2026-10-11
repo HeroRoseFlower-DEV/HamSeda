@@ -347,17 +347,22 @@ fun DiscoveryScreen(
                     )
                 }
             }
-            if (peers.isEmpty()) {
-                item {
-                    EmptyPeers()
-                }
-            } else {
-                items(peers, key = { it.id }) { peer ->
-                    PeerCard(
-                        peer = peer,
-                        connecting = transportState == TransportState.CONNECTING,
-                        onConnect = { doConnectPeer(peer) },
-                    )
+            // The selected role is exclusive for a session attempt. Do not
+            // leave stale peer cards tappable while this device is waiting or
+            // already connecting; switching roles must happen after Stop.
+            if (phase == SessionManager.Phase.IDLE) {
+                if (peers.isEmpty()) {
+                    item {
+                        EmptyPeers()
+                    }
+                } else {
+                    items(peers, key = { it.id }) { peer ->
+                        PeerCard(
+                            peer = peer,
+                            connecting = transportState == TransportState.CONNECTING,
+                            onConnect = { doConnectPeer(peer) },
+                        )
+                    }
                 }
             }
         }
