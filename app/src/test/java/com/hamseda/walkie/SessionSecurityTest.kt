@@ -3,8 +3,10 @@ package com.hamseda.walkie
 import com.hamseda.walkie.audio.OpusCodec
 import com.hamseda.walkie.audio.JitterBuffer
 import com.hamseda.walkie.proto.DisconnectReason
+import com.hamseda.walkie.proto.CodecId
 import com.hamseda.walkie.proto.Frame
 import com.hamseda.walkie.proto.MessageType
+import com.hamseda.walkie.proto.Protocol
 import com.hamseda.walkie.session.FloorController
 import com.hamseda.walkie.session.SessionManager
 import com.hamseda.walkie.transport.PeerDevice
@@ -178,6 +180,42 @@ class SessionSecurityTest {
                 rig.b.phase.value == SessionManager.Phase.IN_SESSION
         }
         rig.close()
+    }
+
+    @Test
+    fun `first inbound frame starts handshake if connected state observer is late`() = runTest {
+        val (transport, _) = LoopbackTransport.pair()
+        val sm = SessionManager(this, FakeAudioPipeline())
+        sm.startOutgoing(
+            transport,
+            PeerDevice("b", "B", TransportType.WIFI_DIRECT),
+        )
+        assertEquals(SessionManager.Phase.CONNECTING_TRANSPORT, sm.phase.value)
+
+        // StateFlow collectors on StandardTestDispatcher are queued until the
+        // scheduler runs. Simulate a real socket delivering HELLO in that gap.
+        transport.setState(com.hamseda.walkie.transport.TransportState.CONNECTED)
+        val hello = Frame(
+            type = MessageType.HELLO,
+            sessionId = ByteArray(8),
+            seq = 0L,
+            timestamp = System.currentTimeMillis(),
+            codecId = 0xFF.toByte(),
+            payload = byteArrayOf(Protocol.VERSION, CodecId.OPUS),
+        ).encode()
+        val onRawFrame = SessionManager::class.java.getDeclaredMethod(
+            "onRawFrame",
+            ByteArray::class.java,
+        )
+        onRawFrame.isAccessible = true
+        onRawFrame.invoke(sm, hello)
+
+        assertEquals(
+            "the HELLO must not be dropped while CONNECTED is awaiting collection",
+            SessionManager.Phase.HANDSHAKE,
+            sm.phase.value,
+        )
+        sm.close()
     }
 
     @Test

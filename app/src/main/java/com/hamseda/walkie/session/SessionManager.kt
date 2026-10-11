@@ -659,6 +659,21 @@ class SessionManager(
     }
 
     private fun onRawFrame(bytes: ByteArray) {
+        // The transport may publish CONNECTED and start its socket reader on
+        // different dispatchers. The first peer HELLO can reach this collector
+        // before transportWatchJob processes the CONNECTED state emission. Do
+        // not drop that first frame while the session phase still says
+        // CONNECTING_TRANSPORT; the handshake guard makes this idempotent.
+        if (_phase.value == Phase.CONNECTING_TRANSPORT &&
+            transport?.state?.value == TransportState.CONNECTED
+        ) {
+            AppLog.log(
+                TAG,
+                "starting handshake on first inbound frame before transport-state observer",
+            )
+            beginHandshake()
+        }
+
         val frame = try {
             Frame.decode(bytes)
         } catch (e: FrameException) {
