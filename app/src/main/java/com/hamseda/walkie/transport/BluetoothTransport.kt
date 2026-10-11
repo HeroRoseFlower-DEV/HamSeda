@@ -551,6 +551,33 @@ class BluetoothTransport(private val context: Context) : Transport {
                     socketRef.getAndSet(null)?.let { try { it.close() } catch (_: IOException) {} }
                     try { socket?.close() } catch (_: IOException) {}
                     throw e
+                } catch (e: SecurityException) {
+                    watchdog.cancel()
+                    socketRef.getAndSet(null)?.let { try { it.close() } catch (_: IOException) {} }
+                    try { socket?.close() } catch (_: IOException) {}
+                    AppLog.log(TAG, "RFCOMM connect denied by Android: ${e.message}")
+                    val stillMissing = PermissionHelper.missingBluetoothPermissions(
+                        context,
+                        forDiscovery = false,
+                    )
+                    mutex.withLock {
+                        if (connectionGeneration.get() == attempt &&
+                            _state.value == TransportState.CONNECTING
+                        ) {
+                            _error.value = if (stillMissing.isNotEmpty()) {
+                                TransportError.PermissionDenied(stillMissing)
+                            } else {
+                                TransportError.ConnectFailed(
+                                    "Android denied Bluetooth RFCOMM access; check Nearby devices permission",
+                                )
+                            }
+                            _state.value = if (stillMissing.isNotEmpty()) {
+                                TransportState.UNAVAILABLE
+                            } else {
+                                TransportState.FAILED
+                            }
+                        }
+                    }
                 } catch (e: Exception) {
                     watchdog.cancel()
                     socketRef.set(null)
