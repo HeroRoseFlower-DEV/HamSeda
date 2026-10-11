@@ -7,6 +7,7 @@ plugins {
 android {
     namespace = "com.hamseda.walkie"
     compileSdk = 37
+    ndkVersion = "28.2.13676358"
 
     defaultConfig {
         applicationId = "com.hamseda.walkie"
@@ -14,6 +15,22 @@ android {
         targetSdk = 37
         versionCode = 1
         versionName = "1.0"
+
+        ndk {
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64", "x86")
+        }
+
+        externalNativeBuild {
+            cmake {
+                arguments += listOf(
+                    "-DANDROID_STL=c++_static",
+                    "-DOPUS_BUILD_PROGRAMS=OFF",
+                    "-DOPUS_BUILD_TESTING=OFF",
+                    "-DOPUS_DRED=OFF",
+                    "-DOPUS_OSCE=OFF",
+                )
+            }
+        }
     }
 
     buildTypes {
@@ -23,6 +40,20 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
+    }
+
+    // Retain legacy Concentus source for provenance, but do not ship it in the APK.
+    sourceSets {
+        getByName("main") {
+            java.exclude("org/concentus/**")
         }
     }
 
