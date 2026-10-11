@@ -90,6 +90,21 @@ class SessionHandshakeTest {
     }
 
     @Test
+    fun `first HELLO is handled before transport reports CONNECTED`() {
+        val rig = newRig()
+        // Model the socket-reader race: the initiator can send a valid HELLO
+        // while the waiting transport still reports AUTHENTICATING.
+        rig.tb.deferConnectedStateUntilFirstInbound = true
+        rig.start()
+        rig.await("both peers complete HELLO/key exchange despite delayed CONNECTED") {
+            rig.a.phase.value == SessionManager.Phase.AWAITING_SAS_CONFIRM &&
+                rig.b.phase.value == SessionManager.Phase.AWAITING_SAS_CONFIRM
+        }
+        assertEquals(rig.a.sasCode.value, rig.b.sasCode.value)
+        rig.close()
+    }
+
+    @Test
     fun `unsupported HELLO codec is rejected`() {
         val badCodec = newRig(interceptB = { bytes ->
             val frame = Frame.decode(bytes)
