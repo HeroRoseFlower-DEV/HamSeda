@@ -310,21 +310,34 @@ fun DiscoveryScreen(
             item {
                 WaitCard(
                     activeType = activeType,
+                    active = phase != SessionManager.Phase.IDLE,
+                    // Listening leaves the radio transport in IDLE until a peer
+                    // arrives. CONNECTING/AUTHENTICATING/CONNECTED are active
+                    // connection work, not a reason to offer "Start waiting".
                     waiting = phase != SessionManager.Phase.IDLE &&
-                        transportState != TransportState.CONNECTING,
+                        transportState == TransportState.IDLE,
                     onStartWaiting = { doListen() },
                     onStopWaiting = { vm.cancelSession() },
                 )
             }
             // ---- Mode B: scan and connect to a peer ----
-            item {
-                ScanCard(
-                    scanning = transportState == TransportState.DISCOVERING,
-                    connecting = transportState == TransportState.CONNECTING,
-                    activeType = activeType,
-                    onScanToggle = { if (transportState == TransportState.DISCOVERING) vm.stopScan() else doScan() },
-                    onCancelConnect = { vm.cancelSession() },
-                )
+            // While this phone is explicitly waiting in IDLE transport state,
+            // hide the scan action. A single phone must not accidentally run
+            // both roles, and a connected/authenticating transport must not
+            // fall back to showing an enabled Search button.
+            if (phase == SessionManager.Phase.IDLE ||
+                transportState != TransportState.IDLE
+            ) {
+                item {
+                    ScanCard(
+                        scanning = transportState == TransportState.DISCOVERING,
+                        connecting = phase != SessionManager.Phase.IDLE &&
+                            transportState != TransportState.DISCOVERING,
+                        activeType = activeType,
+                        onScanToggle = { if (transportState == TransportState.DISCOVERING) vm.stopScan() else doScan() },
+                        onCancelConnect = { vm.cancelSession() },
+                    )
+                }
             }
             transportError?.let { e ->
                 item {
@@ -354,6 +367,7 @@ fun DiscoveryScreen(
 @Composable
 private fun WaitCard(
     activeType: TransportType,
+    active: Boolean,
     waiting: Boolean,
     onStartWaiting: () -> Unit,
     onStopWaiting: () -> Unit,
@@ -398,6 +412,28 @@ private fun WaitCard(
                         shape = RoundedCornerShape(12.dp),
                     ) {
                         Text(stringResource(R.string.btn_stop))
+                    }
+                }
+            } else if (active) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(20.dp),
+                        strokeWidth = 2.dp,
+                    )
+                    Spacer(Modifier.width(12.dp))
+                    Text(
+                        text = stringResource(R.string.mode_connecting),
+                        modifier = Modifier.weight(1f),
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    OutlinedButton(
+                        onClick = onStopWaiting,
+                        shape = RoundedCornerShape(12.dp),
+                    ) {
+                        Text(stringResource(R.string.btn_cancel))
                     }
                 }
             } else {
@@ -650,6 +686,10 @@ private fun transportErrorMessage(e: com.hamseda.walkie.transport.TransportError
             when {
                 e.reason.contains("bluetooth discovery failed", ignoreCase = true) ->
                     stringResource(R.string.err_bluetooth_scan_failed)
+                e.reason.contains("bluetooth connect failed", ignoreCase = true) &&
+                    (e.reason.contains("read failed", ignoreCase = true) ||
+                        e.reason.contains("socket might closed", ignoreCase = true)) ->
+                    stringResource(R.string.err_bt_rfcomm_closed)
                 e.reason.startsWith("discovery failed:", ignoreCase = true) ->
                     stringResource(R.string.err_wifi_scan_failed)
                 e.reason.contains("wi-fi direct connect rejected", ignoreCase = true) ->
