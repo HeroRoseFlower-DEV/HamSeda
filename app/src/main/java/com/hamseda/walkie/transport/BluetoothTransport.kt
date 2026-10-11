@@ -442,8 +442,13 @@ class BluetoothTransport(private val context: Context) : Transport {
             try {
                 adapter?.cancelDiscovery()
             } catch (_: Exception) {}
-            if (_state.value == TransportState.DISCOVERING) {
+            if (_state.value == TransportState.DISCOVERING ||
+                _state.value == TransportState.FAILED ||
+                _state.value == TransportState.UNAVAILABLE
+            ) {
+                // Clear a stale scan failure before the next explicit role.
                 _state.value = TransportState.IDLE
+                _error.value = null
             }
         }
     }

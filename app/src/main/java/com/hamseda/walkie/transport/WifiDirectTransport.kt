@@ -220,7 +220,14 @@ class WifiDirectTransport(private val context: Context) : Transport {
         try {
             manager?.stopPeerDiscovery(channel, null)
         } catch (_: Exception) {}
-        if (_state.value == TransportState.DISCOVERING) _state.value = TransportState.IDLE
+        if (_state.value == TransportState.DISCOVERING ||
+            _state.value == TransportState.FAILED ||
+            _state.value == TransportState.UNAVAILABLE
+        ) {
+            // A fresh listen/connect attempt must not inherit a stale scan error.
+            _state.value = TransportState.IDLE
+            _error.value = null
+        }
     }
 
     // ------------------------------------------------------------- connect

@@ -140,9 +140,14 @@ class DiscoveryViewModel(private val deps: VmDeps) : ViewModel() {
     fun connectPeer(peer: PeerDevice) {
         viewModelScope.launch {
             if (!restartIdle()) return@launch
+            val transport = activeTransport()
+            // End discovery before attaching SessionManager's eager state
+            // collector. A previous FAILED/UNAVAILABLE scan must not be seen
+            // as this new session's initial transport state.
+            transport.stopDiscovery()
             VoiceService.start(deps.appContext)
             val codec = deps.settings.codecPref()
-            deps.manager.startOutgoing(activeTransport(), peer, codec)
+            deps.manager.startOutgoing(transport, peer, codec)
         }
     }
 
