@@ -50,12 +50,9 @@ android {
         }
     }
 
-    // Retain legacy Concentus source for provenance, but do not ship it in the APK.
-    sourceSets {
-        getByName("main") {
-            java.exclude("org/concentus/**")
-        }
-    }
+    // Retain legacy Concentus source for provenance, but exclude it from Java compilation.
+    // SourceSet.java.exclude is not exposed consistently by AGP's Kotlin DSL; excluding
+    // at the JavaCompile task level works with the Android Gradle Plugin used here.
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -112,4 +109,9 @@ dependencies {
 
     debugImplementation(libs.androidx.compose.ui.tooling)
     debugImplementation(libs.androidx.compose.ui.test.manifest)
+}
+
+// The old Concentus port is kept in Git for provenance, not compiled into the APK.
+tasks.withType<org.gradle.api.tasks.compile.JavaCompile>().configureEach {
+    exclude("org/concentus/**")
 }
