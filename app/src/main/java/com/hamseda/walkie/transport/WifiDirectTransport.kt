@@ -101,6 +101,7 @@ class WifiDirectTransport(private val context: Context) : Transport {
     // Invalidates framework callbacks/socket jobs that complete after Stop/disconnect.
     private val operationGeneration = AtomicLong(0L)
     private val discoveryGeneration = AtomicLong(0L)
+    private val peerSnapshotGeneration = AtomicLong(0L)
     @Volatile private var listeningRequested = false
 
     private fun ensureInit(force: Boolean = false): Boolean {
@@ -965,9 +966,16 @@ class WifiDirectTransport(private val context: Context) : Transport {
             AppLog.log(TAG, "p2p requestPeers skipped: manager/channel unavailable")
             return
         }
+        val snapshotRequest = peerSnapshotGeneration.incrementAndGet()
         try {
             mgr.requestPeers(ch) { list: WifiP2pDeviceList ->
-                if (expectedDiscovery != discoveryGeneration.get()) return@requestPeers
+                // Drop late responses from an earlier query: otherwise an
+                // empty initial snapshot could overwrite a newer populated
+                // peer list returned after the PEERS_CHANGED broadcast.
+                if (
+                    expectedDiscovery != discoveryGeneration.get() ||
+                    snapshotRequest != peerSnapshotGeneration.get()
+                ) return@requestPeers
                 val mapped = list.deviceList.map { device: WifiP2pDevice ->
                     PeerDevice(
                         id = device.deviceAddress,
