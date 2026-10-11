@@ -36,7 +36,10 @@ object PermissionHelper {
     const val LOCAL_NETWORK_SDK = 37
 
     /**
-     * Runtime permissions required before entering the app for the first time.
+     * Core runtime permissions used by the first-run gate. The separate
+     * BLUETOOTH_ADVERTISE permission is requested only when the user explicitly
+     * chooses to make this phone discoverable while waiting for an incoming
+     * Bluetooth connection.
      *
      * Android groups nearby-device permissions in the system UI where
      * applicable, but microphone access is a separate user decision. Legacy
@@ -47,7 +50,6 @@ object PermissionHelper {
     fun missingStartupRuntimePermissions(context: Context): List<String> =
         (
             missingBluetoothPermissions(context, forDiscovery = true) +
-                missingBluetoothAdvertisePermission(context) +
                 missingWifiDirectConnectPermissions(context) +
                 missingMicrophonePermission(context)
             ).distinct()

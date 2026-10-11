@@ -17,32 +17,40 @@ object Hkdf {
         }
         val generatedSalt = salt.isEmpty()
         val realSalt = if (generatedSalt) ByteArray(HASH_LEN) else salt
-        val prk = hmac(realSalt, ikm)
-        val okm = ByteArray(length)
+        var prk: ByteArray? = null
+        var okm: ByteArray? = null
         var previous = ByteArray(0)
         try {
+            prk = hmac(realSalt, ikm)
+            okm = ByteArray(length)
             var pos = 0
             var counter = 1
             while (pos < length) {
-                val input = previous + info + counter.toByte()
+                // Build a single temporary block instead of chained '+' operations,
+                // which would leave an extra intermediate copy in the heap.
+                val input = ByteArray(previous.size + info.size + 1)
+                previous.copyInto(input, 0)
+                info.copyInto(input, previous.size)
+                input[input.lastIndex] = counter.toByte()
                 val next = try {
-                    hmac(prk, input)
+                    hmac(requireNotNull(prk), input)
                 } finally {
                     input.fill(0)
                 }
                 previous.fill(0)
                 previous = next
+                val target = requireNotNull(okm)
                 val take = minOf(previous.size, length - pos)
-                previous.copyInto(okm, pos, 0, take)
+                previous.copyInto(target, pos, 0, take)
                 pos += take
                 counter++
             }
-            return okm
+            return requireNotNull(okm)
         } catch (e: Exception) {
-            okm.fill(0)
+            okm?.fill(0)
             throw e
         } finally {
-            prk.fill(0)
+            prk?.fill(0)
             previous.fill(0)
             if (generatedSalt) realSalt.fill(0)
         }

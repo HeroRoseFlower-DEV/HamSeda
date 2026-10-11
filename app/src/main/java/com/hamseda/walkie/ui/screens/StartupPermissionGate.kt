@@ -73,10 +73,10 @@ fun StartupPermissionGate(content: @Composable () -> Unit) {
     @Suppress("UNUSED_VARIABLE")
     val permissionRefresh = refreshKey
 
-    val bluetoothPermissions = (
-        PermissionHelper.missingBluetoothPermissions(context, forDiscovery = true) +
-            PermissionHelper.missingBluetoothAdvertisePermission(context)
-        ).distinct()
+    // ADVERTISE is deliberately not requested on launch: it is needed only if
+    // the user chooses Bluetooth "wait for incoming connection" mode.
+    val bluetoothPermissions =
+        PermissionHelper.missingBluetoothPermissions(context, forDiscovery = true)
     val wifiPermissions = PermissionHelper.missingWifiDirectPermissions(context)
     val localNetworkPermissions = PermissionHelper.missingLocalNetworkPermission(context)
     val microphonePermissions = PermissionHelper.missingMicrophonePermission(context)
