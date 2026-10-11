@@ -755,6 +755,8 @@ private fun transportErrorMessage(e: com.hamseda.walkie.transport.TransportError
                     stringResource(R.string.err_wifi_location_disabled)
                 e.reason.startsWith("discovery failed:", ignoreCase = true) ->
                     stringResource(R.string.err_wifi_scan_failed)
+                e.reason.contains("p2p listen failed", ignoreCase = true) ->
+                    stringResource(R.string.err_wifi_listen_failed)
                 e.reason.contains("wi-fi direct connect rejected", ignoreCase = true) ->
                     stringResource(R.string.err_wifi_p2p_connect_rejected)
                 else -> stringResource(R.string.err_connect_failed)
