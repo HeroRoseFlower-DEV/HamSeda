@@ -194,6 +194,7 @@ class SessionManager(
         maxPending = MAX_PENDING_OUTBOUND_MESSAGES,
         maxPendingAudio = MAX_QUEUED_AUDIO_FRAMES,
         isAudio = { isAudioMessage(it) },
+        onDiscard = ::wipeOutboundMessage,
     )
     private val outboundSignal = Channel<Unit>(capacity = Channel.CONFLATED)
     private var senderJob: Job? = null
@@ -201,6 +202,18 @@ class SessionManager(
 
     private fun isAudioMessage(msg: OutboundMsg): Boolean =
         msg is OutboundMsg.Sealed && msg.type == MessageType.AUDIO
+
+    /** Clear queued plaintext after send, eviction, rejection, or cancellation. */
+    private fun wipeOutboundMessage(msg: OutboundMsg) {
+        when (msg) {
+            is OutboundMsg.Plain -> msg.payload.fill(0)
+            is OutboundMsg.Sealed -> {
+                msg.sessionId.fill(0)
+                msg.plaintext.fill(0)
+                // msg.key is session-owned key material; teardown wipes it centrally.
+            }
+        }
+    }
 
     private fun drainOutbound() {
         outboundQueue.clear()
@@ -231,25 +244,31 @@ class SessionManager(
         senderJob = scope.launch {
             while (isActive) {
                 val msg = nextOutbound()
-                val bytes: ByteArray = try {
-                    when (msg) {
-                        is OutboundMsg.Plain -> buildPlainFrame(msg.type, msg.payload)
-                        is OutboundMsg.Sealed -> buildSealedFrame(msg)
-                    }
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    Log.w(TAG, "outbound build failed: ${e.message}")
-                    continue
-                }
                 try {
-                    val t = transport ?: break
-                    t.sendFrame(bytes)
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    Log.w(TAG, "outbound send failed: ${e.message}")
-                    // Keep the sender alive for possible teardown messages.
+                    val bytes = try {
+                        when (msg) {
+                            is OutboundMsg.Plain -> buildPlainFrame(msg.type, msg.payload)
+                            is OutboundMsg.Sealed -> buildSealedFrame(msg)
+                        }
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        Log.w(TAG, "outbound build failed: " + e.javaClass.simpleName)
+                        continue
+                    }
+                    try {
+                        val t = transport ?: break
+                        t.sendFrame(bytes)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        Log.w(TAG, "outbound send failed: " + e.javaClass.simpleName)
+                        // Keep the sender alive for possible teardown messages.
+                    } finally {
+                        bytes.fill(0)
+                    }
+                } finally {
+                    wipeOutboundMessage(msg)
                 }
             }
         }
@@ -266,16 +285,22 @@ class SessionManager(
         }
     }
 
+    /** Takes ownership of the input buffer, which is cleared after copying. */
     private fun enqueueControl(type: Byte, plaintext: ByteArray) {
-        val k = keys ?: return
+        val k = keys
+        if (k == null) {
+            plaintext.fill(0)
+            return
+        }
         val msg = OutboundMsg.Sealed(
             type = type,
             codecId = 0xFF.toByte(),
             sessionId = k.sessionId.copyOf(),
             key = k.controlKey,
             role = myRole,
-            plaintext = plaintext,
+            plaintext = plaintext.copyOf(),
         )
+        plaintext.fill(0)
         if (!enqueueOutbound(msg)) {
             Log.w(TAG, "outbound queue full; dropping control frame type=$type")
         }
@@ -285,18 +310,24 @@ class SessionManager(
      * Freshness-first audio queue: on congestion, evict old unsent speech rather
      * than dropping every new frame and playing stale audio when the link recovers.
      */
+    /** Takes ownership of the encoded audio frame, clearing the capture-side buffer. */
     private fun enqueueAudio(codecId: Byte, plaintext: ByteArray) {
-        val k = keys ?: return
+        val k = keys
+        if (k == null) {
+            plaintext.fill(0)
+            return
+        }
         val msg = OutboundMsg.Sealed(
             type = MessageType.AUDIO,
             codecId = codecId,
             sessionId = k.sessionId.copyOf(),
             key = k.audioKey,
             role = myRole,
-            plaintext = plaintext,
+            plaintext = plaintext.copyOf(),
         )
+        plaintext.fill(0)
         if (!enqueueOutbound(msg)) {
-            Log.w(TAG, "realtime audio queue rejected a frame (pending=${outboundQueue.size()})")
+            Log.w(TAG, "realtime audio queue rejected a frame (pending=" + outboundQueue.size() + ")")
             return
         }
         val dropped = outboundQueue.droppedAudioFrames
@@ -540,7 +571,10 @@ class SessionManager(
         keys?.wipe(); keys = null
         codec?.close(); codec = null
         myKeyPair = null
-        peerPubBytes = null; peerNonce = null
+        myNonce.fill(0); myNonce = ByteArray(0)
+        myPubBytes.fill(0); myPubBytes = ByteArray(0)
+        peerPubBytes?.fill(0); peerPubBytes = null
+        peerNonce?.fill(0); peerNonce = null
         keyExchangeSent = false; keyConfirmSent = false
         peerHelloReceived = false
         pendingKeyConfirmFrame = null
@@ -845,21 +879,24 @@ class SessionManager(
         val peerNc = peerNonce ?: return
         val kp = myKeyPair ?: return
         val secret = SessionCrypto.agreeSharedSecret(kp, SessionCrypto.decodePublicKey(peerPub))
-        val k = SessionCrypto.deriveKeys(secret, myNonce, peerNc)
-        keys = k
-        myRole = SessionCrypto.myRole(myPubBytes, peerPub)
-        val transcript = SessionCrypto.transcriptHash(myPubBytes, peerPub, myNonce, peerNc)
-        // Wipe our private key material as soon as the shared secret exists.
-        myKeyPair = null
-        secret.fill(0)
-        if (!keyConfirmSent) {
-            keyConfirmSent = true
-            enqueueControl(MessageType.KEY_CONFIRM, transcript)
-        }
-        // The peer's KEY_CONFIRM may have arrived before derivation finished.
-        pendingKeyConfirmFrame?.let { stashed ->
-            pendingKeyConfirmFrame = null
-            verifyPeerKeyConfirm(stashed)
+        myKeyPair = null // private key is no longer needed after ECDH
+        try {
+            val derived = SessionCrypto.deriveKeys(secret, myNonce, peerNc)
+            keys = derived
+            myRole = SessionCrypto.myRole(myPubBytes, peerPub)
+            val transcript = SessionCrypto.transcriptHash(myPubBytes, peerPub, myNonce, peerNc)
+            if (!keyConfirmSent) {
+                keyConfirmSent = true
+                enqueueControl(MessageType.KEY_CONFIRM, transcript)
+            } else {
+                transcript.fill(0)
+            }
+            pendingKeyConfirmFrame?.let { stashed ->
+                pendingKeyConfirmFrame = null
+                verifyPeerKeyConfirm(stashed)
+            }
+        } finally {
+            secret.fill(0)
         }
     }
 
@@ -875,12 +912,18 @@ class SessionManager(
         val opened = try {
             openControl(frame, k)
         } catch (e: Exception) {
-            Log.w(TAG, "KEY_CONFIRM failed authentication", e)
+            Log.w(TAG, "KEY_CONFIRM failed authentication (" + e.javaClass.simpleName + ")")
             endSession(SessionError.AUTH_MISMATCH, notifyPeer = true,
                 disconnectReason = DisconnectReason.AUTH_MISMATCH)
             return
         }
-        verifyKeyConfirm(opened, expectedTranscript())
+        val expected = expectedTranscript()
+        try {
+            verifyKeyConfirm(opened, expected)
+        } finally {
+            opened.fill(0)
+            expected.fill(0)
+        }
     }
 
     private fun handleSasPhaseFrame(frame: Frame) {

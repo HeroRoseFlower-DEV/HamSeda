@@ -14,6 +14,7 @@ internal class RealtimeOutboundQueue<T>(
     private val maxPending: Int,
     private val maxPendingAudio: Int,
     private val isAudio: (T) -> Boolean,
+    private val onDiscard: (T) -> Unit = {},
 ) {
     private val queue = ArrayDeque<T>()
     private var queuedAudio = 0
@@ -33,12 +34,14 @@ internal class RealtimeOutboundQueue<T>(
         if (audio && queuedAudio >= maxPendingAudio) {
             if (!removeOldestAudio()) {
                 droppedAudio++
+                onDiscard(item)
                 return false
             }
         }
         while (queue.size >= maxPending) {
             if (!removeOldestAudio()) {
                 if (audio) droppedAudio++
+                onDiscard(item)
                 return false
             }
         }
@@ -56,6 +59,7 @@ internal class RealtimeOutboundQueue<T>(
 
     @Synchronized
     fun clear() {
+        queue.forEach(onDiscard)
         queue.clear()
         queuedAudio = 0
     }
@@ -70,9 +74,11 @@ internal class RealtimeOutboundQueue<T>(
         val iterator = queue.iterator()
         while (iterator.hasNext()) {
             if (isAudio(iterator.next())) {
+                val discarded = iterator.next()
                 iterator.remove()
                 queuedAudio--
                 droppedAudio++
+                onDiscard(discarded)
                 return true
             }
         }
