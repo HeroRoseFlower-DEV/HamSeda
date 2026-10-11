@@ -726,27 +726,42 @@ class WifiDirectTransport(private val context: Context) : Transport {
 
     private fun onConnectionInfo(info: WifiP2pInfo, expectedGeneration: Long) {
         if (expectedGeneration != operationGeneration.get()) return
-        // The receiver exists from app startup for availability diagnostics.
-        // Do not attach to unrelated P2P groups without an explicit user action.
-        if (!listeningRequested &&
-            _state.value != TransportState.CONNECTING &&
-            _state.value != TransportState.AUTHENTICATING &&
-            _state.value != TransportState.CONNECTED
-        ) {
-            AppLog.log(TAG, "ignoring unsolicited formed group while transport is idle")
-            return
-        }
+
+        val transportState = _state.value
+        val expectsConnection = listeningRequested ||
+            transportState == TransportState.CONNECTING ||
+            transportState == TransportState.AUTHENTICATING ||
+            transportState == TransportState.CONNECTED
+
         if (!info.groupFormed) {
-            // During invitation negotiation Android may emit transient P2P
-            // state updates before group formation. Do not turn an outgoing
-            // CONNECTING attempt into IDLE just because the group is not ready
-            // yet; only tear down a transport that was already established.
-            AppLog.log(TAG, "p2p group not formed yet (transportState=${_state.value})")
-            if (_state.value == TransportState.CONNECTED ||
-                _state.value == TransportState.AUTHENTICATING
+            // During negotiation Android may publish transient updates before
+            // group formation. Ignore unrelated idle/scanning updates, but
+            // tear down an established socket if its P2P group really vanished.
+            if (!expectsConnection) {
+                AppLog.log(
+                    TAG,
+                    "ignoring unformed P2P connection update " +
+                        "(transportState=$transportState, listeningRequested=$listeningRequested)",
+                )
+                return
+            }
+            AppLog.log(TAG, "p2p group not formed yet (transportState=$transportState)")
+            if (transportState == TransportState.CONNECTED ||
+                transportState == TransportState.AUTHENTICATING
             ) {
                 scope.launch { handleGroupLost("p2p group lost", expectedGeneration) }
             }
+            return
+        }
+
+        // Do not attach to a system group unless the user explicitly selected
+        // Wait for connection or an outgoing connect attempt is active.
+        if (!expectsConnection) {
+            AppLog.log(
+                TAG,
+                "ignoring unsolicited formed P2P group " +
+                    "(transportState=$transportState, listeningRequested=$listeningRequested)",
+            )
             return
         }
         p2pListenModeActive = false
@@ -856,7 +871,17 @@ class WifiDirectTransport(private val context: Context) : Transport {
             serverSocket = it
         }
         Log.i(TAG, "group owner: accepting on P2P interface (port ${Protocol.WIFI_DIRECT_PORT})")
-        return server.accept().also { Log.i(TAG, "group owner: peer socket accepted") }
+        val accepted = server.accept()
+        // The session uses the accepted socket only. Close the listening
+        // endpoint immediately so no second local peer can queue connections
+        // on the fixed P2P port for the lifetime of the voice session.
+        try {
+            server.close()
+        } catch (_: IOException) {
+        }
+        if (serverSocket === server) serverSocket = null
+        Log.i(TAG, "group owner: peer socket accepted; listener closed")
+        return accepted
     }
 
     private fun connectAsClient(info: WifiP2pInfo): Socket {
@@ -979,8 +1004,14 @@ class WifiDirectTransport(private val context: Context) : Transport {
             if (expectedGeneration != null &&
                 expectedGeneration != operationGeneration.get()
             ) return@withLock
-            if (_state.value == TransportState.CONNECTED ||
-                _state.value == TransportState.AUTHENTICATING
+            val previousState = _state.value
+            AppLog.log(
+                TAG,
+                "p2p transport cleanup: reason=$reason, previousState=$previousState, " +
+                    "expectedGeneration=$expectedGeneration",
+            )
+            if (previousState == TransportState.CONNECTED ||
+                previousState == TransportState.AUTHENTICATING
             ) {
                 _error.value = TransportError.ConnectionLost(reason)
             }
@@ -1097,10 +1128,12 @@ class WifiDirectTransport(private val context: Context) : Transport {
                 WifiP2pManager.WIFI_P2P_DISCOVERY_CHANGED_ACTION -> {
                     val state = intent.getIntExtra(WifiP2pManager.EXTRA_DISCOVERY_STATE, -1)
                     p2pDiscoveryActive = state == WifiP2pManager.WIFI_P2P_DISCOVERY_STARTED
-                    AppLog.log(
-                        TAG,
-                        "p2p discovery state changed: ${if (p2pDiscoveryActive) "started" else "stopped/unknown"} (state=$state)",
-                    )
+                    val stateLabel = when (state) {
+                        WifiP2pManager.WIFI_P2P_DISCOVERY_STARTED -> "started"
+                        WifiP2pManager.WIFI_P2P_DISCOVERY_STOPPED -> "stopped"
+                        else -> "unknown"
+                    }
+                    AppLog.log(TAG, "p2p discovery state changed: $stateLabel (state=$state)")
                 }
                 WifiP2pManager.ACTION_WIFI_P2P_LISTEN_STATE_CHANGED -> {
                     val state = intent.getIntExtra(WifiP2pManager.EXTRA_LISTEN_STATE, -1)

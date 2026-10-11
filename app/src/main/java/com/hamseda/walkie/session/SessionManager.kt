@@ -498,7 +498,15 @@ class SessionManager(
         notifyPeer: Boolean = true,
         disconnectReason: Byte = DisconnectReason.USER_HANGUP,
     ) {
+        val phaseBeforeEnd = _phase.value
         if (!markEndedIfActive()) return
+        val activeTransport = transport
+        AppLog.log(
+            TAG,
+            "session ending: reason=${error?.name ?: "USER_HANGUP"}, " +
+                "previousPhase=$phaseBeforeEnd, transport=${activeTransport?.type}, " +
+                "transportState=${activeTransport?.state?.value}, notifyPeer=$notifyPeer",
+        )
         // Enqueue DISCONNECT while the sender is still running; the flush
         // delay below gives it a bounded window to go out.
         if (notifyPeer && keys != null) {
@@ -546,6 +554,7 @@ class SessionManager(
         } catch (_: Exception) {}
         detachTransport()
         _transportType.value = null
+        AppLog.log(TAG, "session teardown complete: reason=${error?.name ?: "USER_HANGUP"}")
         synchronized(lifecycleLock) { _phase.value = Phase.IDLE }
     }
 
@@ -933,7 +942,13 @@ class SessionManager(
                 delay(1_000)
                 floor.checkTimeouts()
                 val now = elapsedClock()
-                if (now - lastPeerSeen > Protocol.PEER_TIMEOUT_MS) {
+                val peerSilenceMs = now - lastPeerSeen
+                if (peerSilenceMs > Protocol.PEER_TIMEOUT_MS) {
+                    AppLog.log(
+                        TAG,
+                        "peer liveness timeout: silenceMs=$peerSilenceMs, " +
+                            "thresholdMs=${Protocol.PEER_TIMEOUT_MS}",
+                    )
                     endSession(SessionError.PEER_TIMEOUT, notifyPeer = false)
                     return@launch
                 }
