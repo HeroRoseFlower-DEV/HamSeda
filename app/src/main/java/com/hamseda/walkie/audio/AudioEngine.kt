@@ -302,6 +302,12 @@ class AudioEngine(private val context: Context) : AudioPipeline {
             .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
             .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
             .build()
+        // Select communication mode before constructing AudioTrack: low-latency
+        // eligibility depends on the output route's native sample rate.
+        applyAudioMode(force = true)
+        val nativeOutputRate =
+            AudioTrack.getNativeOutputSampleRate(AudioManager.STREAM_VOICE_CALL)
+        val canRequestLowLatency = nativeOutputRate == AudioCodec.SAMPLE_RATE
         val requestedBufferBytes = maxOf(minBuf, AudioCodec.FRAME_BYTES_PCM * 3)
         fun buildTrack(performanceMode: Int): AudioTrack? = try {
             AudioTrack.Builder()
@@ -316,10 +322,20 @@ class AudioEngine(private val context: Context) : AudioPipeline {
             null
         }
 
-        // Prefer Android's low-latency route, but keep playback operational on
-        // OEMs that do not support it by retrying the standard streaming path.
-        var candidate = buildTrack(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)
-        if (candidate == null || candidate.state != AudioTrack.STATE_INITIALIZED) {
+        val preferredMode = if (canRequestLowLatency) {
+            AudioTrack.PERFORMANCE_MODE_LOW_LATENCY
+        } else {
+            AppLog.log(
+                TAG,
+                "low-latency output skipped: nativeRate=$nativeOutputRate, " +
+                    "requestedRate=${AudioCodec.SAMPLE_RATE}",
+            )
+            AudioTrack.PERFORMANCE_MODE_NONE
+        }
+        var candidate = buildTrack(preferredMode)
+        if ((candidate == null || candidate.state != AudioTrack.STATE_INITIALIZED) &&
+            preferredMode == AudioTrack.PERFORMANCE_MODE_LOW_LATENCY
+        ) {
             candidate?.release()
             candidate = buildTrack(AudioTrack.PERFORMANCE_MODE_NONE)
         }
@@ -327,9 +343,9 @@ class AudioEngine(private val context: Context) : AudioPipeline {
         if (at == null || at.state != AudioTrack.STATE_INITIALIZED) {
             at?.release()
             Log.w(TAG, "AudioTrack could not initialize at ${AudioCodec.SAMPLE_RATE} Hz")
+            restoreAudioModeIfIdle()
             return false
         }
-        applyAudioMode(force = true)
         // Audio playback must start before we report success to SessionManager.
         // Previously the worker thread could fail at AudioTrack.play() only
         // after startPlayback() had already returned true.
