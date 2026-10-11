@@ -432,6 +432,9 @@ class BluetoothTransport(private val context: Context) : Transport {
 
     override suspend fun stopDiscovery() {
         invalidateDiscovery()
+        // Clear an old terminal error only when the user starts a new role
+        // or explicitly stops discovery, not during failure teardown.
+        _error.value = null
     }
 
     /** Invalidates pending retries before cancelling the platform scan. */
@@ -821,7 +824,8 @@ class BluetoothTransport(private val context: Context) : Transport {
             closeSocketLocked()
             stopAcceptLocked()
             _state.value = TransportState.IDLE
-            _error.value = null
+            // Preserve the terminal transport error for the UI diagnostics
+            // banner; a subsequent stopDiscovery/new attempt clears it.
             _peers.value = emptyList()
             found.clear()
         }

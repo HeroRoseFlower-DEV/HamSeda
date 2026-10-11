@@ -224,10 +224,10 @@ class WifiDirectTransport(private val context: Context) : Transport {
             _state.value == TransportState.FAILED ||
             _state.value == TransportState.UNAVAILABLE
         ) {
-            // A fresh listen/connect attempt must not inherit a stale scan error.
             _state.value = TransportState.IDLE
-            _error.value = null
         }
+        // Stop/new-role setup clears old errors even when state is already IDLE.
+        _error.value = null
     }
 
     // ------------------------------------------------------------- connect
@@ -760,7 +760,8 @@ class WifiDirectTransport(private val context: Context) : Transport {
                 manager?.cancelConnect(channel, null)
             } catch (_: Exception) {}
             _state.value = TransportState.IDLE
-            _error.value = null
+            // Preserve terminal errors for the screen after SessionManager
+            // tears down a failed connection. stopDiscovery clears them next time.
             _peers.value = emptyList()
         }
     }
