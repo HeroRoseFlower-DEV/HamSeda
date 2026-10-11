@@ -142,10 +142,10 @@ class DiscoveryViewModel(private val deps: VmDeps) : ViewModel() {
         viewModelScope.launch {
             if (!restartIdle()) return@launch
             val transport = activeTransport()
-            // End discovery before attaching SessionManager's eager state
-            // collector. A previous FAILED/UNAVAILABLE scan must not be seen
-            // as this new session's initial transport state.
-            transport.stopDiscovery()
+            // Reset transport state before the session collector attaches.
+            // Wi-Fi Direct overrides this without sending asynchronous
+            // stopPeerDiscovery(), which can race connect() and yield ERROR(0).
+            transport.prepareForConnect()
             VoiceService.start(deps.appContext)
             val codec = deps.settings.codecPref()
             deps.manager.startOutgoing(transport, peer, codec)
@@ -160,9 +160,9 @@ class DiscoveryViewModel(private val deps: VmDeps) : ViewModel() {
             if (!restartIdle()) return@launch
 
             val transport = activeTransport()
-            // Scanning and listening have distinct UI states. Stop any scan
-            // left running from the previous role before starting the server.
-            transport.stopDiscovery()
+            // Switch roles before starting the receiver. Wi-Fi Direct overrides
+            // this so modern startListening() cannot race stopPeerDiscovery().
+            transport.prepareForListen()
             VoiceService.start(deps.appContext)
             val codec = deps.settings.codecPref()
             deps.manager.acceptIncoming(transport, codec) {
