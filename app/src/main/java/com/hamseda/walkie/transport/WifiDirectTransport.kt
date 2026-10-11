@@ -1111,10 +1111,17 @@ class WifiDirectTransport(private val context: Context) : Transport {
                     )
                 }
                 WifiP2pManager.ACTION_WIFI_P2P_REQUEST_RESPONSE_CHANGED -> {
-                    val accepted = intent.getBooleanExtra(WifiP2pManager.EXTRA_REQUEST_RESPONSE, false)
+                    // Android exposes the response as an integer enum, not a
+                    // Boolean extra. Reading it as Boolean always misreported
+                    // accepted requests as rejected in our diagnostics.
+                    val response = intent.getIntExtra(
+                        WifiP2pManager.EXTRA_REQUEST_RESPONSE,
+                        WifiP2pManager.CONNECTION_REQUEST_REJECT,
+                    )
+                    val accepted = response == WifiP2pManager.CONNECTION_REQUEST_ACCEPT
                     AppLog.log(
                         TAG,
-                        "p2p remote request response: ${if (accepted) "accepted" else "rejected"}",
+                        "p2p remote request response: ${if (accepted) "accepted" else "rejected"} (code=$response)",
                     )
                 }
                 WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION -> {
