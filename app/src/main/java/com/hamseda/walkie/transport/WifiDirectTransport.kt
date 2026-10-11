@@ -7,6 +7,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.net.wifi.WifiManager
+import android.location.LocationManager
 import android.net.wifi.WpsInfo
 import android.net.wifi.p2p.WifiP2pConfig
 import android.net.wifi.p2p.WifiP2pDevice
@@ -150,8 +151,12 @@ class WifiDirectTransport(private val context: Context) : Transport {
     @SuppressLint("MissingPermission")
     override suspend fun startDiscovery() {
         val scanAttempt = discoveryGeneration.incrementAndGet()
+        _peers.value = emptyList()
+        _error.value = null
+
         val missing = PermissionHelper.missingWifiDirectPermissions(context)
         if (missing.isNotEmpty()) {
+            AppLog.log(TAG, "p2p discovery blocked: missing runtime permissions=${missing.joinToString()}")
             _error.value = TransportError.PermissionDenied(missing)
             _state.value = TransportState.UNAVAILABLE
             return
@@ -161,12 +166,38 @@ class WifiDirectTransport(private val context: Context) : Transport {
             _error.value = TransportError.Unsupported("wifi_direct_unsupported")
             return
         }
+
+        // Wi-Fi Direct peer discovery requires the device-wide Location switch
+        // to be enabled on Android, even when the app uses NEARBY_WIFI_DEVICES
+        // with neverForLocation. This is separate from granting app permission.
+        val locationEnabled = isSystemLocationEnabled()
+        val wifiEnabled = try {
+            (context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager)
+                ?.isWifiEnabled
+        } catch (e: Exception) {
+            AppLog.log(TAG, "could not read Wi-Fi radio state: ${e.javaClass.simpleName}")
+            null
+        }
+        AppLog.log(
+            TAG,
+            "p2p discovery preflight: sdk=${Build.VERSION.SDK_INT}, " +
+                "wifiEnabled=$wifiEnabled, locationServicesEnabled=$locationEnabled, " +
+                "nearbyWifiPermissionGranted=${PermissionHelper.missingWifiDirectPermissions(context).isEmpty()}",
+        )
+        if (locationEnabled == false) {
+            AppLog.log(TAG, "p2p discovery blocked: system Location services are disabled")
+            _error.value = TransportError.ConnectFailed("location services disabled")
+            _state.value = TransportState.FAILED
+            return
+        }
+
         // Seed the current radio state before deciding it is disabled. This
         // also makes startDiscovery() safe when called before availability().
         ensureReceiver()
         if (!p2pEnabled) {
             _state.value = TransportState.UNAVAILABLE
             _error.value = TransportError.RadioDisabled(TransportType.WIFI_DIRECT)
+            AppLog.log(TAG, "p2p discovery blocked: Wi-Fi P2P radio is disabled")
             return
         }
         val mgr = manager
@@ -176,12 +207,18 @@ class WifiDirectTransport(private val context: Context) : Transport {
             _error.value = TransportError.Unsupported("wifi_direct_init_failed")
             return
         }
+
         try {
             mgr.discoverPeers(ch, object : WifiP2pManager.ActionListener {
                 override fun onSuccess() {
                     if (discoveryGeneration.get() != scanAttempt) return
                     _state.value = TransportState.DISCOVERING
                     _error.value = null
+                    AppLog.log(TAG, "p2p discovery started; waiting for peer-change broadcasts")
+                    // Some framework/OEM versions do not send a fresh
+                    // PEERS_CHANGED broadcast for an already cached list.
+                    // Query it once on success as well as on later broadcasts.
+                    requestCurrentPeers(scanAttempt, "discovery-start")
                 }
 
                 override fun onFailure(reason: Int) {
@@ -815,35 +852,8 @@ class WifiDirectTransport(private val context: Context) : Transport {
                     }
                 }
                 WifiP2pManager.WIFI_P2P_PEERS_CHANGED_ACTION -> {
-                    // Permission checks are subject to a time-of-check/time-of-use
-                    // race, and callbacks can arrive after Stop/disconnect. Guard
-                    // both the framework call and the asynchronous result.
-                    if (PermissionHelper.missingWifiDirectPermissions(ctx).isNotEmpty()) return
-                    val mgr = manager
-                    val ch = channel
-                    if (mgr == null || ch == null) return
-                    val expectedDiscovery = discoveryGeneration.get()
-                    try {
-                        mgr.requestPeers(ch) { list: WifiP2pDeviceList ->
-                            if (expectedDiscovery == discoveryGeneration.get()) {
-                                _peers.value = list.deviceList.map { d: WifiP2pDevice ->
-                                    PeerDevice(
-                                        id = d.deviceAddress,
-                                        displayName = d.deviceName.ifBlank { d.deviceAddress },
-                                        transport = TransportType.WIFI_DIRECT,
-                                    )
-                                }
-                            }
-                        }
-                    } catch (e: SecurityException) {
-                        AppLog.log(TAG, "peer-list request denied by Android: ${e.message}")
-                        val missingNow = PermissionHelper.missingWifiDirectPermissions(ctx)
-                        if (missingNow.isNotEmpty()) {
-                            _error.value = TransportError.PermissionDenied(missingNow)
-                        }
-                    } catch (e: IllegalStateException) {
-                        AppLog.log(TAG, "peer-list request rejected by framework: ${e.message}")
-                    }
+                    AppLog.log(TAG, "p2p peers-changed broadcast received")
+                    requestCurrentPeers(discoveryGeneration.get(), "peers-changed-broadcast")
                 }
                 WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION -> {
                     if (PermissionHelper.missingWifiDirectPermissions(ctx).isNotEmpty()) return
@@ -871,6 +881,70 @@ class WifiDirectTransport(private val context: Context) : Transport {
                     }
                 }
             }
+        }
+    }
+
+    /**
+     * Android documents that discoverPeers(), requestPeers(), and service
+     * discovery require system Location Mode to be enabled. This is a device
+     * switch, distinct from the app's runtime location/nearby-device grants.
+     */
+    private fun isSystemLocationEnabled(): Boolean? {
+        val locationManager = context.getSystemService(Context.LOCATION_SERVICE) as? LocationManager
+            ?: return null
+        return try {
+            if (Build.VERSION.SDK_INT >= 28) {
+                locationManager.isLocationEnabled
+            } else {
+                @Suppress("DEPRECATION")
+                (locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER) ||
+                    locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER))
+            }
+        } catch (e: Exception) {
+            AppLog.log(TAG, "could not read system Location switch: ${e.javaClass.simpleName}")
+            null
+        }
+    }
+
+    /**
+     * Fetch a peer snapshot both when discovery starts and after framework
+     * updates. This is not a substitute for PEERS_CHANGED events; it avoids
+     * relying on a single OEM-specific broadcast timing for cached peers.
+     */
+    @SuppressLint("MissingPermission")
+    private fun requestCurrentPeers(expectedDiscovery: Long, source: String) {
+        if (expectedDiscovery != discoveryGeneration.get()) return
+        val missing = PermissionHelper.missingWifiDirectPermissions(context)
+        if (missing.isNotEmpty()) {
+            AppLog.log(TAG, "p2p requestPeers skipped: missing permissions=${missing.joinToString()}")
+            return
+        }
+        val mgr = manager
+        val ch = channel
+        if (mgr == null || ch == null) {
+            AppLog.log(TAG, "p2p requestPeers skipped: manager/channel unavailable")
+            return
+        }
+        try {
+            mgr.requestPeers(ch) { list: WifiP2pDeviceList ->
+                if (expectedDiscovery != discoveryGeneration.get()) return@requestPeers
+                val mapped = list.deviceList.map { device: WifiP2pDevice ->
+                    PeerDevice(
+                        id = device.deviceAddress,
+                        displayName = device.deviceName.ifBlank { device.deviceAddress },
+                        transport = TransportType.WIFI_DIRECT,
+                    )
+                }
+                _peers.value = mapped
+                AppLog.log(
+                    TAG,
+                    "p2p peer snapshot source=$source visiblePeers=${mapped.size}",
+                )
+            }
+        } catch (e: SecurityException) {
+            AppLog.log(TAG, "p2p requestPeers denied by Android: ${e.message}")
+        } catch (e: IllegalStateException) {
+            AppLog.log(TAG, "p2p requestPeers rejected by framework: ${e.message}")
         }
     }
 
