@@ -153,9 +153,15 @@ class DiscoveryViewModel(private val deps: VmDeps) : ViewModel() {
             // session failed to finish teardown and the manager is not IDLE.
             if (!restartIdle()) return@launch
 
+            val transport = activeTransport()
+            // Scanning and listening have distinct UI states. Stop any scan
+            // left running from the previous role before starting the server;
+            // otherwise DISCOVERING can mask the listening state and leave
+            // the Search/Stop-scan controls active during an incoming wait.
+            transport.stopDiscovery()
             VoiceService.start(deps.appContext)
             val codec = deps.settings.codecPref()
-            deps.manager.acceptIncoming(activeTransport(), codec)
+            deps.manager.acceptIncoming(transport, codec)
         }
     }
 
