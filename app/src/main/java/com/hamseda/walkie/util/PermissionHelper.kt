@@ -21,8 +21,8 @@ import androidx.core.content.ContextCompat
  *   where the platform required it for discovery (API 23–30)
  *
  * Microphone: RECORD_AUDIO, requested during first-run setup before entering
- * the app. Audio capture itself still starts only during push-to-talk. Notifications: POST_NOTIFICATIONS on API 33+ for the foreground
- * service notification.
+ * the app. Audio capture itself still starts only during push-to-talk.
+ * Notifications: POST_NOTIFICATIONS on API 33+ for the foreground service notification.
  *
  * Local network (API 37+): Android 17 blocks local-network access by
  * default for apps targeting API 37 — including TCP connections to Wi-Fi
