@@ -39,6 +39,10 @@ class LoopbackTransport(
     private val _incoming = MutableSharedFlow<ByteArray>(extraBufferCapacity = 256)
     override val incomingFrames: SharedFlow<ByteArray> = _incoming.asSharedFlow()
 
+    /** Test hook: emulate a socket reader delivering HELLO before CONNECTED is observed. */
+    @Volatile var deferConnectedStateUntilFirstInbound = false
+    @Volatile private var awaitingDelayedConnected = false
+
     fun setState(s: TransportState) {
         _state.value = s
     }
@@ -53,9 +57,16 @@ class LoopbackTransport(
 
     override suspend fun connect(peer: PeerDevice) {
         setState(TransportState.CONNECTING)
-        // Both ends become connected, like a real P2P group forming.
+        // A real transport can have an established data path while its
+        // CONNECTED state update is still pending on another dispatcher.
+        val remote = linked
+        if (remote?.deferConnectedStateUntilFirstInbound == true) {
+            remote.awaitingDelayedConnected = true
+            remote.setState(TransportState.AUTHENTICATING)
+        } else {
+            remote?.setState(TransportState.CONNECTED)
+        }
         setState(TransportState.CONNECTED)
-        linked?.setState(TransportState.CONNECTED)
     }
 
     override suspend fun listen() {}
@@ -65,7 +76,12 @@ class LoopbackTransport(
         // Real transports consume/copy frame bytes before returning. The fake
         // uses SharedFlow, which retains references, so make that ownership
         // explicit before SessionManager zeroes its transient wire buffer.
-        linked?._incoming?.emit(out.copyOf())
+        val remote = linked ?: return
+        remote._incoming.emit(out.copyOf())
+        if (remote.awaitingDelayedConnected) {
+            remote.awaitingDelayedConnected = false
+            remote.setState(TransportState.CONNECTED)
+        }
     }
 
     override suspend fun disconnect() {
