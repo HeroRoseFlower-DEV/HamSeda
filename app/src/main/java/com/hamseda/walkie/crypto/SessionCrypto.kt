@@ -196,7 +196,12 @@ object SessionCrypto {
         )
         cipher.updateAAD(associatedData)
         val ct = cipher.doFinal(plaintext)
-        return nonce + ct
+        return try {
+            nonce + ct
+        } finally {
+            nonce.fill(0)
+            ct.fill(0)
+        }
     }
 
     /**
@@ -211,14 +216,19 @@ object SessionCrypto {
         }
         val nonce = sealed.copyOfRange(0, NONCE_LEN)
         val ct = sealed.copyOfRange(NONCE_LEN, sealed.size)
-        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        cipher.init(
-            Cipher.DECRYPT_MODE,
-            SecretKeySpec(key, "AES"),
-            GCMParameterSpec(GCM_TAG_BITS, nonce),
-        )
-        cipher.updateAAD(associatedData)
-        return cipher.doFinal(ct)
+        try {
+            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+            cipher.init(
+                Cipher.DECRYPT_MODE,
+                SecretKeySpec(key, "AES"),
+                GCMParameterSpec(GCM_TAG_BITS, nonce),
+            )
+            cipher.updateAAD(associatedData)
+            return cipher.doFinal(ct)
+        } finally {
+            nonce.fill(0)
+            ct.fill(0)
+        }
     }
 
     // ------------------------------------------------------------------ util

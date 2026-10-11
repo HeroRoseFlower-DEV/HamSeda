@@ -232,14 +232,15 @@ class AudioEngine(private val context: Context) : AudioPipeline {
                 var peak = 0
                 for (s in frame) peak = maxOf(peak, abs(s.toInt()))
                 val level = min(1f, peak / 32768f)
-                var encoded: ByteArray? = null
                 try {
-                    encoded = codec.encode(frame)
-                    onFrame(encoded, level)
+                    val encoded = codec.encode(frame)
+                    try {
+                        onFrame(encoded, level)
+                    } finally {
+                        encoded.fill(0)
+                    }
                 } catch (e: Exception) {
                     Log.w(TAG, "encode failed: ${e.javaClass.simpleName}")
-                } finally {
-                    encoded?.fill(0)
                 }
             }
             frame.fill(0)

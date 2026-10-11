@@ -602,7 +602,20 @@ class SessionManager(
         try { audio.stopCapture() } catch (_: Exception) {}
         try { audio.stopPlayback() } catch (_: Exception) {}
         keys?.wipe(); keys = null
+        codec?.close(); codec = null
+        jitter.reset()
+        replay.reset()
         myKeyPair = null
+        myNonce.fill(0); myNonce = ByteArray(0)
+        myPubBytes.fill(0); myPubBytes = ByteArray(0)
+        peerPubBytes?.fill(0); peerPubBytes = null
+        peerNonce?.fill(0); peerNonce = null
+        pendingKeyConfirmFrame = null
+        _sasCode.value = null
+        _peerSasConfirmed.value = false
+        _isTransmitting.value = false
+        _floorHolder.value = FloorController.Holder.NONE
+        _voiceLevel.value = 0f
 
         // This must not use the service's child scope: VoiceService.onDestroy()
         // cancels that scope immediately after close() returns. Serialize final
@@ -828,6 +841,7 @@ class SessionManager(
                     frame.payload
                 }
                 val reason = decodeDisconnectReason(payload)
+                if (activeKeys != null) payload.fill(0)
                 if (reason == null) {
                     fail(SessionError.PROTOCOL_ERROR, "invalid DISCONNECT reason during handshake")
                     return
@@ -929,22 +943,24 @@ class SessionManager(
                 verifyPeerKeyConfirm(frame)
             }
             MessageType.SAS_CONFIRM -> {
-                // A malformed/forged control frame must not throw out of the
-                // incomingFrames collector and silently stop all later traffic.
                 val plaintext = try {
                     openControl(frame, k)
                 } catch (e: Exception) {
                     _authFailures.value += 1
-                    AppLog.log(TAG, "unauthenticated SAS_CONFIRM rejected (${e.javaClass.simpleName})")
+                    AppLog.log(TAG, "unauthenticated SAS_CONFIRM rejected (" + e.javaClass.simpleName + ")")
                     return
                 }
-                if (plaintext.isNotEmpty()) {
-                    fail(SessionError.PROTOCOL_ERROR, "SAS_CONFIRM payload must be empty")
-                    return
+                try {
+                    if (plaintext.isNotEmpty()) {
+                        fail(SessionError.PROTOCOL_ERROR, "SAS_CONFIRM payload must be empty")
+                        return
+                    }
+                    _peerSasConfirmed.value = true
+                    lastPeerSeen = elapsedClock()
+                    maybeEnterSession()
+                } finally {
+                    plaintext.fill(0)
                 }
-                _peerSasConfirmed.value = true
-                lastPeerSeen = elapsedClock()
-                maybeEnterSession()
             }
             MessageType.DISCONNECT -> {
                 val plaintext = try {
@@ -953,16 +969,20 @@ class SessionManager(
                     _authFailures.value += 1
                     AppLog.log(
                         TAG,
-                        "unauthenticated SAS-phase DISCONNECT rejected (${e.javaClass.simpleName})",
+                        "unauthenticated SAS-phase DISCONNECT rejected (" + e.javaClass.simpleName + ")",
                     )
                     return
                 }
-                val reason = decodeDisconnectReason(plaintext)
-                if (reason == null) {
-                    fail(SessionError.PROTOCOL_ERROR, "invalid authenticated DISCONNECT payload")
-                    return
+                try {
+                    val reason = decodeDisconnectReason(plaintext)
+                    if (reason == null) {
+                        fail(SessionError.PROTOCOL_ERROR, "invalid authenticated DISCONNECT payload")
+                        return
+                    }
+                    endSession(sessionErrorForDisconnect(reason), notifyPeer = false)
+                } finally {
+                    plaintext.fill(0)
                 }
-                endSession(sessionErrorForDisconnect(reason), notifyPeer = false)
             }
             else -> fail(
                 SessionError.PROTOCOL_ERROR,
