@@ -35,6 +35,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withContext
 import java.io.IOException
 import java.net.SocketTimeoutException
 import java.util.concurrent.atomic.AtomicLong
@@ -808,7 +809,11 @@ class BluetoothTransport(private val context: Context) : Transport {
         val f = mutex.withLock { framed }
             ?: throw IOException("not connected")
         try {
-            f.writeFrame(frameBytes)
+            // RFCOMM output can block during radio retransmission/backpressure;
+            // keep that wait off the session's CPU dispatcher.
+            withContext(Dispatchers.IO) {
+                f.writeFrame(frameBytes)
+            }
         } catch (e: IOException) {
             scope.launch { handleLost(e.message ?: "write error") }
             throw e

@@ -413,14 +413,17 @@ class AudioEngine(private val context: Context) : AudioPipeline {
         val pcm = if (last != null && plcCount < MAX_PLC_FRAMES) {
             ShortArray(last.size) { i -> (last[i] * PLC_DECAY).toInt().toShort() }
         } else {
-            ShortArray(AudioCodec.FRAME_SAMPLES)
+            silence
         }
         return if (writePcm(at, pcm)) plcCount + 1 else null
     }
 
     override fun stopPlayback() {
         playbackRunning.set(false)
-        try { playbackThread?.join(500) } catch (_: InterruptedException) {}
+        val worker = playbackThread
+        if (worker != null && worker !== Thread.currentThread()) {
+            try { worker.join(500) } catch (_: InterruptedException) {}
+        }
         playbackThread = null
         try { track?.stop() } catch (_: IllegalStateException) {}
         track?.release()

@@ -170,17 +170,11 @@ class SessionManager(
 
     // ------------------------------------------------------- outbound pipeline
     //
-    // HS-02: all outgoing session messages are serialized through ONE bounded
-    // channel with a SINGLE consumer. The consumer allocates the sequence
-    // number, seals, and writes in deterministic FIFO order. This fixes:
-    //  - non-atomic sendSeq++ raced by concurrent producers,
-    //  - an unbounded coroutine launched per 20 ms audio frame,
-    //  - non-deterministic wire order from coroutine scheduling.
-    //
-    // Overflow policy (documented): audio frames are dropped on a full queue
-    // (bounded latency for real-time voice; counted in audioDropped);
-    // control messages are never expected to overflow (low volume) and a
-    // drop is logged as a warning.
+    // HS-02: all outgoing messages pass through one bounded FIFO and one sender.
+    // The sender allocates wire sequence numbers, seals and writes frames in
+    // deterministic order. Audio overflow evicts the oldest queued audio so
+    // congestion drops stale speech rather than turning it into delayed speech.
+    // A conflated signal wakes the consumer without creating a coroutine per frame.
 
     private sealed interface OutboundMsg {
         data class Plain(val type: Byte, val payload: ByteArray) : OutboundMsg

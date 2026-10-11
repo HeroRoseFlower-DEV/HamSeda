@@ -41,6 +41,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withContext
 import java.io.IOException
 import java.net.InetSocketAddress
 import java.net.ServerSocket
@@ -1050,7 +1051,11 @@ class WifiDirectTransport(private val context: Context) : Transport {
         val (f, generation) = mutex.withLock { framed to operationGeneration.get() }
         f ?: throw IOException("not connected")
         try {
-            f.writeFrame(frameBytes)
+            // TCP output is a blocking platform call. Do not pin a CPU
+            // dispatcher thread while a weak radio/link applies backpressure.
+            withContext(Dispatchers.IO) {
+                f.writeFrame(frameBytes)
+            }
         } catch (e: IOException) {
             scope.launch { handleGroupLost(e.message ?: "write error", generation) }
             throw e
