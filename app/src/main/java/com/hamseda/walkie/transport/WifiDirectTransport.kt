@@ -746,10 +746,19 @@ class WifiDirectTransport(private val context: Context) : Transport {
                 return
             }
             AppLog.log(TAG, "p2p group not formed yet (transportState=$transportState)")
-            if (transportState == TransportState.CONNECTED ||
-                transportState == TransportState.AUTHENTICATING
-            ) {
+            if (transportState == TransportState.CONNECTED) {
+                // A connected socket losing its group is a real transport loss.
                 scope.launch { handleGroupLost("p2p group lost", expectedGeneration) }
+            } else if (transportState == TransportState.AUTHENTICATING) {
+                // AUTHENTICATING means the group was observed and TCP
+                // accept/connect is still being established. Some framework
+                // builds emit an intermediate unformed snapshot here; don't
+                // cancel the socket job on that transient update. The bounded
+                // socket deadline below still fails a genuinely lost group.
+                AppLog.log(
+                    TAG,
+                    "transient unformed P2P update during socket setup; keeping bounded socket attempt alive",
+                )
             }
             return
         }
