@@ -103,6 +103,10 @@ class WifiDirectTransport(private val context: Context) : Transport {
     private val discoveryGeneration = AtomicLong(0L)
     private val peerSnapshotGeneration = AtomicLong(0L)
     @Volatile private var listeningRequested = false
+    // True from the moment discoverPeers is submitted until Stop or an
+    // outgoing connect begins. Framework group callbacks can arrive before
+    // discoverPeers.onSuccess(), so TransportState alone is not sufficient.
+    @Volatile private var discoveryRequested = false
 
     private fun ensureInit(force: Boolean = false): Boolean {
         if (!force && manager != null && channel != null) return true
@@ -152,6 +156,7 @@ class WifiDirectTransport(private val context: Context) : Transport {
     @SuppressLint("MissingPermission")
     override suspend fun startDiscovery() {
         val scanAttempt = discoveryGeneration.incrementAndGet()
+        discoveryRequested = false
         _peers.value = emptyList()
         _error.value = null
 
@@ -217,6 +222,7 @@ class WifiDirectTransport(private val context: Context) : Transport {
             return
         }
 
+        discoveryRequested = true
         try {
             mgr.discoverPeers(ch, object : WifiP2pManager.ActionListener {
                 override fun onSuccess() {
@@ -232,6 +238,7 @@ class WifiDirectTransport(private val context: Context) : Transport {
 
                 override fun onFailure(reason: Int) {
                     if (discoveryGeneration.get() != scanAttempt) return
+                    discoveryRequested = false
                     val name = reasonName(reason)
                     AppLog.log(TAG, "p2p discovery failed: $name (code=$reason)")
                     _error.value = TransportError.ConnectFailed(
@@ -242,6 +249,7 @@ class WifiDirectTransport(private val context: Context) : Transport {
             })
         } catch (e: SecurityException) {
             if (discoveryGeneration.get() != scanAttempt) return
+            discoveryRequested = false
             AppLog.log(TAG, "p2p discovery denied by Android: ${e.message}")
             val stillMissing = PermissionHelper.missingWifiDirectPermissions(context)
             if (stillMissing.isNotEmpty()) {
@@ -255,6 +263,7 @@ class WifiDirectTransport(private val context: Context) : Transport {
             }
         } catch (e: IllegalStateException) {
             if (discoveryGeneration.get() != scanAttempt) return
+            discoveryRequested = false
             AppLog.log(TAG, "p2p discovery rejected by framework: ${e.message}")
             _error.value = TransportError.ConnectFailed("Wi-Fi Direct discovery could not be started")
             _state.value = TransportState.FAILED
@@ -263,6 +272,7 @@ class WifiDirectTransport(private val context: Context) : Transport {
 
     override suspend fun stopDiscovery() {
         discoveryGeneration.incrementAndGet()
+        discoveryRequested = false
         try {
             manager?.stopPeerDiscovery(channel, null)
         } catch (_: Exception) {}
@@ -297,6 +307,7 @@ class WifiDirectTransport(private val context: Context) : Transport {
                 _state.value == TransportState.CONNECTING
             ) return
             discoveryGeneration.incrementAndGet()
+            discoveryRequested = false
             listeningRequested = false
             val attempt = operationGeneration.incrementAndGet()
             if (!ensureInit() || !p2pEnabled) {
@@ -455,17 +466,120 @@ class WifiDirectTransport(private val context: Context) : Transport {
             return
         }
         val attempt = operationGeneration.incrementAndGet()
+        discoveryRequested = false
         listeningRequested = true
         registerReceiver()
-        // Pick up an existing P2P group only after the user explicitly starts listening.
+
+        // First pick up a group that may already have formed while the user
+        // moved from Search to Wait. Only initiate radio listening if no group
+        // already exists.
         val existing = requestConnectionInfoSync()
         if (attempt != operationGeneration.get() || !listeningRequested) return
         if (existing != null && existing.groupFormed) {
             AppLog.log(TAG, "picking up existing p2p group while listening")
             onConnectionInfo(existing, attempt)
-        } else if (_state.value == TransportState.IDLE) {
-            Log.i(TAG, "listening for incoming wi-fi direct groups")
+            return
         }
+
+        val listenFailure = startP2pListenMode()
+        if (attempt != operationGeneration.get() || !listeningRequested) return
+        if (listenFailure != null) {
+            AppLog.log(TAG, "p2p wait/listen mode failed: $listenFailure")
+            _error.value = TransportError.ConnectFailed("p2p listen failed: $listenFailure")
+            _state.value = TransportState.FAILED
+            return
+        }
+        AppLog.log(
+            TAG,
+            "Wi-Fi Direct incoming-listen mode active " +
+                "(sdk=${Build.VERSION.SDK_INT}, mode=${if (Build.VERSION.SDK_INT >= 33) "startListening" else "discoverPeers-fallback"})",
+        )
+    }
+
+    /**
+     * API 33+ has an explicit P2P LISTEN state. On older Android versions,
+     * keep the radio active using discoverPeers() as the compatible fallback.
+     * Neither path changes the UI state to DISCOVERING: the user explicitly
+     * selected the wait role, and an incoming group is handled by the receiver.
+     *
+     * Returns null on success or a diagnostic reason on failure.
+     */
+    @SuppressLint("MissingPermission")
+    private suspend fun startP2pListenMode(): String? {
+        val mgr = manager ?: return "manager unavailable"
+        val ch = channel ?: return "channel unavailable"
+        val result = CompletableDeferred<String?>()
+        val listener = object : WifiP2pManager.ActionListener {
+            override fun onSuccess() {
+                result.complete(null)
+            }
+
+            override fun onFailure(reason: Int) {
+                val detail = "${reasonName(reason)} (code=$reason)"
+                result.complete(detail)
+            }
+        }
+        return try {
+            if (Build.VERSION.SDK_INT >= 33) {
+                mgr.startListening(ch, listener)
+            } else {
+                mgr.discoverPeers(ch, listener)
+            }
+            withTimeout(5_000L) { result.await() }
+        } catch (e: TimeoutCancellationException) {
+            "framework callback timed out"
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: SecurityException) {
+            "permission denied: ${e.message}"
+        } catch (e: Exception) {
+            "${e.javaClass.simpleName}: ${e.message}"
+        }
+    }
+
+    /**
+     * Prepare Wi-Fi Direct to connect without sending an asynchronous
+     * stopPeerDiscovery() request immediately before connect(). The framework
+     * ends discovery as connection negotiation begins; stop-then-connect can
+     * race and be rejected with WifiP2pManager.ERROR (0).
+     */
+    override suspend fun prepareForConnect() {
+        discoveryGeneration.incrementAndGet()
+        if (_state.value == TransportState.FAILED ||
+            _state.value == TransportState.UNAVAILABLE
+        ) {
+            _state.value = TransportState.IDLE
+            discoveryRequested = false
+        }
+        _error.value = null
+        AppLog.log(
+            TAG,
+            "prepared Wi-Fi Direct connect without stopPeerDiscovery race " +
+                "(state=${_state.value}, discoveryRequested=$discoveryRequested)",
+        )
+    }
+
+    /**
+     * Prepare to wait for a peer. API 33+ startListening() will transition the
+     * radio to listen mode itself, so don't send an asynchronous stop that
+     * could overtake and cancel that request. Older releases first stop the
+     * previous scan before falling back to discoverPeers() in listen().
+     */
+    override suspend fun prepareForListen() {
+        if (Build.VERSION.SDK_INT < 33) {
+            stopDiscovery()
+            return
+        }
+        discoveryGeneration.incrementAndGet()
+        discoveryRequested = false
+        if (_state.value == TransportState.DISCOVERING ||
+            _state.value == TransportState.FAILED ||
+            _state.value == TransportState.UNAVAILABLE
+        ) {
+            _state.value = TransportState.IDLE
+        }
+        _error.value = null
+        AppLog.log(TAG, "prepared Wi-Fi Direct wait role without asynchronous stopPeerDiscovery")
     }
 
     /**
@@ -508,7 +622,7 @@ class WifiDirectTransport(private val context: Context) : Transport {
         if (expectedGeneration != operationGeneration.get()) return
         // The receiver exists from app startup for availability diagnostics.
         // Do not attach to unrelated P2P groups without an explicit user action.
-        if (!listeningRequested &&
+        if (!listeningRequested && !discoveryRequested &&
             _state.value != TransportState.CONNECTING &&
             _state.value != TransportState.AUTHENTICATING &&
             _state.value != TransportState.CONNECTED
@@ -533,7 +647,7 @@ class WifiDirectTransport(private val context: Context) : Transport {
         scope.launch {
             mutex.withLock {
                 if (expectedGeneration != operationGeneration.get()) return@withLock
-                if (!listeningRequested &&
+                if (!listeningRequested && !discoveryRequested &&
                     _state.value != TransportState.CONNECTING &&
                     _state.value != TransportState.AUTHENTICATING &&
                     _state.value != TransportState.CONNECTED
@@ -560,6 +674,11 @@ class WifiDirectTransport(private val context: Context) : Transport {
                     return@withLock
                 }
                 _state.value = TransportState.AUTHENTICATING
+                // The group formed from a user-selected incoming peer or
+                // outgoing connect; neither discovery nor listen is needed
+                // while this socket is being established.
+                discoveryRequested = false
+                listeningRequested = false
                 socketJob?.cancel()
                 socketJob = scope.launch {
                     try {
@@ -763,6 +882,7 @@ class WifiDirectTransport(private val context: Context) : Transport {
             // lock so delayed framework callbacks cannot resurrect an old
             // socket after SessionManager has started teardown.
             operationGeneration.incrementAndGet()
+            discoveryRequested = false
             listeningRequested = false
             closeSocketLocked()
             _state.value = TransportState.IDLE
@@ -796,6 +916,7 @@ class WifiDirectTransport(private val context: Context) : Transport {
         // setup. Those callbacks must not publish CONNECTED after user Stop.
         operationGeneration.incrementAndGet()
         discoveryGeneration.incrementAndGet()
+        discoveryRequested = false
         listeningRequested = false
         mutex.withLock {
             closeSocketLocked()
