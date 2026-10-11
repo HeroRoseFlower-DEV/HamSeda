@@ -39,13 +39,18 @@ Java_com_hamseda_walkie_audio_NativeOpusCodec_nativeCreateEncoder(
     const int bitrate_result = opus_encoder_ctl(encoder, OPUS_SET_BITRATE(bitrate_bps));
     const int complexity_result = opus_encoder_ctl(encoder, OPUS_SET_COMPLEXITY(complexity));
     const int signal_result = opus_encoder_ctl(encoder, OPUS_SET_SIGNAL(OPUS_SIGNAL_VOICE));
-    const int vbr_result = opus_encoder_ctl(encoder, OPUS_SET_VBR_CONSTRAINT(1));
+    const int vbr_result = opus_encoder_ctl(encoder, OPUS_SET_VBR(1));
+    const int vbr_constraint_result = opus_encoder_ctl(encoder, OPUS_SET_VBR_CONSTRAINT(0));
+    const int max_bandwidth_result =
+        opus_encoder_ctl(encoder, OPUS_SET_MAX_BANDWIDTH(OPUS_BANDWIDTH_FULLBAND));
     const int depth_result = opus_encoder_ctl(encoder, OPUS_SET_LSB_DEPTH(16));
 
     if (bitrate_result != OPUS_OK ||
         complexity_result != OPUS_OK ||
         signal_result != OPUS_OK ||
         vbr_result != OPUS_OK ||
+        vbr_constraint_result != OPUS_OK ||
+        max_bandwidth_result != OPUS_OK ||
         depth_result != OPUS_OK) {
         opus_encoder_destroy(encoder);
         return 0;

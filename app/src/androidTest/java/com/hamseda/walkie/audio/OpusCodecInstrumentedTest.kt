@@ -29,7 +29,7 @@ class OpusCodecInstrumentedTest {
         OpusCodec().use { codec ->
             val pcm = sineFrame()
             val encoded = codec.encode(pcm)
-            assertTrue("Opus packet should compress speech: ${encoded.size} bytes", encoded.size < 200)
+            assertTrue("Opus packet should compress speech: ${encoded.size} bytes", encoded.size < 300)
 
             val decoded = codec.decode(encoded)
             assertEquals(AudioCodec.FRAME_SAMPLES, decoded.size)
@@ -42,7 +42,7 @@ class OpusCodecInstrumentedTest {
             // Compare best correlation across a modest delay window. Opus is lossy
             // and has algorithmic delay, so exact sample-for-sample equality is wrong.
             var best = 0.0
-            for (lag in 0..160) {
+            for (lag in 0..480) {
                 var dot = 0.0
                 var shiftedEnergy = 0.0
                 for (i in pcm.indices) {

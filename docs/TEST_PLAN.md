@@ -78,7 +78,7 @@ procedure and its device variations).
 ### 2.6 Performance (before any numeric claim)
 - Measure end-to-end latency (mouth-to-ear) on real devices before quoting it.
 - Confirm diagnostics report a playback buffer close to the platform minimum
-  and a 2-frame initial jitter target. Compare clarity and underruns against
+  and a 3-frame initial jitter target. Compare clarity and underruns against
   the prior APK on both Wi-Fi Direct and Bluetooth Classic.
 - Repeat with the screen locked for 5 minutes and verify voice remains smooth;
   the active-session partial CPU wake lock should be acquired and released on

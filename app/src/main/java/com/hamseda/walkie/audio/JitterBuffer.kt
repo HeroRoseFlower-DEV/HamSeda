@@ -5,8 +5,8 @@ import java.util.TreeMap
 /**
  * Adaptive jitter buffer for 20 ms voice frames.
  *
- * - Buffers [targetFrames] (default ~40 ms) before first playout to balance
- *   latency with short wireless scheduling jitter.
+ * - Buffers [targetFrames] (default ~60 ms) before first playout to improve
+ *   resilience to short wireless scheduling jitter.
  * - Drops stale frames and caps the queue; old speech is discarded rather
  *   than replayed long after it was spoken.
  * - When a packet is missing, waits only [maxWaitMs] before concealment so
@@ -15,7 +15,7 @@ import java.util.TreeMap
  * [nowMs] is injectable for deterministic unit tests.
  */
 class JitterBuffer(
-    private val targetFrames: Int = 2,
+    private val targetFrames: Int = 3,
     private val maxFrames: Int = 8,
     private val maxLateMs: Long = 180,
     private val maxWaitMs: Long = 40,

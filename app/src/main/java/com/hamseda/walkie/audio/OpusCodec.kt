@@ -6,10 +6,10 @@ import java.io.Closeable
 /**
  * Real-time speech codec backed by the official native libopus 1.6.1 build.
  *
- * Profile: 16 kHz mono PCM16, 20 ms frames, VOIP application, 24 kbps,
- * complexity 7, voice signal hint and constrained VBR. The upstream source
- * archive is hash-pinned in CMake; the codec is packaged in the APK and does
- * not download anything at runtime.
+ * Profile: 48 kHz mono PCM16, 20 ms frames, VOIP application, 40 kbps,
+ * complexity 10, voice signal hint, full-band maximum bandwidth and
+ * unconstrained VBR. The upstream source archive is hash-pinned in CMake;
+ * the codec is packaged in the APK and does not download anything at runtime.
  *
  * JVM tests can construct this class for protocol wiring, but real encode /
  * decode operations require Android's packaged native library and are covered
@@ -123,8 +123,8 @@ class OpusCodec(
 
     companion object {
         const val LIBOPUS_VERSION = "1.6.1"
-        const val DEFAULT_BITRATE_BPS = 24_000
-        const val ENCODER_COMPLEXITY = 7
-        const val MAX_PACKET_BYTES = 512
+        const val DEFAULT_BITRATE_BPS = 40_000
+        const val ENCODER_COMPLEXITY = 10
+        const val MAX_PACKET_BYTES = 1275
     }
 }

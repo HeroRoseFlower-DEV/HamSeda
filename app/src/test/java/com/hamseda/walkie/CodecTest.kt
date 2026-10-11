@@ -26,10 +26,10 @@ class CodecTest {
     }
 
     @Test
-    fun `frame constants are 20ms at 16kHz mono`() {
-        assertEquals(16000, AudioCodec.SAMPLE_RATE)
-        assertEquals(320, AudioCodec.FRAME_SAMPLES)
-        assertEquals(640, AudioCodec.FRAME_BYTES_PCM)
+    fun `frame constants are 20ms at 48kHz mono`() {
+        assertEquals(48000, AudioCodec.SAMPLE_RATE)
+        assertEquals(960, AudioCodec.FRAME_SAMPLES)
+        assertEquals(1920, AudioCodec.FRAME_BYTES_PCM)
     }
 
     @Test
@@ -48,14 +48,14 @@ class CodecTest {
     }
 
     @Test
-    fun `opus profile is configured for low-latency speech`() {
+    fun `opus profile is configured for high-quality full-band voice`() {
         OpusCodec().use { codec ->
             assertEquals(CodecId.OPUS, codec.codecId)
-            assertEquals(16000, codec.sampleRate)
+            assertEquals(48000, codec.sampleRate)
             assertEquals(1, codec.channels)
-            assertEquals(320, codec.frameSamples)
-            assertEquals(24_000, OpusCodec.DEFAULT_BITRATE_BPS)
-            assertEquals(7, OpusCodec.ENCODER_COMPLEXITY)
+            assertEquals(960, codec.frameSamples)
+            assertEquals(40_000, OpusCodec.DEFAULT_BITRATE_BPS)
+            assertEquals(10, OpusCodec.ENCODER_COMPLEXITY)
             // The loaded native-library version is checked by the Android instrumentation test.
         }
     }

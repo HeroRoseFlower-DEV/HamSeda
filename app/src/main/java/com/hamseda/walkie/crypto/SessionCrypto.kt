@@ -48,9 +48,9 @@ object SessionCrypto {
     private const val EC_CURVE = "secp256r1"
     private const val GCM_TAG_BITS = 128
     private const val NONCE_LEN = 12
-    private const val INFO = "HamSeda-v2/session-keys"
-    private const val SAS_INFO = "HamSeda-v2/sas"
-    private const val TRANSCRIPT_INFO = "HamSeda-v2/key-confirm"
+    private const val INFO = "HamSeda-v3/session-keys"
+    private const val SAS_INFO = "HamSeda-v3/sas"
+    private const val TRANSCRIPT_INFO = "HamSeda-v3/key-confirm"
 
     /** Maximum accepted encoded public-key size (P-256 X.509 ≈ 91 bytes). */
     const val MAX_PUBKEY_BYTES = 256

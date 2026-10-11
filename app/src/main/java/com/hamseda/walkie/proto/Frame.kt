@@ -9,7 +9,7 @@ import java.nio.ByteOrder
  * Layout (big-endian):
  * ```
  *  0..1   magic            0x48 0x53
- *  2      version          0x02
+ *  2      version          0x03
  *  3      type             MessageType.*
  *  4..11  sessionId        8 bytes
  *  12..15 seq              uint32, per-direction sequence number

@@ -30,8 +30,8 @@ import kotlin.math.min
 /**
  * Low-latency voice capture/playback engine.
  *
- * - Capture: [AudioRecord] with `VOICE_COMMUNICATION` source, 16 kHz mono
- *   PCM16, read in exact 20 ms (320-sample) chunks on a dedicated thread —
+ * - Capture: [AudioRecord] with `VOICE_COMMUNICATION` source, 48 kHz mono
+ *   PCM16, read in exact 20 ms (960-sample) chunks on a dedicated thread —
  *   never the main thread. Encoded frames are delivered via [onFrame].
  * - Playback: [AudioTrack] in streaming mode fed from a [JitterBuffer];
  *   lost frames are concealed by repeating the last frame with decay
@@ -302,19 +302,31 @@ class AudioEngine(private val context: Context) : AudioPipeline {
             .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
             .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
             .build()
-        val at = try {
+        val requestedBufferBytes = maxOf(minBuf, AudioCodec.FRAME_BYTES_PCM * 3)
+        fun buildTrack(performanceMode: Int): AudioTrack? = try {
             AudioTrack.Builder()
                 .setAudioAttributes(attrs)
                 .setAudioFormat(format)
-                .setBufferSizeInBytes(maxOf(minBuf, AudioCodec.FRAME_BYTES_PCM * 3))
+                .setBufferSizeInBytes(requestedBufferBytes)
+                .setPerformanceMode(performanceMode)
                 .setTransferMode(AudioTrack.MODE_STREAM)
                 .build()
         } catch (e: Exception) {
-            Log.w(TAG, "AudioTrack build failed: ${e.message}")
-            return false
+            Log.w(TAG, "AudioTrack build failed (performanceMode=$performanceMode): ${e.message}")
+            null
         }
-        if (at.state != AudioTrack.STATE_INITIALIZED) {
-            at.release()
+
+        // Prefer Android's low-latency route, but keep playback operational on
+        // OEMs that do not support it by retrying the standard streaming path.
+        var candidate = buildTrack(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)
+        if (candidate == null || candidate.state != AudioTrack.STATE_INITIALIZED) {
+            candidate?.release()
+            candidate = buildTrack(AudioTrack.PERFORMANCE_MODE_NONE)
+        }
+        val at = candidate
+        if (at == null || at.state != AudioTrack.STATE_INITIALIZED) {
+            at?.release()
+            Log.w(TAG, "AudioTrack could not initialize at ${AudioCodec.SAMPLE_RATE} Hz")
             return false
         }
         applyAudioMode(force = true)
@@ -333,7 +345,8 @@ class AudioEngine(private val context: Context) : AudioPipeline {
         playbackRunning.set(true)
         AppLog.log(
             TAG,
-            "playback initialized: bufferFrames=${at.bufferSizeInFrames}, " +
+            "playback initialized: sampleRate=${at.sampleRate}, " +
+                "performanceMode=${at.performanceMode}, bufferFrames=${at.bufferSizeInFrames}, " +
                 "capacityFrames=${at.bufferCapacityInFrames}, frameMs=20",
         )
         playbackThread = Thread({

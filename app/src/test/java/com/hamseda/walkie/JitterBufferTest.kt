@@ -28,11 +28,13 @@ class JitterBufferTest {
     }
 
     @Test
-    fun `default buffer primes at 40ms and abandons a gap promptly`() {
+    fun `default buffer primes at 60ms and abandons a gap promptly`() {
         val clock = Clock()
         val jb = JitterBuffer(nowMs = clock::get)
         jb.push(0, payload(0))
         jb.push(2, payload(2))
+        assertTrue(jb.takeNext() is JitterBuffer.TakeResult.NotReady)
+        jb.push(3, payload(3))
         assertEquals(0L, (jb.takeNext() as JitterBuffer.TakeResult.Frame).packet.seq)
         assertTrue(jb.takeNext() is JitterBuffer.TakeResult.NotReady)
 
@@ -42,6 +44,7 @@ class JitterBufferTest {
         val lost = jb.takeNext()
         assertTrue(lost is JitterBuffer.TakeResult.Lost)
         assertEquals(1L, (lost as JitterBuffer.TakeResult.Lost).skippedSeq)
+        assertEquals(2L, (jb.takeNext() as JitterBuffer.TakeResult.Frame).packet.seq)
     }
 
     @Test

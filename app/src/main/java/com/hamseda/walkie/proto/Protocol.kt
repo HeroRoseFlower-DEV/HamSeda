@@ -3,7 +3,7 @@ package com.hamseda.walkie.proto
 import java.util.UUID
 
 /**
- * Wire protocol constants for HamSeda v2.
+ * Wire protocol constants for HamSeda v3.
  *
  * Every datagram on the wire is one [Frame]: a fixed 29-byte header followed
  * by a length-bounded payload. Frames travel inside a length-prefixed
@@ -20,15 +20,15 @@ import java.util.UUID
 object Protocol {
     const val MAGIC_0: Byte = 0x48 // 'H'
     const val MAGIC_1: Byte = 0x53 // 'S'
-    const val VERSION: Byte = 2
+    const val VERSION: Byte = 3
 
     /** Fixed header size in bytes: magic(2) + version(1) + type(1) + sessionId(8)
      * + seq(4) + timestamp(8) + codecId(1) + payloadLen(4). */
     const val HEADER_SIZE = 29
 
-    /** Maximum payload bytes per frame. A 20 ms Opus frame at ~24 kbps is
-     * ~60 bytes; PCM 20 ms @16 kHz mono is 640 bytes. 4096 leaves wide margin
-     * for control messages while bounding memory per frame. */
+    /** Maximum payload bytes per frame. A 20 ms Opus frame at ~40 kbps is
+     * around 100 bytes; PCM 20 ms @48 kHz mono is 1920 bytes. 4096 leaves wide
+     * margin for authenticated media and control messages while bounding memory. */
     const val MAX_PAYLOAD = 4096
 
     /** Largest acceptable total frame (header + payload). */

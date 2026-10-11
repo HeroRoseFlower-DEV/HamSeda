@@ -158,7 +158,7 @@ SHA-256: 6ffcb593207be92584df15b32466ed64bbec99109f007c82205f0194572411a1
   قدیمی‌ترها) در مذاکره group-owner ناپایدارند. اگر اتصال برقرار نشد، حالت
   بلوتوث را امتحان کنید.
 - **بلوتوث:** فقط یک‌به‌یک. پهنای باند واقعی RFCOMM بین گوشی‌ها متفاوت است؛
-  Opus پیش‌فرض (~۲۰kbps) با حاشیه امن جا می‌شود.
+  Opus پیش‌فرض با نرخ هدف ۴۰kbps و فریم‌های ۲۰ms در اتصال بلوتوث مناسب‌تر است.
 - **BLE** عمداً برای صدا استفاده نشده (توان عملیاتی کافی برای صدای زنده ندارد).
 - کیفیت/تأخیر صدا روی سخت‌افزار واقعی باید اندازه‌گیری شود؛ هیچ ادعای عددی
   بدون تست روی دستگاه مطرح نشده است (روش تست: `docs/TEST_PLAN.md`).
@@ -228,17 +228,17 @@ APK دیباگ با کلید دیباگ امضا شده و برای **تست** �
 app/src/main/java/com/hamseda/walkie/
 ├── proto/          # فریم‌بندی سیم (Frame)، سوکت قاب‌بندی‌شده (FramedSocket)
 ├── crypto/         # ECDH/HKDF/AES-GCM (SessionCrypto)، ضد-replay
-├── audio/          # انتزاع کدک، Opus (Concentus)، PCM، جیتربافر، موتور صوتی
+├── audio/          # انتزاع کدک، Opus native/JNI، PCM، جیتربافر، موتور صوتی
 ├── transport/      # اینترفیس Transport، وای‌فای دایرکت، بلوتوث، مدیر انتخاب
 ├── session/        # SessionManager (handshake/SAS/floor)، FloorController
 ├── service/        # VoiceService (فورگراند، نوع microphone)
 ├── data/           # تنظیمات DataStore (فقط گزینه‌های غیرحساس)
 ├── ui/             # Compose فارسی/RTL: صفحه‌ها، کامپوننت‌ها، تم، ViewModelها
 └── util/           # نگاشت مجوزها بر اساس نسخه اندروید
-app/src/main/java/org/concentus/  # کدک Opus (vendorشده، بدون تغییر)
+app/src/main/java/org/concentus/  # سورس قدیمی Concentus برای بازبینی؛ از APK حذف است
 ```
 
 ## لایسنس
 
-Apache License 2.0 (فایل `LICENSE`). کدک Concentus تحت لایسنس BSD مشابه خود
-Opus است — جزئیات در `app/src/main/java/org/concentus/VENDORED_FROM.md`.
+Apache License 2.0 (فایل `LICENSE`). سورس آرشیوی Concentus تحت لایسنس BSD است — جزئیات در
+`app/src/main/java/org/concentus/VENDORED_FROM.md`. کدک فعال، libopus رسمی native است.

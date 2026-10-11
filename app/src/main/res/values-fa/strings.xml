@@ -69,10 +69,10 @@
     <string name="settings_transport">حالت اتصال</string>
     <string name="transport_locked_hint">در زمان فعال بودن نشست، حالت اتصال قابل تغییر نیست.</string>
     <string name="settings_codec">کدک صوتی</string>
-    <string name="codec_opus">اپوس (پیش‌فرض، کم‌حجم)</string>
-    <string name="codec_opus_desc">حدود ۲۰ کیلوبیت بر ثانیه؛ مناسب هر دو حالت اتصال.</string>
+    <string name="codec_opus">اپوس (پیش‌فرض، کیفیت بالا)</string>
+    <string name="codec_opus_desc">نرخ هدف ۴۰ کیلوبیت‌برثانیه؛ صدای ۴۸ کیلوهرتز تک‌کاناله.</string>
     <string name="codec_pcm">PCM خام (تشخیصی)</string>
-    <string name="codec_pcm_desc">۲۵۶ کیلوبیت بر ثانیه؛ فقط برای وای‌فای دایرکت مناسب است.</string>
+    <string name="codec_pcm_desc">۷۶۸ کیلوبیت‌برثانیه؛ فقط برای آزمایش روی وای‌فای دایرکت.</string>
     <string name="settings_speakerphone">پخش از بلندگو</string>
     <string name="settings_vibration">لرزش هنگام ارسال</string>
     <string name="settings_theme">پوسته</string>
