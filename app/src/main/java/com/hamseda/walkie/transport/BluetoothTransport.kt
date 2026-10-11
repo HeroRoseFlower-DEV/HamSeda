@@ -449,8 +449,8 @@ class BluetoothTransport(private val context: Context) : Transport {
                 _state.value == TransportState.UNAVAILABLE
             ) {
                 _state.value = TransportState.IDLE
-                if (clearError) _error.value = null
             }
+            if (clearError) _error.value = null
         }
     }
 
