@@ -141,6 +141,7 @@ class SessionManager(
     private var keyExchangeSent = false
     private var keyConfirmSent = false
     private var peerHelloReceived = false
+    private var peerCodecPref: Byte? = null
     /** True once beginHandshake ran for the current attempt (re-entrancy guard). */
     private var handshakeStarted = false
     private var selfSasConfirmed = false
@@ -572,6 +573,7 @@ class SessionManager(
         peerNonce?.fill(0); peerNonce = null
         keyExchangeSent = false; keyConfirmSent = false
         peerHelloReceived = false
+        peerCodecPref = null
         pendingKeyConfirmFrame = null
         handshakeStarted = false
         selfSasConfirmed = false
@@ -610,6 +612,7 @@ class SessionManager(
         myPubBytes.fill(0); myPubBytes = ByteArray(0)
         peerPubBytes?.fill(0); peerPubBytes = null
         peerNonce?.fill(0); peerNonce = null
+        peerCodecPref = null
         pendingKeyConfirmFrame = null
         _sasCode.value = null
         _peerSasConfirmed.value = false
@@ -641,6 +644,7 @@ class SessionManager(
         if (handshakeStarted) return
         handshakeStarted = true
         peerHelloReceived = false
+        peerCodecPref = null
         pendingKeyConfirmFrame = null
         _phase.value = Phase.HANDSHAKE
         startHandshakeDeadline()
@@ -649,7 +653,7 @@ class SessionManager(
         myNonce = SessionCrypto.newNonce16()
         sendSeq = 0
         lastPeerSeen = elapsedClock()
-        // HELLO payload: protocol version (1) + codec preference (1)
+        // HELLO payload: protocol-version byte + codec-preference byte.
         val hello = byteArrayOf(Protocol.VERSION, myCodecPref)
         enqueuePlain(MessageType.HELLO, hello)
         Log.i(TAG, "handshake started, HELLO sent")
@@ -782,6 +786,7 @@ class SessionManager(
                     )
                     return
                 }
+                peerCodecPref = peerPref
                 peerHelloReceived = true
                 AppLog.log(
                     TAG,
@@ -893,7 +898,7 @@ class SessionManager(
             val derived = SessionCrypto.deriveKeys(secret, myNonce, peerNc)
             keys = derived
             myRole = SessionCrypto.myRole(myPubBytes, peerPub)
-            val transcript = SessionCrypto.transcriptHash(myPubBytes, peerPub, myNonce, peerNc)
+            val transcript = currentTranscriptHash(peerPub, peerNc)
             if (!keyConfirmSent) {
                 keyConfirmSent = true
                 enqueueControl(MessageType.KEY_CONFIRM, transcript)
@@ -912,9 +917,25 @@ class SessionManager(
     // KEY_CONFIRM frames that arrive before we derived are stashed here.
     private var pendingKeyConfirmFrame: Frame? = null
 
-    private fun expectedTranscript(): ByteArray = SessionCrypto.transcriptHash(
-        myPubBytes, peerPubBytes!!, myNonce, peerNonce!!,
-    )
+    private fun expectedTranscript(): ByteArray =
+        currentTranscriptHash(
+            peerPubBytes ?: error("peer public key absent"),
+            peerNonce ?: error("peer nonce absent"),
+        )
+
+    private fun currentTranscriptHash(peerPub: ByteArray, peerNc: ByteArray): ByteArray {
+        val peerPref = peerCodecPref ?: error("peer HELLO codec preference absent")
+        val ownHello = byteArrayOf(Protocol.VERSION, myCodecPref)
+        val peerHello = byteArrayOf(Protocol.VERSION, peerPref)
+        return try {
+            SessionCrypto.transcriptHash(
+                myPubBytes, peerPub, myNonce, peerNc, ownHello, peerHello,
+            )
+        } finally {
+            ownHello.fill(0)
+            peerHello.fill(0)
+        }
+    }
 
     private fun verifyPeerKeyConfirm(frame: Frame) {
         val k = keys ?: return

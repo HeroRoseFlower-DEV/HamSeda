@@ -46,8 +46,9 @@ object SessionCrypto {
     private const val EC_CURVE = "secp256r1"
     private const val GCM_TAG_BITS = 128
     private const val NONCE_LEN = 12
-    private const val INFO = "HamSeda-v1/session-keys"
-    private const val SAS_INFO = "HamSeda-v1/sas"
+    private const val INFO = "HamSeda-v2/session-keys"
+    private const val SAS_INFO = "HamSeda-v2/sas"
+    private const val TRANSCRIPT_INFO = "HamSeda-v2/key-confirm"
 
     /** Maximum accepted encoded public-key size (P-256 X.509 ≈ 91 bytes). */
     const val MAX_PUBKEY_BYTES = 256
@@ -133,19 +134,33 @@ object SessionCrypto {
     }
 
     /**
-     * Binds the key exchange to the exact transcript both sides saw.
-     * Any MITM that substituted a public key or nonce changes this hash,
-     * which is verified inside the sealed KEY_CONFIRM exchange.
+     * Binds each peer's exact HELLO payload (protocol and codec), public key,
+     * and associated nonce into KEY_CONFIRM. Canonical ordering follows public
+     * key roles, detecting active codec/version downgrade and nonce reassignment.
      */
     fun transcriptHash(
         ownPub: ByteArray,
         peerPub: ByteArray,
         ownNonce: ByteArray,
         peerNonce: ByteArray,
+        ownHello: ByteArray,
+        peerHello: ByteArray,
     ): ByteArray {
-        val (p1, p2) = ordered(ownPub, peerPub)
-        val (n1, n2) = ordered(ownNonce, peerNonce)
-        return Hkdf.sha256(p1, p2, n1, n2)
+        require(ownNonce.size == 16 && peerNonce.size == 16) {
+            "nonces must be 16 bytes"
+        }
+        require(ownHello.size == 2 && peerHello.size == 2) {
+            "HELLO payloads must be exactly 2 bytes"
+        }
+        val ownFirst = compareBytes(ownPub, peerPub) < 0
+        val (p1, p2) = if (ownFirst) ownPub to peerPub else peerPub to ownPub
+        val (n1, n2) = if (ownFirst) ownNonce to peerNonce else peerNonce to ownNonce
+        val (h1, h2) = if (ownFirst) ownHello to peerHello else peerHello to ownHello
+        return Hkdf.sha256(
+            TRANSCRIPT_INFO.toByteArray(Charsets.UTF_8),
+            p1, n1, h1,
+            p2, n2, h2,
+        )
     }
 
     /**

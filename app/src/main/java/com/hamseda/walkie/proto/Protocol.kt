@@ -3,7 +3,7 @@ package com.hamseda.walkie.proto
 import java.util.UUID
 
 /**
- * Wire protocol constants for HamSeda v1.
+ * Wire protocol constants for HamSeda v2.
  *
  * Every datagram on the wire is one [Frame]: a fixed 29-byte header followed
  * by a length-bounded payload. Frames travel inside a length-prefixed
@@ -20,7 +20,7 @@ import java.util.UUID
 object Protocol {
     const val MAGIC_0: Byte = 0x48 // 'H'
     const val MAGIC_1: Byte = 0x53 // 'S'
-    const val VERSION: Byte = 1
+    const val VERSION: Byte = 2
 
     /** Fixed header size in bytes: magic(2) + version(1) + type(1) + sessionId(8)
      * + seq(4) + timestamp(8) + codecId(1) + payloadLen(4). */

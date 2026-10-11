@@ -3,6 +3,7 @@ package com.hamseda.walkie
 import com.hamseda.walkie.crypto.Hkdf
 import com.hamseda.walkie.crypto.ReplayProtection
 import com.hamseda.walkie.crypto.SessionCrypto
+import com.hamseda.walkie.proto.Protocol
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -172,13 +173,27 @@ class CryptoTest {
     }
 
     @Test
-    fun `transcript hash binds both public keys and nonces`() {
+    fun `transcript binds key nonce association and HELLO negotiation`() {
         val (a, b, _) = ecdhPair()
-        val t1 = SessionCrypto.transcriptHash(a.pub, b.pub, a.nonce, b.nonce)
-        val t2 = SessionCrypto.transcriptHash(b.pub, a.pub, b.nonce, a.nonce)
-        assertArrayEquals(t1, t2) // order-independent
+        val helloA = byteArrayOf(Protocol.VERSION, 0)
+        val helloB = byteArrayOf(Protocol.VERSION, 1)
+        val t1 = SessionCrypto.transcriptHash(a.pub, b.pub, a.nonce, b.nonce, helloA, helloB)
+        val t2 = SessionCrypto.transcriptHash(b.pub, a.pub, b.nonce, a.nonce, helloB, helloA)
+        assertArrayEquals(t1, t2)
+
+        assertFalse(t1.contentEquals(SessionCrypto.transcriptHash(
+            a.pub, b.pub, b.nonce, a.nonce, helloA, helloB,
+        )))
+        val changedHelloB = byteArrayOf(Protocol.VERSION, 0)
+        assertFalse(t1.contentEquals(SessionCrypto.transcriptHash(
+            a.pub, b.pub, a.nonce, b.nonce, helloA, changedHelloB,
+        )))
         val tamperedPub = b.pub.copyOf().also { it[0] = (it[0].toInt() xor 1).toByte() }
-        assertFalse(t1.contentEquals(SessionCrypto.transcriptHash(a.pub, tamperedPub, a.nonce, b.nonce)))
+        assertFalse(t1.contentEquals(SessionCrypto.transcriptHash(
+            a.pub, tamperedPub, a.nonce, b.nonce, helloA, helloB,
+        )))
+        t1.fill(0)
+        t2.fill(0)
     }
 
     @Test
