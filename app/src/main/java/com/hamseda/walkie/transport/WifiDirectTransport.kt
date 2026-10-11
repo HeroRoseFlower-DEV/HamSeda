@@ -1187,17 +1187,28 @@ class WifiDirectTransport(private val context: Context) : Transport {
                     )
                 }
                 WifiP2pManager.ACTION_WIFI_P2P_REQUEST_RESPONSE_CHANGED -> {
-                    // Android exposes the response as an integer enum, not a
-                    // Boolean extra. Reading it as Boolean always misreported
-                    // accepted requests as rejected in our diagnostics.
+                    // This is an enum, not a Boolean. In particular, Android
+                    // can defer the decision to the system UI for legacy WPS
+                    // or P2P R2 PIN/password bootstrapping. Do not report those
+                    // valid hand-off states as a rejection.
                     val response = intent.getIntExtra(
                         WifiP2pManager.EXTRA_REQUEST_RESPONSE,
                         WifiP2pManager.CONNECTION_REQUEST_REJECT,
                     )
-                    val accepted = response == WifiP2pManager.CONNECTION_REQUEST_ACCEPT
+                    val responseLabel = when (response) {
+                        WifiP2pManager.CONNECTION_REQUEST_ACCEPT -> "accepted"
+                        WifiP2pManager.CONNECTION_REQUEST_REJECT -> "rejected"
+                        WifiP2pManager.CONNECTION_REQUEST_DEFER_TO_SERVICE ->
+                            "deferred-to-system-ui"
+                        WifiP2pManager.CONNECTION_REQUEST_DEFER_SHOW_PIN_TO_SERVICE ->
+                            "system-ui-pairing-pin"
+                        WifiP2pManager.CONNECTION_REQUEST_DEFER_SHOW_PASSWORD_TO_SERVICE ->
+                            "system-ui-pairing-password"
+                        else -> "unknown"
+                    }
                     AppLog.log(
                         TAG,
-                        "p2p remote request response: ${if (accepted) "accepted" else "rejected"} (code=$response)",
+                        "p2p connection-request response: $responseLabel (code=$response)",
                     )
                 }
                 WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION -> {
