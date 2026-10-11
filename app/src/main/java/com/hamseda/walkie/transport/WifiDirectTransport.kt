@@ -541,7 +541,7 @@ class WifiDirectTransport(private val context: Context) : Transport {
         AppLog.log(
             TAG,
             "prepared Wi-Fi Direct connect without stopPeerDiscovery race " +
-                "(state=${_state.value})
+                "(state=${_state.value})",
         )
     }
 
