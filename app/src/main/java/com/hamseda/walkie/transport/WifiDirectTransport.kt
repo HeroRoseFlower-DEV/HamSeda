@@ -93,6 +93,8 @@ class WifiDirectTransport(private val context: Context) : Transport {
     private var receiverRegistered = false
 
     @Volatile private var p2pEnabled = false
+    @Volatile private var p2pListenModeActive = false
+    @Volatile private var p2pDiscoveryActive = false
     private var framed: FramedSocket? = null
     private var serverSocket: ServerSocket? = null
     private var readerJob: Job? = null
@@ -216,10 +218,25 @@ class WifiDirectTransport(private val context: Context) : Transport {
             _error.value = TransportError.Unsupported("wifi_direct_init_failed")
             return
         }
+        // Exit a previous explicit LISTEN/discovery mode completely before
+        // starting a new scan, and wait for Android's callback to avoid mode
+        // transition races between old and new requests.
+        if (p2pListenModeActive || p2pDiscoveryActive) {
+            val stopFailure = stopP2pRadioModeAndAwait()
+            if (stopFailure != null) {
+                AppLog.log(TAG, "could not clear previous P2P mode before scan: $stopFailure")
+                _error.value = TransportError.ConnectFailed("Wi-Fi Direct could not switch to scan mode: $stopFailure")
+                _state.value = TransportState.FAILED
+                return
+            }
+        }
+        p2pDiscoveryActive = true
         try {
             mgr.discoverPeers(ch, object : WifiP2pManager.ActionListener {
                 override fun onSuccess() {
                     if (discoveryGeneration.get() != scanAttempt) return
+                    p2pDiscoveryActive = true
+                    p2pListenModeActive = false
                     _state.value = TransportState.DISCOVERING
                     _error.value = null
                     AppLog.log(TAG, "p2p discovery started; waiting for peer-change broadcasts")
@@ -231,6 +248,7 @@ class WifiDirectTransport(private val context: Context) : Transport {
 
                 override fun onFailure(reason: Int) {
                     if (discoveryGeneration.get() != scanAttempt) return
+                    p2pDiscoveryActive = false
                     val name = reasonName(reason)
                     AppLog.log(TAG, "p2p discovery failed: $name (code=$reason)")
                     _error.value = TransportError.ConnectFailed(
@@ -241,6 +259,7 @@ class WifiDirectTransport(private val context: Context) : Transport {
             })
         } catch (e: SecurityException) {
             if (discoveryGeneration.get() != scanAttempt) return
+            p2pDiscoveryActive = false
             AppLog.log(TAG, "p2p discovery denied by Android: ${e.message}")
             val stillMissing = PermissionHelper.missingWifiDirectPermissions(context)
             if (stillMissing.isNotEmpty()) {
@@ -254,6 +273,7 @@ class WifiDirectTransport(private val context: Context) : Transport {
             }
         } catch (e: IllegalStateException) {
             if (discoveryGeneration.get() != scanAttempt) return
+            p2pDiscoveryActive = false
             AppLog.log(TAG, "p2p discovery rejected by framework: ${e.message}")
             _error.value = TransportError.ConnectFailed("Wi-Fi Direct discovery could not be started")
             _state.value = TransportState.FAILED
@@ -262,16 +282,16 @@ class WifiDirectTransport(private val context: Context) : Transport {
 
     override suspend fun stopDiscovery() {
         discoveryGeneration.incrementAndGet()
-        try {
-            manager?.stopPeerDiscovery(channel, null)
-        } catch (_: Exception) {}
+        val stopFailure = stopP2pRadioModeAndAwait()
+        if (stopFailure != null) {
+            AppLog.log(TAG, "P2P mode stop returned: $stopFailure")
+        }
         if (_state.value == TransportState.DISCOVERING ||
             _state.value == TransportState.FAILED ||
             _state.value == TransportState.UNAVAILABLE
         ) {
             _state.value = TransportState.IDLE
         }
-        // Stop/new-role setup clears old errors even when state is already IDLE.
         _error.value = null
     }
 
@@ -315,8 +335,25 @@ class WifiDirectTransport(private val context: Context) : Transport {
             AppLog.log(
                 TAG,
                 "p2p connect preflight: sdk=${Build.VERSION.SDK_INT}, wifiEnabled=$wifiEnabled, " +
-                    "p2pEnabled=$p2pEnabled, channelReady=${channel != null}, peerSelected=true",
+                    "p2pEnabled=$p2pEnabled, channelReady=${channel != null}, " +
+                    "peerAddressValid=${isUsablePeerAddress(peer.id)}, " +
+                    "listenModeActive=$p2pListenModeActive, discoveryActive=$p2pDiscoveryActive",
             )
+            if (p2pListenModeActive) {
+                val stopFailure = stopP2pRadioModeAndAwait()
+                if (stopFailure != null) {
+                    AppLog.log(TAG, "connect aborted: could not exit P2P listen mode: $stopFailure")
+                    _error.value = TransportError.ConnectFailed("Wi-Fi Direct could not exit listen mode: $stopFailure")
+                    _state.value = TransportState.FAILED
+                    return
+                }
+            }
+            if (!isUsablePeerAddress(peer.id)) {
+                AppLog.log(TAG, "connect aborted: selected P2P peer address is missing or masked")
+                _error.value = TransportError.PeerNotFound("peer address unavailable")
+                _state.value = TransportState.FAILED
+                return
+            }
             // Do not call stopPeerDiscovery() immediately before connect().
             // The P2P framework ends discovery as part of connection setup;
             // issuing an asynchronous stop right before connect can race on
@@ -330,28 +367,36 @@ class WifiDirectTransport(private val context: Context) : Transport {
                 return
             }
 
-            val config = buildP2pConfig(peer)
-            // The framework rejects connect() with a generic ERROR when the
-            // channel went stale (wifi toggle, service restart…). Re-init
-            // and retry once before giving up.
-            var initiated = p2pConnect(config)
-            if (operationGeneration.get() != attempt) return
-            if (!initiated) {
-                AppLog.log(TAG, "re-initializing p2p channel and retrying connect")
-                ensureInit(force = true)
-                registerReceiver()
-                delay(500)
-                if (operationGeneration.get() != attempt) return
-                initiated = p2pConnect(config)
-            }
-            if (operationGeneration.get() != attempt) return
-            if (!initiated) {
-                _error.value = TransportError.ConnectFailed(
-                    "wi-fi direct connect rejected by framework",
-                )
+            val config = try {
+                buildP2pConfig(peer)
+            } catch (e: Exception) {
+                AppLog.log(TAG, "could not build P2P connect config: ${e.javaClass.simpleName}: ${e.message}")
+                _error.value = TransportError.PeerNotFound("peer address unavailable")
                 _state.value = TransportState.FAILED
                 return
             }
+            val connectResult = p2pConnect(config)
+            if (operationGeneration.get() != attempt) return
+            if (!connectResult.accepted) {
+                val afterFailure = requestConnectionInfoSync()
+                if (operationGeneration.get() != attempt) return
+                if (afterFailure?.groupFormed == true) {
+                    AppLog.log(TAG, "connect callback failed but group formed; adopting connection")
+                    onConnectionInfo(afterFailure, attempt)
+                    return
+                }
+                val stopFailure = stopP2pRadioModeAndAwait()
+                val detail = connectResult.detail.ifBlank { "unknown framework failure" }
+                AppLog.log(
+                    TAG,
+                    "p2p connect rejected: $detail; peerAddressValid=${isUsablePeerAddress(peer.id)}" +
+                        (stopFailure?.let { "; radioCleanup=$it" } ?: ""),
+                )
+                _error.value = TransportError.ConnectFailed("wi-fi direct connect rejected by framework: $detail")
+                _state.value = TransportState.FAILED
+                return
+            }
+            p2pListenModeActive = false
             AppLog.log(TAG, "p2p connect initiated; waiting for peer to accept the system invitation")
             // Watchdog: the framework reports nothing when the peer ignores
             // the system invitation prompt — fail visibly instead of hanging
@@ -381,63 +426,86 @@ class WifiDirectTransport(private val context: Context) : Transport {
      * Modern P2P connect config: WifiP2pConfig.Builder (API 29+); legacy
      * constructor below that.
      */
+    private fun isUsablePeerAddress(address: String): Boolean =
+        address.matches(Regex("(?i)^(?:[0-9a-f]{2}:){5}[0-9a-f]{2}$")) &&
+            !address.equals("02:00:00:00:00:00", ignoreCase = true) &&
+            !address.equals("00:00:00:00:00:00", ignoreCase = true)
+
+    @SuppressLint("NewApi")
     private fun buildP2pConfig(peer: PeerDevice): WifiP2pConfig {
-        return if (Build.VERSION.SDK_INT >= 29) {
-            WifiP2pConfig.Builder()
+        require(isUsablePeerAddress(peer.id)) { "Wi-Fi Direct peer address is unavailable" }
+        if (Build.VERSION.SDK_INT >= 29) {
+            val builder = WifiP2pConfig.Builder()
                 .setDeviceAddress(android.net.MacAddress.fromString(peer.id))
-                .build()
-                .apply {
-                    @Suppress("DEPRECATION")
-                    wps.setup = WpsInfo.PBC
+            if (Build.VERSION.SDK_INT >= 36) {
+                val pccSupported = try {
+                    manager?.isPccModeSupported() == true
+                } catch (e: Exception) {
+                    AppLog.log(TAG, "PCC capability query failed: ${e.javaClass.simpleName}")
+                    false
                 }
-        } else {
-            @Suppress("DEPRECATION")
-            WifiP2pConfig().apply {
-                deviceAddress = peer.id
-                wps.setup = WpsInfo.PBC
-                // Neutral owner intent: let negotiation decide; we handle
-                // both outcomes (see onConnectionInfo).
-                groupOwnerIntent = 7
+                if (pccSupported) {
+                    builder.setPccModeConnectionType(
+                        WifiP2pConfig.PCC_MODE_CONNECTION_TYPE_LEGACY_OR_R2,
+                    )
+                }
+                AppLog.log(TAG, "P2P R1/R2 compatibility supported=$pccSupported")
             }
+            return builder.build().apply {
+                @Suppress("DEPRECATION")
+                wps.setup = WpsInfo.PBC
+            }
+        }
+        @Suppress("DEPRECATION")
+        return WifiP2pConfig().apply {
+            deviceAddress = peer.id
+            wps.setup = WpsInfo.PBC
+            groupOwnerIntent = 7
         }
     }
 
+    private data class P2pConnectResult(
+        val accepted: Boolean,
+        val failureCode: Int? = null,
+        val detail: String = "",
+    )
+
     /**
-     * Suspends until the framework accepts or rejects the P2P invitation.
-     * Returns false on rejection or timeout (stale channel, busy…).
+     * Preserve Android's callback result so ERROR(0), BUSY, permission failure,
+     * and callback timeout can be distinguished in diagnostics.
      */
     @SuppressLint("MissingPermission")
-    private suspend fun p2pConnect(config: WifiP2pConfig): Boolean {
-        val mgr = manager
-        val ch = channel
-        if (mgr == null || ch == null) return false
+    private suspend fun p2pConnect(config: WifiP2pConfig): P2pConnectResult {
+        val mgr = manager ?: return P2pConnectResult(false, detail = "manager unavailable")
+        val ch = channel ?: return P2pConnectResult(false, detail = "channel unavailable")
         return try {
             withTimeout(10_000) {
-                val done = CompletableDeferred<Boolean>()
+                val done = CompletableDeferred<P2pConnectResult>()
                 mgr.connect(ch, config, object : WifiP2pManager.ActionListener {
                     override fun onSuccess() {
                         Log.i(TAG, "p2p connect accepted by framework")
-                        done.complete(true)
+                        p2pDiscoveryActive = false
+                        p2pListenModeActive = false
+                        done.complete(P2pConnectResult(true))
                     }
 
                     override fun onFailure(reason: Int) {
                         val name = reasonName(reason)
                         AppLog.log(TAG, "p2p connect failed: $name (code=$reason)")
-                        done.complete(false)
+                        done.complete(P2pConnectResult(false, reason, "$name (code=$reason)"))
                     }
                 })
                 done.await()
             }
         } catch (e: TimeoutCancellationException) {
             AppLog.log(TAG, "p2p connect attempt timed out")
-            false
+            P2pConnectResult(false, detail = "framework callback timed out")
         } catch (e: CancellationException) {
-            // User/lifecycle cancellation must not be mistaken for a failed
-            // framework attempt and followed by a second connect request.
             throw e
         } catch (e: Exception) {
-            AppLog.log(TAG, "p2p connect request failed: ${e.javaClass.simpleName}: ${e.message}")
-            false
+            val detail = "${e.javaClass.simpleName}: ${e.message}"
+            AppLog.log(TAG, "p2p connect request failed: $detail")
+            P2pConnectResult(false, detail = detail)
         }
     }
 
@@ -484,6 +552,44 @@ class WifiDirectTransport(private val context: Context) : Transport {
     }
 
     /**
+     * Stops the explicitly tracked listening/discovery mode and waits for the
+     * framework callback before another mode is started. This avoids stale
+     * LISTEN state making later scans/connects look like a fresh operation.
+     */
+    @SuppressLint("MissingPermission")
+    private suspend fun stopP2pRadioModeAndAwait(): String? {
+        val stopListen = Build.VERSION.SDK_INT >= 33 && p2pListenModeActive
+        if (!stopListen && !p2pDiscoveryActive) return null
+        val mgr = manager ?: return "manager unavailable"
+        val ch = channel ?: return "channel unavailable"
+        val done = CompletableDeferred<String?>()
+        val listener = object : WifiP2pManager.ActionListener {
+            override fun onSuccess() {
+                p2pListenModeActive = false
+                p2pDiscoveryActive = false
+                done.complete(null)
+            }
+
+            override fun onFailure(reason: Int) {
+                done.complete("${reasonName(reason)} (code=$reason)")
+            }
+        }
+        return try {
+            if (stopListen) mgr.stopListening(ch, listener)
+            else mgr.stopPeerDiscovery(ch, listener)
+            withTimeout(3_000L) { done.await() }.also { failure ->
+                if (failure != null) AppLog.log(TAG, "P2P radio mode stop rejected: $failure")
+            }
+        } catch (e: TimeoutCancellationException) {
+            "stop operation timed out"
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            "${e.javaClass.simpleName}: ${e.message}"
+        }
+    }
+
+    /**
      * API 33+ has an explicit P2P LISTEN state. On older Android versions,
      * keep the radio active using discoverPeers() as the compatible fallback.
      * Neither path changes the UI state to DISCOVERING: the user explicitly
@@ -498,10 +604,19 @@ class WifiDirectTransport(private val context: Context) : Transport {
         val result = CompletableDeferred<String?>()
         val listener = object : WifiP2pManager.ActionListener {
             override fun onSuccess() {
+                if (Build.VERSION.SDK_INT >= 33) {
+                    p2pListenModeActive = true
+                    p2pDiscoveryActive = false
+                } else {
+                    p2pDiscoveryActive = true
+                    p2pListenModeActive = false
+                }
                 result.complete(null)
             }
 
             override fun onFailure(reason: Int) {
+                p2pListenModeActive = false
+                p2pDiscoveryActive = false
                 val detail = "${reasonName(reason)} (code=$reason)"
                 result.complete(detail)
             }
@@ -532,6 +647,12 @@ class WifiDirectTransport(private val context: Context) : Transport {
      */
     override suspend fun prepareForConnect() {
         discoveryGeneration.incrementAndGet()
+        if (p2pListenModeActive) {
+            val stopFailure = stopP2pRadioModeAndAwait()
+            if (stopFailure != null) {
+                AppLog.log(TAG, "could not exit stale P2P listen mode before connect: $stopFailure")
+            }
+        }
         if (_state.value == TransportState.FAILED ||
             _state.value == TransportState.UNAVAILABLE
         ) {
@@ -540,8 +661,8 @@ class WifiDirectTransport(private val context: Context) : Transport {
         _error.value = null
         AppLog.log(
             TAG,
-            "prepared Wi-Fi Direct connect without stopPeerDiscovery race " +
-                "(state=${_state.value})",
+            "prepared Wi-Fi Direct connect without stopping active peer discovery " +
+                "(state=${_state.value}, listenModeActive=$p2pListenModeActive, discoveryActive=$p2pDiscoveryActive)",
         )
     }
 
@@ -552,11 +673,11 @@ class WifiDirectTransport(private val context: Context) : Transport {
      * previous scan before falling back to discoverPeers() in listen().
      */
     override suspend fun prepareForListen() {
-        if (Build.VERSION.SDK_INT < 33) {
-            stopDiscovery()
-            return
-        }
         discoveryGeneration.incrementAndGet()
+        val stopFailure = stopP2pRadioModeAndAwait()
+        if (stopFailure != null) {
+            AppLog.log(TAG, "could not clear previous P2P mode before waiting: $stopFailure")
+        }
         if (_state.value == TransportState.DISCOVERING ||
             _state.value == TransportState.FAILED ||
             _state.value == TransportState.UNAVAILABLE
@@ -564,7 +685,7 @@ class WifiDirectTransport(private val context: Context) : Transport {
             _state.value = TransportState.IDLE
         }
         _error.value = null
-        AppLog.log(TAG, "prepared Wi-Fi Direct wait role without asynchronous stopPeerDiscovery")
+        AppLog.log(TAG, "prepared Wi-Fi Direct wait role after clearing previous radio mode")
     }
 
     /**
@@ -628,6 +749,8 @@ class WifiDirectTransport(private val context: Context) : Transport {
             }
             return
         }
+        p2pListenModeActive = false
+        p2pDiscoveryActive = false
         AppLog.log(TAG, "p2p group formed (owner=${info.isGroupOwner})")
         scope.launch {
             mutex.withLock {
@@ -901,6 +1024,10 @@ class WifiDirectTransport(private val context: Context) : Transport {
         discoveryGeneration.incrementAndGet()
         listeningRequested = false
         mutex.withLock {
+            val stopFailure = stopP2pRadioModeAndAwait()
+            if (stopFailure != null) {
+                AppLog.log(TAG, "P2P mode cleanup during disconnect returned: $stopFailure")
+            }
             closeSocketLocked()
             try {
                 manager?.removeGroup(channel, null)
@@ -966,6 +1093,29 @@ class WifiDirectTransport(private val context: Context) : Transport {
                 WifiP2pManager.WIFI_P2P_PEERS_CHANGED_ACTION -> {
                     AppLog.log(TAG, "p2p peers-changed broadcast received")
                     requestCurrentPeers(discoveryGeneration.get(), "peers-changed-broadcast")
+                }
+                WifiP2pManager.WIFI_P2P_DISCOVERY_CHANGED_ACTION -> {
+                    val state = intent.getIntExtra(WifiP2pManager.EXTRA_DISCOVERY_STATE, -1)
+                    p2pDiscoveryActive = state == WifiP2pManager.WIFI_P2P_DISCOVERY_STARTED
+                    AppLog.log(
+                        TAG,
+                        "p2p discovery state changed: ${if (p2pDiscoveryActive) "started" else "stopped/unknown"} (state=$state)",
+                    )
+                }
+                WifiP2pManager.ACTION_WIFI_P2P_LISTEN_STATE_CHANGED -> {
+                    val state = intent.getIntExtra(WifiP2pManager.EXTRA_LISTEN_STATE, -1)
+                    p2pListenModeActive = state == WifiP2pManager.WIFI_P2P_LISTEN_STARTED
+                    AppLog.log(
+                        TAG,
+                        "p2p listen state changed: ${if (p2pListenModeActive) "started" else "stopped/unknown"} (state=$state)",
+                    )
+                }
+                WifiP2pManager.ACTION_WIFI_P2P_REQUEST_RESPONSE_CHANGED -> {
+                    val accepted = intent.getBooleanExtra(WifiP2pManager.EXTRA_REQUEST_RESPONSE, false)
+                    AppLog.log(
+                        TAG,
+                        "p2p remote request response: ${if (accepted) "accepted" else "rejected"}",
+                    )
                 }
                 WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION -> {
                     if (PermissionHelper.missingWifiDirectPermissions(ctx).isNotEmpty()) return
@@ -1132,6 +1282,13 @@ class WifiDirectTransport(private val context: Context) : Transport {
             addAction(WifiP2pManager.WIFI_P2P_PEERS_CHANGED_ACTION)
             addAction(WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION)
             addAction(WifiP2pManager.WIFI_P2P_THIS_DEVICE_CHANGED_ACTION)
+            addAction(WifiP2pManager.WIFI_P2P_DISCOVERY_CHANGED_ACTION)
+            if (Build.VERSION.SDK_INT >= 33) {
+                addAction(WifiP2pManager.ACTION_WIFI_P2P_REQUEST_RESPONSE_CHANGED)
+            }
+            if (Build.VERSION.SDK_INT >= 34) {
+                addAction(WifiP2pManager.ACTION_WIFI_P2P_LISTEN_STATE_CHANGED)
+            }
         }
         try {
             if (Build.VERSION.SDK_INT >= 33) {
