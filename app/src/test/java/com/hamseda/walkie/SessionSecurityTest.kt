@@ -1,6 +1,5 @@
 package com.hamseda.walkie
 
-import com.hamseda.walkie.audio.OpusCodec
 import com.hamseda.walkie.audio.JitterBuffer
 import com.hamseda.walkie.proto.DisconnectReason
 import com.hamseda.walkie.proto.CodecId
@@ -336,8 +335,9 @@ class SessionSecurityTest {
             rig.audioA.isCapturing && rig.b.floorHolder.value == FloorController.Holder.PEER
         }
 
-        val codec = OpusCodec()
-        val encoded = codec.encode(ShortArray(320) { 7 })
+        // This JVM test covers session framing and replay protection, not codec internals.
+        // Real libopus encode/decode is exercised by OpusCodecInstrumentedTest on Android.
+        val encoded = ByteArray(48) { (it * 17 + 3).toByte() }
         repeat(2) {
             rig.audioA.onFrame?.invoke(encoded, 0.5f)
             val expected = it + 1L
@@ -375,7 +375,6 @@ class SessionSecurityTest {
             listOf(0L, 1L, 2L, 3L),
             played.map { (it as JitterBuffer.TakeResult.Frame).packet.seq },
         )
-        codec.close()
         rig.close()
     }
 
@@ -426,14 +425,13 @@ class SessionSecurityTest {
         rig.await("peer holds floor") {
             rig.b.floorHolder.value == FloorController.Holder.PEER
         }
-        val opus = OpusCodec()
-        val encoded = opus.encode(ShortArray(320) { 7 })
+        // Keep this security regression test independent of Android native libraries.
+        val encoded = ByteArray(48) { (it * 17 + 3).toByte() }
         rig.audioA.onFrame?.invoke(encoded, 0.5f)
         rig.await("audio arrived despite attack") {
             (rig.audioB.playbackBuffer?.bufferedFrames() ?: 0) >= 1
         }
         assertEquals(SessionManager.Phase.IN_SESSION, rig.b.phase.value)
-        opus.close()
         rig.close()
     }
 
