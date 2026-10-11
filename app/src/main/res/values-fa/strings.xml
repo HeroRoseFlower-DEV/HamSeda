@@ -112,6 +112,11 @@
     <string name="startup_permissions_open_settings">باز کردن تنظیمات برنامه</string>
     <string name="startup_permissions_denied">بعضی از دسترسی‌ها داده نشدند. هم‌صدا تا فعال شدن دسترسی‌های لازم شروع نمی‌شود.</string>
     <string name="startup_permissions_settings_hint">اگر اندروید دیگر پنجرهٔ درخواست مجوز را نشان نمی‌دهد، تنظیمات برنامه را باز کن و دسترسی‌های لازم را از آنجا فعال کن.</string>
+    <string name="startup_permissions_requesting">در حال درخواست دسترسی بعدی از اندروید…</string>
+    <string name="startup_permissions_bluetooth">بلوتوث: جست‌وجوی گوشی‌های نزدیک، اتصال به گوشی‌های جفت‌شده و قابل‌مشاهده‌کردن این گوشی.</string>
+    <string name="startup_permissions_wifi">وای‌فای دایرکت: پیدا کردن گوشی‌های نزدیک و اتصال مستقیم به آن‌ها.</string>
+    <string name="startup_permissions_local_network">شبکهٔ محلی: اجازهٔ اتصال مستقیم وای‌فای در اندروید ۱۷ و نسخه‌های جدیدتر.</string>
+    <string name="startup_permissions_microphone">میکروفون: اجازهٔ گفتگوی صوتی فشاری؛ ضبط صدا فقط در نشست صوتی و هنگام نگه‌داشتن دکمهٔ صحبت فعال می‌شود.</string>
 
     <!-- Permissions -->
     <string name="perm_title">دسترسی لازم است</string>
