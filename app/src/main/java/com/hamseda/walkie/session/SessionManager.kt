@@ -310,13 +310,9 @@ class SessionManager(
      * Freshness-first audio queue: on congestion, evict old unsent speech rather
      * than dropping every new frame and playing stale audio when the link recovers.
      */
-    /** Takes ownership of the encoded audio frame, clearing the capture-side buffer. */
+    /** Queue an isolated copy; AudioEngine clears its capture-owned buffer after this callback. */
     private fun enqueueAudio(codecId: Byte, plaintext: ByteArray) {
-        val k = keys
-        if (k == null) {
-            plaintext.fill(0)
-            return
-        }
+        val k = keys ?: return
         val msg = OutboundMsg.Sealed(
             type = MessageType.AUDIO,
             codecId = codecId,
@@ -325,7 +321,6 @@ class SessionManager(
             role = myRole,
             plaintext = plaintext.copyOf(),
         )
-        plaintext.fill(0)
         if (!enqueueOutbound(msg)) {
             Log.w(TAG, "realtime audio queue rejected a frame (pending=" + outboundQueue.size() + ")")
             return
@@ -978,7 +973,13 @@ class SessionManager(
     }
 
     private fun verifyKeyConfirmPayload(payload: ByteArray) {
-        if (!MessageDigest.isEqual(payload, expectedTranscript())) {
+        val expected = expectedTranscript()
+        val matches = try {
+            MessageDigest.isEqual(payload, expected)
+        } finally {
+            expected.fill(0)
+        }
+        if (!matches) {
             Log.w(TAG, "KEY_CONFIRM transcript mismatch — possible MITM")
             endSession(SessionError.AUTH_MISMATCH, notifyPeer = true,
                 disconnectReason = DisconnectReason.AUTH_MISMATCH)
@@ -1094,73 +1095,57 @@ class SessionManager(
             _authFailures.value += 1
             return
         }
-        // Validate authenticated payload shape before consuming replay-window
-        // state or refreshing liveness. A malformed grant must never turn into
-        // a default lease, and malformed pings must not keep a bad peer alive.
-        val payloadError = validateSessionPayload(frame, plaintext)
-        if (payloadError != null) {
-            fail(SessionError.PROTOCOL_ERROR, payloadError)
-            return
-        }
-        // 3. Replay check — mutates the window only for authenticated frames.
-        if (!replay.accept(frame.seq)) {
-            _authFailures.value += 1 // duplicate / replayed / too old
-            return
-        }
-        // 4. Authenticated liveness.
-        lastPeerSeen = elapsedClock()
-        // 5. Dispatch using the already-authenticated plaintext.
-        when (frame.type) {
-            MessageType.AUDIO -> {
-                if (floor.holder != FloorController.Holder.PEER) {
-                    return // not the floor holder — drop (already authenticated)
+        try {
+            // Validate authenticated payload shape before consuming replay-window
+            // state or refreshing liveness.
+            val payloadError = validateSessionPayload(frame, plaintext)
+            if (payloadError != null) {
+                fail(SessionError.PROTOCOL_ERROR, payloadError)
+                return
+            }
+            if (!replay.accept(frame.seq)) {
+                _authFailures.value += 1
+                return
+            }
+            lastPeerSeen = elapsedClock()
+            when (frame.type) {
+                MessageType.AUDIO -> {
+                    if (floor.holder != FloorController.Holder.PEER) return
+                    floor.onPeerAudio()
+                    // JitterBuffer owns a copy; this decrypted temporary is cleared below.
+                    jitter.push(receivedAudioSeq++, plaintext)
                 }
-                floor.onPeerAudio()
-                jitter.push(receivedAudioSeq++, plaintext)
+                MessageType.FLOOR_REQUEST -> {
+                    val granted = floor.onPeerRequest()
+                    _floorHolder.value = floor.holder
+                    val t = if (granted) MessageType.FLOOR_GRANT else MessageType.FLOOR_DENY
+                    val response = if (granted) {
+                        ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN)
+                            .putInt(FloorController.MAX_SELF_TX_MS.toInt()).array()
+                    } else byteArrayOf(DenyReason.PEER_BUSY)
+                    enqueueControl(t, response)
+                }
+                MessageType.FLOOR_GRANT -> {
+                    val lease = ByteBuffer.wrap(plaintext).order(ByteOrder.BIG_ENDIAN).int.toLong()
+                    floor.onGrant(lease)
+                }
+                MessageType.FLOOR_RELEASE -> {
+                    floor.onPeerRelease()
+                    _floorHolder.value = floor.holder
+                }
+                MessageType.FLOOR_DENY -> floor.onDeny(plaintext[0])
+                MessageType.PING -> enqueueControl(MessageType.PONG, plaintext)
+                MessageType.PONG -> Unit
+                MessageType.SAS_CONFIRM -> _peerSasConfirmed.value = true
+                MessageType.DISCONNECT -> {
+                    endSession(sessionErrorForDisconnect(plaintext[0]), notifyPeer = false)
+                }
+                MessageType.ERROR -> Log.w(TAG, "peer error frame")
+                MessageType.KEY_CONFIRM -> verifyKeyConfirmPayload(plaintext)
+                else -> Log.w(TAG, "unexpected " + frame.type + " in session")
             }
-            MessageType.FLOOR_REQUEST -> {
-                val granted = floor.onPeerRequest()
-                _floorHolder.value = floor.holder
-                val t = if (granted) MessageType.FLOOR_GRANT else MessageType.FLOOR_DENY
-                val payload = if (granted) {
-                    ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN)
-                        .putInt(FloorController.MAX_SELF_TX_MS.toInt()).array()
-                } else byteArrayOf(DenyReason.PEER_BUSY)
-                enqueueControl(t, payload)
-            }
-            MessageType.FLOOR_GRANT -> {
-                val lease = if (plaintext.size >= 4) {
-                    ByteBuffer.wrap(plaintext).order(ByteOrder.BIG_ENDIAN).int.toLong()
-                } else FloorController.SELF_LEASE_REQUEST_MS
-                floor.onGrant(lease)
-            }
-            MessageType.FLOOR_RELEASE -> {
-                floor.onPeerRelease()
-                _floorHolder.value = floor.holder
-            }
-            MessageType.FLOOR_DENY -> {
-                val reason = plaintext.firstOrNull() ?: DenyReason.PEER_BUSY
-                floor.onDeny(reason)
-            }
-            MessageType.PING -> {
-                enqueueControl(MessageType.PONG, plaintext)
-            }
-            MessageType.PONG -> Unit // liveness already refreshed above
-            MessageType.SAS_CONFIRM -> {
-                _peerSasConfirmed.value = true
-            }
-            MessageType.DISCONNECT -> {
-                // validateSessionPayload() has already checked the length and
-                // reason enum; preserve the peer's actual teardown cause.
-                val reason = plaintext[0]
-                endSession(sessionErrorForDisconnect(reason), notifyPeer = false)
-            }
-            MessageType.ERROR -> Log.w(TAG, "peer error frame")
-            MessageType.KEY_CONFIRM -> {
-                // Duplicate confirm inside the session — re-verify transcript.
-                verifyKeyConfirmPayload(plaintext)
-            }
-            else -> Log.w(TAG, "unexpected ${frame.type} in session")
+        } finally {
+            plaintext.fill(0)
         }
     }
 

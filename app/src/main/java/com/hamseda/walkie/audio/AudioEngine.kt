@@ -183,8 +183,9 @@ class AudioEngine(private val context: Context) : AudioPipeline {
             try {
                 rec.startRecording()
             } catch (e: IllegalStateException) {
-                pipelineListener?.onCaptureError("microphone start failed: ${e.message}")
+                pipelineListener?.onCaptureError("microphone start failed: ${e.javaClass.simpleName}")
                 captureRunning.set(false)
+                frame.fill(0)
                 return@Thread
             }
             // HS-09: classify every negative read result. ERROR_DEAD_OBJECT
@@ -231,12 +232,17 @@ class AudioEngine(private val context: Context) : AudioPipeline {
                 var peak = 0
                 for (s in frame) peak = maxOf(peak, abs(s.toInt()))
                 val level = min(1f, peak / 32768f)
+                var encoded: ByteArray? = null
                 try {
-                    onFrame(codec.encode(frame), level)
+                    encoded = codec.encode(frame)
+                    onFrame(encoded, level)
                 } catch (e: Exception) {
-                    Log.w(TAG, "encode failed: ${e.message}")
+                    Log.w(TAG, "encode failed: ${e.javaClass.simpleName}")
+                } finally {
+                    encoded?.fill(0)
                 }
             }
+            frame.fill(0)
         }, "HamSeda-Capture").also { it.start() }
         return true
     }
