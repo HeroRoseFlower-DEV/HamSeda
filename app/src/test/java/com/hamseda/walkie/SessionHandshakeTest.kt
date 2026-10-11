@@ -239,7 +239,7 @@ class SessionHandshakeTest {
     fun `replayed wire frames are rejected end-to-end`() {
         var lastAudioWire: ByteArray? = null
         val rig = newRig(interceptA = { bytes ->
-            if (decodeType(bytes) == MessageType.AUDIO) lastAudioWire = bytes
+            if (decodeType(bytes) == MessageType.AUDIO) lastAudioWire = bytes.copyOf()
             bytes
         })
         rig.start()

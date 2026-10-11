@@ -468,7 +468,7 @@ class SessionSecurityTest {
     fun `hs01 duplicate valid frame is rejected`() {
         var lastPing: ByteArray? = null
         val rig = newRig(interceptA = { bytes ->
-            if (decodeType(bytes) == MessageType.PING) lastPing = bytes
+            if (decodeType(bytes) == MessageType.PING) lastPing = bytes.copyOf()
             bytes
         })
         rig.start()

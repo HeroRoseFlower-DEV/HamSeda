@@ -62,7 +62,10 @@ class LoopbackTransport(
 
     override suspend fun sendFrame(frameBytes: ByteArray) {
         val out = intercept?.invoke(frameBytes) ?: frameBytes
-        linked?._incoming?.emit(out)
+        // Real transports consume/copy frame bytes before returning. The fake
+        // uses SharedFlow, which retains references, so make that ownership
+        // explicit before SessionManager zeroes its transient wire buffer.
+        linked?._incoming?.emit(out.copyOf())
     }
 
     override suspend fun disconnect() {
