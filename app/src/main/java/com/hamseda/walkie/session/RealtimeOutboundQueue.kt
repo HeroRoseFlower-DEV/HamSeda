@@ -73,12 +73,12 @@ internal class RealtimeOutboundQueue<T>(
     private fun removeOldestAudio(): Boolean {
         val iterator = queue.iterator()
         while (iterator.hasNext()) {
-            if (isAudio(iterator.next())) {
-                val discarded = iterator.next()
+            val candidate = iterator.next()
+            if (isAudio(candidate)) {
                 iterator.remove()
                 queuedAudio--
                 droppedAudio++
-                onDiscard(discarded)
+                onDiscard(candidate)
                 return true
             }
         }

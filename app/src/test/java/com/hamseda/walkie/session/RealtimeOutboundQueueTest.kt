@@ -64,3 +64,22 @@ class RealtimeOutboundQueueTest {
         )
     }
 }
+
+    @Test
+    fun `discard callback clears evicted sensitive payloads`() {
+        val discarded = mutableListOf<ByteArray>()
+        val queue = RealtimeOutboundQueue(
+            maxPending = 3,
+            maxPendingAudio = 1,
+            isAudio = { item: Pair<Boolean, ByteArray> -> item.first },
+            onDiscard = { item: Pair<Boolean, ByteArray> ->
+                item.second.fill(0)
+                discarded.add(item.second)
+            },
+        )
+        val old = byteArrayOf(1, 2, 3)
+        assertTrue(queue.offer(true to old))
+        assertTrue(queue.offer(true to byteArrayOf(4, 5, 6)))
+        assertEquals(1, discarded.size)
+        assertTrue(old.all { it == 0.toByte() })
+    }
