@@ -104,6 +104,15 @@
     <string name="privacy_p5">Application-layer end-to-end encryption (ECDH on P-256, HKDF-SHA-256 key derivation, AES-256-GCM) on all audio and control frames; keys are ephemeral and wiped from memory when the session ends.</string>
     <string name="privacy_p6">No behavioral analytics, ads, or cloud crash reporting.</string>
 
+    <!-- First-run permissions gate -->
+    <string name="startup_permissions_title">Set up permissions</string>
+    <string name="startup_permissions_message">Before you start, HamSeda needs permission to use nearby radios and your microphone.</string>
+    <string name="startup_permissions_details">Bluetooth is used to discover and connect to nearby phones. Wi-Fi Direct and local-network access (on supported Android versions) enable a direct phone-to-phone connection. Microphone access is used only during a voice session when you hold the talk button. HamSeda does not send this data to a server.</string>
+    <string name="startup_permissions_continue">Review and grant permissions</string>
+    <string name="startup_permissions_open_settings">Open app settings</string>
+    <string name="startup_permissions_denied">Some permissions were not granted. HamSeda cannot start until the required permissions are enabled.</string>
+    <string name="startup_permissions_settings_hint">If Android no longer shows a permission prompt, open app settings and enable the required permissions there.</string>
+
     <!-- Permissions -->
     <string name="perm_title">Permission needed</string>
     <string name="perm_wifi_message">To find nearby phones with Wi-Fi Direct, Android requires this permission. Your location is never stored or sent anywhere.</string>
