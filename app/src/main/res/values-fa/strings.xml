@@ -104,6 +104,15 @@
     <string name="privacy_p5">رمزنگاری سرتاسری لایه‌برنامه (ECDH روی P-256، مشتق کلید HKDF-SHA-256، رمزنگاری AES-256-GCM) روی همه فریم‌های صوتی و کنترلی؛ کلیدها موقتی‌اند و با پایان نشست از حافظه پاک می‌شوند.</string>
     <string name="privacy_p6">بدون تحلیل رفتار، تبلیغات یا گزارش خرابی ابری.</string>
 
+    <!-- First-run permissions gate -->
+    <string name="startup_permissions_title">راه‌اندازی دسترسی‌ها</string>
+    <string name="startup_permissions_message">پیش از شروع، هم‌صدا برای استفاده از ارتباط بی‌سیم نزدیک و میکروفون به اجازهٔ شما نیاز دارد.</string>
+    <string name="startup_permissions_details">بلوتوث برای پیدا کردن و اتصال به گوشی‌های نزدیک استفاده می‌شود. وای‌فای دایرکت و در نسخه‌های پشتیبانی‌شدهٔ اندروید، دسترسی شبکهٔ محلی برای اتصال مستقیم دو گوشی لازم است. میکروفون فقط هنگام نشست صوتی و وقتی دکمهٔ صحبت را نگه می‌داری استفاده می‌شود. هم‌صدا این داده‌ها را به هیچ سروری ارسال نمی‌کند.</string>
+    <string name="startup_permissions_continue">بررسی و اعطای دسترسی‌ها</string>
+    <string name="startup_permissions_open_settings">باز کردن تنظیمات برنامه</string>
+    <string name="startup_permissions_denied">بعضی از دسترسی‌ها داده نشدند. هم‌صدا تا فعال شدن دسترسی‌های لازم شروع نمی‌شود.</string>
+    <string name="startup_permissions_settings_hint">اگر اندروید دیگر پنجرهٔ درخواست مجوز را نشان نمی‌دهد، تنظیمات برنامه را باز کن و دسترسی‌های لازم را از آنجا فعال کن.</string>
+
     <!-- Permissions -->
     <string name="perm_title">دسترسی لازم است</string>
     <string name="perm_wifi_message">برای پیدا کردن گوشی‌های نزدیک با وای‌فای دایرکت، اندروید این دسترسی را می‌خواهد. موقعیت مکانی تو ذخیره یا ارسال نمی‌شود.</string>
