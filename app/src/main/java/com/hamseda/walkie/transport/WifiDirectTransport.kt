@@ -161,12 +161,14 @@ class WifiDirectTransport(private val context: Context) : Transport {
             _error.value = TransportError.Unsupported("wifi_direct_unsupported")
             return
         }
+        // Seed the current radio state before deciding it is disabled. This
+        // also makes startDiscovery() safe when called before availability().
+        ensureReceiver()
         if (!p2pEnabled) {
             _state.value = TransportState.UNAVAILABLE
             _error.value = TransportError.RadioDisabled(TransportType.WIFI_DIRECT)
             return
         }
-        registerReceiver()
         val mgr = manager
         val ch = channel
         if (mgr == null || ch == null) {
@@ -777,6 +779,8 @@ class WifiDirectTransport(private val context: Context) : Transport {
                                 }
                             } catch (e: SecurityException) {
                                 AppLog.log(TAG, "P2P state query denied: ${e.message}")
+                            } catch (e: IllegalStateException) {
+                                AppLog.log(TAG, "P2P state query ignored: channel is not ready (${e.message})")
                             }
                         }
                     } else {
@@ -840,6 +844,8 @@ class WifiDirectTransport(private val context: Context) : Transport {
                         }
                     } catch (e: SecurityException) {
                         AppLog.log(TAG, "connection info query denied: ${e.message}")
+                    } catch (e: IllegalStateException) {
+                        AppLog.log(TAG, "connection info query ignored: channel is not ready (${e.message})")
                     }
                 }
             }
