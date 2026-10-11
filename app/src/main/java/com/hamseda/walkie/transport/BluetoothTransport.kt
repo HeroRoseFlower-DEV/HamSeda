@@ -943,7 +943,7 @@ class BluetoothTransport(private val context: Context) : Transport {
                     }
                     if (!isUsableBluetoothAddress(address)) return
                     val displayName = name
-                        ?.filterNot { !it.isISOControl() }
+                        ?.filterNot { it.isISOControl() }
                         ?.take(MAX_PEER_NAME_CHARS)
                         ?.takeIf { it.isNotBlank() }
                         ?: address
