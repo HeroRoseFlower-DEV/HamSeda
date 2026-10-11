@@ -39,7 +39,7 @@ completed the in-app pairing flow, against:
    96-bit nonce per frame, header+role as AAD.
 4. **Authentication of the exchange:** each side seals
    `SHA-256(ordered pubkeys || ordered nonces)` with the control key. A peer
-   that substituted a key, nonce, protocol version, or codec preference cannot produce a matching transcript. The transcript is canonicalized by public-key role and includes each peer's exact HELLO payload.
+   that substituted a key, nonce, protocol version, or codec preference cannot produce a matching transcript. The transcript is length-prefixed and canonicalized by public-key role; it includes each peer's exact HELLO payload and associated nonce/public key.
 5. **SAS:** 6 digits = `HMAC-SHA256(sasSeed, "HamSeda-v2/sas") mod 1_000_000`,
    displayed on both phones. The SAS is *detection*, not key material: users
    compare it out-of-band and each confirm. A six-digit code carries ~20 bits;

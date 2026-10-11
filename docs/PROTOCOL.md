@@ -62,7 +62,7 @@ full queue to bound latency; control frames are never expected to overflow.
 |---|---|---|
 | 0x01 | HELLO | `version(1) || codecPref(1)` — plaintext |
 | 0x02 | KEY_EXCHANGE | `pubLen(2) || X.509 P-256 pubkey || nonce(16)` — plaintext |
-| 0x03 | KEY_CONFIRM | `SHA-256(domain || ordered(pubkey, nonce, HELLO) records)` — sealed (control key) |
+| 0x03 | KEY_CONFIRM | `SHA-256(domain || uint16(pubkey_len) || pubkey || nonce || HELLO, for each ordered peer record)` — sealed (control key) |
 | 0x04 | SAS_CONFIRM | empty — sealed (control key) |
 | 0x10 | AUDIO | `nonce(12) \|\| AES-256-GCM(audio)` — sealed (audio key) |
 | 0x20 | FLOOR_REQUEST | empty — sealed (control key) |

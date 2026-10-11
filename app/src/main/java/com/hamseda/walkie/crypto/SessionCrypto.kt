@@ -1,5 +1,7 @@
 package com.hamseda.walkie.crypto
 
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.security.AlgorithmParameters
 import java.security.InvalidKeyException
 import java.security.KeyFactory
@@ -146,6 +148,9 @@ object SessionCrypto {
         ownHello: ByteArray,
         peerHello: ByteArray,
     ): ByteArray {
+        require(ownPub.size in 1..MAX_PUBKEY_BYTES && peerPub.size in 1..MAX_PUBKEY_BYTES) {
+            "public key size out of bounds"
+        }
         require(ownNonce.size == 16 && peerNonce.size == 16) {
             "nonces must be 16 bytes"
         }
@@ -156,11 +161,22 @@ object SessionCrypto {
         val (p1, p2) = if (ownFirst) ownPub to peerPub else peerPub to ownPub
         val (n1, n2) = if (ownFirst) ownNonce to peerNonce else peerNonce to ownNonce
         val (h1, h2) = if (ownFirst) ownHello to peerHello else peerHello to ownHello
-        return Hkdf.sha256(
-            TRANSCRIPT_INFO.toByteArray(Charsets.UTF_8),
-            p1, n1, h1,
-            p2, n2, h2,
-        )
+        // Length-prefix variable-size public keys so field boundaries remain
+        // unambiguous even if a crypto provider accepts another valid encoding.
+        val domain = TRANSCRIPT_INFO.toByteArray(Charsets.UTF_8)
+        val encoded = ByteBuffer.allocate(
+            domain.size + 2 + p1.size + n1.size + h1.size + 2 + p2.size + n2.size + h2.size,
+        ).order(ByteOrder.BIG_ENDIAN)
+            .put(domain)
+            .putShort(p1.size.toShort()).put(p1).put(n1).put(h1)
+            .putShort(p2.size.toShort()).put(p2).put(n2).put(h2)
+            .array()
+        return try {
+            Hkdf.sha256(encoded)
+        } finally {
+            domain.fill(0)
+            encoded.fill(0)
+        }
     }
 
     /**
