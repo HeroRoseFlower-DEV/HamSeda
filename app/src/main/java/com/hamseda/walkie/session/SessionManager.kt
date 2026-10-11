@@ -41,7 +41,6 @@ import java.io.IOException
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.security.MessageDigest
-import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Authenticated one-to-one voice session over an attached [Transport].
@@ -196,40 +195,47 @@ class SessionManager(
         ) : OutboundMsg
     }
 
-    private val outbound = Channel<OutboundMsg>(capacity = 256)
-    /**
-     * Reserve most of the channel for control traffic. A 256-frame audio
-     * backlog would add over five seconds of latency and could crowd out a
-     * FLOOR_RELEASE/DISCONNECT. At 20 ms per frame, 32 pending audio frames
-     * cap this component of latency at about 640 ms.
-     */
-    private val queuedAudioFrames = AtomicInteger(0)
+    private val outboundQueue = RealtimeOutboundQueue<OutboundMsg>(
+        maxPending = MAX_PENDING_OUTBOUND_MESSAGES,
+        maxPendingAudio = MAX_QUEUED_AUDIO_FRAMES,
+        isAudio = { isAudioMessage(it) },
+    )
+    private val outboundSignal = Channel<Unit>(capacity = Channel.CONFLATED)
     private var senderJob: Job? = null
-    private var audioDropped = 0L
+    @Volatile private var lastLoggedAudioDrops = 0L
 
     private fun isAudioMessage(msg: OutboundMsg): Boolean =
         msg is OutboundMsg.Sealed && msg.type == MessageType.AUDIO
 
-    private fun releaseAudioSlot(msg: OutboundMsg) {
-        if (isAudioMessage(msg)) queuedAudioFrames.updateAndGet { (it - 1).coerceAtLeast(0) }
-    }
-
     private fun drainOutbound() {
-        while (true) {
-            val msg = outbound.tryReceive().getOrNull() ?: break
-            releaseAudioSlot(msg)
+        outboundQueue.clear()
+        while (outboundSignal.tryReceive().isSuccess) {
+            // Remove stale wakeups before binding a new transport.
         }
     }
 
+    private suspend fun nextOutbound(): OutboundMsg {
+        while (true) {
+            outboundQueue.poll()?.let { return it }
+            // Producers enqueue under the queue lock and then signal. A signal
+            // between poll() and receive() is retained by the conflated channel.
+            outboundSignal.receive()
+        }
+    }
+
+    private fun enqueueOutbound(msg: OutboundMsg): Boolean {
+        val accepted = outboundQueue.offer(msg)
+        if (accepted) outboundSignal.trySend(Unit)
+        return accepted
+    }
+
     private fun startSender() {
-        // Ensure only one consumer exists, then drain stale messages before
-        // attaching it to the new session's transport.
         senderJob?.cancel()
         senderJob = null
         drainOutbound()
         senderJob = scope.launch {
-            for (msg in outbound) {
-                releaseAudioSlot(msg)
+            while (isActive) {
+                val msg = nextOutbound()
                 val bytes: ByteArray = try {
                     when (msg) {
                         is OutboundMsg.Plain -> buildPlainFrame(msg.type, msg.payload)
@@ -248,8 +254,7 @@ class SessionManager(
                     throw e
                 } catch (e: Exception) {
                     Log.w(TAG, "outbound send failed: ${e.message}")
-                    // Transport loss is surfaced via the transport watcher;
-                    // keep the sender alive so teardown DISCONNECT can flush.
+                    // Keep the sender alive for possible teardown messages.
                 }
             }
         }
@@ -260,14 +265,12 @@ class SessionManager(
         drainOutbound()
     }
 
-    /** Enqueues a plaintext handshake frame (HELLO / KEY_EXCHANGE). */
     private fun enqueuePlain(type: Byte, payload: ByteArray) {
-        if (!outbound.trySend(OutboundMsg.Plain(type, payload)).isSuccess) {
+        if (!enqueueOutbound(OutboundMsg.Plain(type, payload))) {
             Log.w(TAG, "outbound queue full; dropping plain frame type=$type")
         }
     }
 
-    /** Enqueues a sealed control frame. */
     private fun enqueueControl(type: Byte, plaintext: ByteArray) {
         val k = keys ?: return
         val msg = OutboundMsg.Sealed(
@@ -278,25 +281,17 @@ class SessionManager(
             role = myRole,
             plaintext = plaintext,
         )
-        if (!outbound.trySend(msg).isSuccess) {
+        if (!enqueueOutbound(msg)) {
             Log.w(TAG, "outbound queue full; dropping control frame type=$type")
         }
     }
 
-    /** Enqueues an audio frame while preserving slots for latency-sensitive control messages. */
+    /**
+     * Freshness-first audio queue: on congestion, evict old unsent speech rather
+     * than dropping every new frame and playing stale audio when the link recovers.
+     */
     private fun enqueueAudio(codecId: Byte, plaintext: ByteArray) {
         val k = keys ?: return
-        // Reserve a bounded number of audio slots atomically; control frames
-        // use the remaining channel capacity and can still get through during
-        // a stalled transport. Overflow drops the newest audio frame.
-        while (true) {
-            val queued = queuedAudioFrames.get()
-            if (queued >= MAX_QUEUED_AUDIO_FRAMES) {
-                audioDropped++
-                return
-            }
-            if (queuedAudioFrames.compareAndSet(queued, queued + 1)) break
-        }
         val msg = OutboundMsg.Sealed(
             type = MessageType.AUDIO,
             codecId = codecId,
@@ -305,9 +300,22 @@ class SessionManager(
             role = myRole,
             plaintext = plaintext,
         )
-        if (!outbound.trySend(msg).isSuccess) {
-            queuedAudioFrames.decrementAndGet()
-            audioDropped++
+        if (!enqueueOutbound(msg)) {
+            Log.w(TAG, "realtime audio queue rejected a frame (pending=${outboundQueue.size()})")
+            return
+        }
+        val dropped = outboundQueue.droppedAudioFrames
+        if (dropped >= lastLoggedAudioDrops + AUDIO_DROP_LOG_INTERVAL) {
+            synchronized(this) {
+                if (dropped >= lastLoggedAudioDrops + AUDIO_DROP_LOG_INTERVAL) {
+                    lastLoggedAudioDrops = dropped
+                    AppLog.log(
+                        TAG,
+                        "realtime audio freshness drops=$dropped, pendingAudio=${outboundQueue.pendingAudioFrames()}, " +
+                            "pendingMessages=${outboundQueue.size()}",
+                    )
+                }
+            }
         }
     }
 
@@ -1237,7 +1245,7 @@ class SessionManager(
                 lastLevelPush = now
                 _voiceLevel.value = level
             }
-            if (_phase.value == Phase.IN_SESSION) {
+            if (_phase.value == Phase.IN_SESSION && _isTransmitting.value) {
                 enqueueAudio(c.codecId, encoded)
             }
         }
@@ -1332,14 +1340,25 @@ class SessionManager(
 
     override fun onCaptureError(message: String) {
         Log.w(TAG, "capture error: $message")
+        AppLog.log(TAG, "capture error: $message")
         if (_isTransmitting.value) {
             setPttPressed(false)
             _error.value = SessionError.MIC_UNAVAILABLE
         }
     }
 
+    override fun onPlaybackError(message: String) {
+        Log.w(TAG, "playback error: $message")
+        AppLog.log(TAG, "playback error: $message")
+        if (_phase.value == Phase.IN_SESSION) {
+            endSession(SessionError.PLAYBACK_UNAVAILABLE, notifyPeer = false)
+        }
+    }
+
     companion object {
-        private const val MAX_QUEUED_AUDIO_FRAMES = 32
+        private const val MAX_QUEUED_AUDIO_FRAMES = 6
+        private const val MAX_PENDING_OUTBOUND_MESSAGES = 64
+        private const val AUDIO_DROP_LOG_INTERVAL = 50L
         private const val TAG = "HamSedaSession"
     }
 }

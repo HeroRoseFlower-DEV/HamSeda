@@ -595,7 +595,7 @@ class SessionSecurityTest {
         // Hammer the outbound pipeline with far more frames than the queue
         // holds: drops must be bounded (no OOM, no hang) and the session
         // must survive. Uses the real loopback (fast drain) — the bound is
-        // structural (Channel capacity + trySend drops).
+        // structural (bounded realtime queue + oldest-audio eviction).
         val rig = newRig()
         rig.start()
         rig.await("sas phase") {
@@ -618,8 +618,8 @@ class SessionSecurityTest {
             }
         }
         threads.forEach { it.join() }
-        // Excess audio is dropped once the 32-frame pending-audio budget
-        // is full; this overload must not hang or break the session.
+        // Under overload the bounded freshness-first queue evicts old unsent
+        // audio rather than accumulating stale speech. The session must survive.
         Thread.sleep(1000)
         assertEquals(SessionManager.Phase.IN_SESSION, rig.a.phase.value)
         assertEquals(SessionManager.Phase.IN_SESSION, rig.b.phase.value)

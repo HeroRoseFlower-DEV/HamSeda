@@ -5,22 +5,20 @@ import java.util.TreeMap
 /**
  * Adaptive jitter buffer for 20 ms voice frames.
  *
- * - Buffers [targetFrames] (~80 ms) before first playout to absorb wireless
- *   jitter, then plays in sequence order.
- * - Drops frames older than [maxLateMs] (stale) and caps the queue at
- *   [maxFrames] so a stalled consumer can never grow memory unboundedly.
- * - [takeNext] returns the next in-order frame when available; when the
- *   expected sequence is missing it waits up to [maxWaitMs], then reports
- *   the gap as lost so the player can conceal it and move on. This keeps
- *   one lost packet from stalling the whole stream.
+ * - Buffers [targetFrames] (default ~40 ms) before first playout to balance
+ *   latency with short wireless scheduling jitter.
+ * - Drops stale frames and caps the queue; old speech is discarded rather
+ *   than replayed long after it was spoken.
+ * - When a packet is missing, waits only [maxWaitMs] before concealment so
+ *   one gap cannot stall playout for a long interval.
  *
  * [nowMs] is injectable for deterministic unit tests.
  */
 class JitterBuffer(
-    private val targetFrames: Int = 4,
-    private val maxFrames: Int = 25,
-    private val maxLateMs: Long = 400,
-    private val maxWaitMs: Long = 120,
+    private val targetFrames: Int = 2,
+    private val maxFrames: Int = 8,
+    private val maxLateMs: Long = 180,
+    private val maxWaitMs: Long = 40,
     private val nowMs: () -> Long = { System.nanoTime() / 1_000_000L },
 ) {
     data class Packet(val seq: Long, val receivedAt: Long, val payload: ByteArray)

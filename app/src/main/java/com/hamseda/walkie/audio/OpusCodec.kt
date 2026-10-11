@@ -5,15 +5,16 @@ import org.concentus.OpusApplication
 import org.concentus.OpusDecoder
 import org.concentus.OpusEncoder
 import org.concentus.OpusException
+import org.concentus.OpusSignal
 
 /**
  * Opus voice codec via the vendored Concentus pure-Java port
  * (see `org/concentus/VENDORED_FROM.md`).
  *
- * Configuration: 16 kHz, mono, 20 ms frames (320 samples),
- * VOIP application, ~20 kbps target bitrate — a low-latency speech
- * setting validated for real-time push-to-talk. A 20 ms frame encodes to
- * roughly 40–60 bytes, leaving ample headroom on both transports.
+ * Configuration: 16 kHz mono, 20 ms frames, VOIP application, 24 kbps
+ * voice target, moderate complexity and constrained VBR. This trades a
+ * little bandwidth for clearer speech while avoiding large packet bursts
+ * on Bluetooth RFCOMM.
  *
  * The codec is bundled in the APK: nothing is downloaded at runtime.
  */
@@ -67,7 +68,12 @@ class OpusCodec(
     override fun reset() {
         synchronized(lock) {
             encoder = OpusEncoder(sampleRate, channels, OpusApplication.OPUS_APPLICATION_VOIP)
-                .also { it.bitrate = bitrateBps }
+                .also {
+                    it.bitrate = bitrateBps
+                    it.complexity = ENCODER_COMPLEXITY
+                    it.signalType = OpusSignal.OPUS_SIGNAL_VOICE
+                    it.useConstrainedVBR = true
+                }
             decoder = OpusDecoder(sampleRate, channels)
         }
     }
@@ -80,7 +86,8 @@ class OpusCodec(
     }
 
     companion object {
-        const val DEFAULT_BITRATE_BPS = 20_000
+        const val DEFAULT_BITRATE_BPS = 24_000
+        const val ENCODER_COMPLEXITY = 7
         const val MAX_PACKET_BYTES = 512
     }
 }
