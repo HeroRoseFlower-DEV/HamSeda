@@ -471,7 +471,20 @@ class BluetoothTransport(private val context: Context) : Transport {
                 _state.value = TransportState.FAILED
                 return
             }
-            if (!a.isEnabled) {
+            val radioEnabled = try {
+                a.isEnabled
+            } catch (e: SecurityException) {
+                AppLog.log(TAG, "connect denied while checking Bluetooth state: ${e.message}")
+                val stillMissing = PermissionHelper.missingBluetoothPermissions(context, forDiscovery = false)
+                _error.value = if (stillMissing.isNotEmpty()) {
+                    TransportError.PermissionDenied(stillMissing)
+                } else {
+                    TransportError.ConnectFailed("Android denied Bluetooth access; re-check Nearby devices permission")
+                }
+                _state.value = if (stillMissing.isNotEmpty()) TransportState.UNAVAILABLE else TransportState.FAILED
+                return
+            }
+            if (!radioEnabled) {
                 _error.value = TransportError.RadioDisabled(TransportType.BLUETOOTH)
                 _state.value = TransportState.FAILED
                 return
@@ -577,7 +590,20 @@ class BluetoothTransport(private val context: Context) : Transport {
                 _state.value = TransportState.FAILED
                 return
             }
-            if (!a.isEnabled) {
+            val radioEnabled = try {
+                a.isEnabled
+            } catch (e: SecurityException) {
+                AppLog.log(TAG, "listen denied while checking Bluetooth state: ${e.message}")
+                val stillMissing = PermissionHelper.missingBluetoothPermissions(context, forDiscovery = false)
+                _error.value = if (stillMissing.isNotEmpty()) {
+                    TransportError.PermissionDenied(stillMissing)
+                } else {
+                    TransportError.ConnectFailed("Android denied Bluetooth access; re-check Nearby devices permission")
+                }
+                _state.value = if (stillMissing.isNotEmpty()) TransportState.UNAVAILABLE else TransportState.FAILED
+                return
+            }
+            if (!radioEnabled) {
                 _state.value = TransportState.FAILED
                 _error.value = TransportError.RadioDisabled(TransportType.BLUETOOTH)
                 return
