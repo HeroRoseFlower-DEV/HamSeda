@@ -165,8 +165,6 @@ class JitterBufferTest {
         assertEquals(2L, (next as JitterBuffer.TakeResult.Frame).packet.seq)
     }
 
-}
-
 
     @Test
     fun `jitter buffer keeps its own payload copy`() {
@@ -178,3 +176,6 @@ class JitterBufferTest {
         val packet = (jb.takeNext() as JitterBuffer.TakeResult.Frame).packet
         assertEquals(7, packet.payload[0].toInt())
     }
+
+}
+

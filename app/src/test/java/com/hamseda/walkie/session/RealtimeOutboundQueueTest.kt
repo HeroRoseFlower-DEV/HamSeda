@@ -63,9 +63,8 @@ class RealtimeOutboundQueueTest {
             generateSequence { q.poll() }.toList(),
         )
     }
-}
 
-    @Test
+@Test
     fun `discard callback clears evicted sensitive payloads`() {
         val discarded = mutableListOf<ByteArray>()
         val queue = RealtimeOutboundQueue(
@@ -83,3 +82,5 @@ class RealtimeOutboundQueueTest {
         assertEquals(1, discarded.size)
         assertTrue(old.all { it == 0.toByte() })
     }
+
+}
