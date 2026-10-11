@@ -63,7 +63,7 @@
         android:name="android.permission.BLUETOOTH_ADMIN"
         android:maxSdkVersion="30" />
 
-    <!-- Push-to-talk microphone, requested only when the user starts a session -->
+    <!-- Microphone runtime permission is explained and requested in the first-run gate -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
 
