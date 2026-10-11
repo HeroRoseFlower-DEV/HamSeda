@@ -431,15 +431,14 @@ class BluetoothTransport(private val context: Context) : Transport {
     }
 
     override suspend fun stopDiscovery() {
-        invalidateDiscovery()
-        // Clear an old terminal error only when the user starts a new role
-        // or explicitly stops discovery, not during failure teardown.
-        _error.value = null
+        // Clear an old terminal error only when the user explicitly stops
+        // discovery or starts a new role, not during failure teardown.
+        invalidateDiscovery(clearError = true)
     }
 
     /** Invalidates pending retries before cancelling the platform scan. */
     @SuppressLint("MissingPermission")
-    private fun invalidateDiscovery() {
+    private fun invalidateDiscovery(clearError: Boolean = false) {
         synchronized(discoveryLock) {
             discoveryGeneration++
             try {
@@ -449,9 +448,8 @@ class BluetoothTransport(private val context: Context) : Transport {
                 _state.value == TransportState.FAILED ||
                 _state.value == TransportState.UNAVAILABLE
             ) {
-                // Clear a stale scan failure before the next explicit role.
                 _state.value = TransportState.IDLE
-                _error.value = null
+                if (clearError) _error.value = null
             }
         }
     }
