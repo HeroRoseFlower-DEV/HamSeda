@@ -166,3 +166,15 @@ class JitterBufferTest {
     }
 
 }
+
+
+    @Test
+    fun `jitter buffer keeps its own payload copy`() {
+        val clock = Clock()
+        val jb = JitterBuffer(targetFrames = 1, nowMs = clock::get)
+        val callerBuffer = byteArrayOf(7)
+        jb.push(0, callerBuffer)
+        callerBuffer.fill(0)
+        val packet = (jb.takeNext() as JitterBuffer.TakeResult.Frame).packet
+        assertEquals(7, packet.payload[0].toInt())
+    }

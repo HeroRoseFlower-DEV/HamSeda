@@ -67,10 +67,12 @@ class JitterBuffer(
                     nextSeq = evicted.key + 1
                     waitStartedAt = now
                 }
+                evicted.value.payload.fill(0)
                 droppedStale++
             }
         }
-        queue[seq] = Packet(seq, now, payload)
+        // The caller can clear its decrypted input after this queue-owned copy is made.
+        queue[seq] = Packet(seq, now, payload.copyOf())
     }
 
     @Synchronized
@@ -81,6 +83,7 @@ class JitterBuffer(
             val head = queue.firstEntry() ?: break
             if (now - head.value.receivedAt > maxLateMs) {
                 queue.pollFirstEntry()
+                head.value.payload.fill(0)
                 droppedStale++
                 if (nextSeq != -1L && head.key >= nextSeq) nextSeq = head.key + 1
             } else break
@@ -119,12 +122,14 @@ class JitterBuffer(
         }
         // head.key < nextSeq: stale duplicate, drop.
         queue.pollFirstEntry()
+        head.value.payload.fill(0)
         droppedStale++
         return takeNext()
     }
 
     @Synchronized
     fun reset() {
+        queue.values.forEach { it.payload.fill(0) }
         queue.clear()
         nextSeq = -1
         primed = false

@@ -326,50 +326,61 @@ class AudioEngine(private val context: Context) : AudioPipeline {
             val silence = ShortArray(AudioCodec.FRAME_SAMPLES)
             var last: ShortArray? = null
             var plcCount = 0
-            playback@ while (playbackRunning.get()) {
-                when (val r = buffer.takeNext()) {
-                    is JitterBuffer.TakeResult.Frame -> {
-                        val pcm = try {
-                            codec.decode(r.packet.payload)
-                        } catch (e: Exception) {
-                            Log.w(TAG, "decode failed, concealing")
-                            null
-                        }
-                        if (pcm != null) {
-                            if (!writePcm(at, pcm)) {
-                                reportPlaybackWriteFailure()
-                                break@playback
+            try {
+                playback@ while (playbackRunning.get()) {
+                    when (val r = buffer.takeNext()) {
+                        is JitterBuffer.TakeResult.Frame -> {
+                            val pcm = try {
+                                codec.decode(r.packet.payload)
+                            } catch (e: Exception) {
+                                Log.w(TAG, "decode failed, concealing")
+                                null
+                            } finally {
+                                r.packet.payload.fill(0)
                             }
-                            last = pcm
-                            plcCount = 0
-                        } else {
+                            if (pcm != null) {
+                                if (!writePcm(at, pcm)) {
+                                    pcm.fill(0)
+                                    reportPlaybackWriteFailure()
+                                    break@playback
+                                }
+                                last?.fill(0)
+                                last = pcm
+                                plcCount = 0
+                            } else {
+                                val next = conceal(at, last, silence, plcCount)
+                                if (next == null) {
+                                    reportPlaybackWriteFailure()
+                                    break@playback
+                                }
+                                plcCount = next
+                            }
+                        }
+                        is JitterBuffer.TakeResult.Lost -> {
                             val next = conceal(at, last, silence, plcCount)
                             if (next == null) {
                                 reportPlaybackWriteFailure()
                                 break@playback
                             }
                             plcCount = next
+                            if (buffer.lost % JITTER_DIAGNOSTIC_INTERVAL == 0L) {
+                                AppLog.log(
+                                    TAG,
+                                    "audio jitter diagnostics: lost=" + buffer.lost +
+                                        ", staleDropped=" + buffer.droppedStale +
+                                        ", buffered=" + buffer.bufferedFrames(),
+                                )
+                            }
                         }
-                    }
-                    is JitterBuffer.TakeResult.Lost -> {
-                        val next = conceal(at, last, silence, plcCount)
-                        if (next == null) {
-                            reportPlaybackWriteFailure()
-                            break@playback
+                        JitterBuffer.TakeResult.NotReady -> {
+                            try { Thread.sleep(2) } catch (_: InterruptedException) { break@playback }
                         }
-                        plcCount = next
-                        if (buffer.lost % JITTER_DIAGNOSTIC_INTERVAL == 0L) {
-                            AppLog.log(
-                                TAG,
-                                "audio jitter diagnostics: lost=${buffer.lost}, " +
-                                    "staleDropped=${buffer.droppedStale}, buffered=${buffer.bufferedFrames()}",
-                            )
-                        }
-                    }
-                    JitterBuffer.TakeResult.NotReady -> {
-                        try { Thread.sleep(2) } catch (_: InterruptedException) { break@playback }
                     }
                 }
+            } finally {
+                last?.fill(0)
+                silence.fill(0)
+                buffer.reset()
             }
         }, "HamSeda-Playback").also { it.start() }
         return true
@@ -410,12 +421,17 @@ class AudioEngine(private val context: Context) : AudioPipeline {
         silence: ShortArray,
         plcCount: Int,
     ): Int? {
-        val pcm = if (last != null && plcCount < MAX_PLC_FRAMES) {
-            ShortArray(last.size) { i -> (last[i] * PLC_DECAY).toInt().toShort() }
+        val generated = last != null && plcCount < MAX_PLC_FRAMES
+        val pcm = if (generated) {
+            ShortArray(last!!.size) { i -> (last[i] * PLC_DECAY).toInt().toShort() }
         } else {
             silence
         }
-        return if (writePcm(at, pcm)) plcCount + 1 else null
+        return try {
+            if (writePcm(at, pcm)) plcCount + 1 else null
+        } finally {
+            if (generated) pcm.fill(0)
+        }
     }
 
     override fun stopPlayback() {
