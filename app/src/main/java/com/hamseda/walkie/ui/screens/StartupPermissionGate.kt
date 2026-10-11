@@ -22,6 +22,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -40,17 +41,25 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.hamseda.walkie.R
 import com.hamseda.walkie.util.PermissionHelper
 
+private data class PermissionStep(
+    val permissions: List<String>,
+    val labelRes: Int,
+)
+
 /**
- * Blocks entry into the app until the user has reviewed and granted all
- * runtime permissions used by the core Bluetooth, Wi-Fi Direct and voice
- * features. Android still controls the individual system permission prompts.
+ * Requests core permissions automatically on app launch, in clear groups.
+ * Android owns the actual system dialogs and can group Nearby Devices
+ * permissions (Bluetooth and nearby Wi-Fi) into one prompt.
  */
 @Composable
 fun StartupPermissionGate(content: @Composable () -> Unit) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     var refreshKey by remember { mutableIntStateOf(0) }
+    var shouldAutoRequest by remember { mutableStateOf(true) }
+    var requestInFlight by remember { mutableStateOf(false) }
     var deniedByUser by remember { mutableStateOf(false) }
+    var requestedPermissions by remember { mutableStateOf(emptyList<String>()) }
 
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
@@ -60,21 +69,73 @@ fun StartupPermissionGate(content: @Composable () -> Unit) {
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    // Read refreshKey so permission state is re-evaluated after returning
-    // from system settings or after a runtime permission result.
+    // Re-evaluate after the runtime dialog or app settings returns.
     @Suppress("UNUSED_VARIABLE")
     val permissionRefresh = refreshKey
-    val missing = PermissionHelper.missingStartupRuntimePermissions(context)
+
+    val bluetoothPermissions = (
+        PermissionHelper.missingBluetoothPermissions(context, forDiscovery = true) +
+            PermissionHelper.missingBluetoothAdvertisePermission(context)
+        ).distinct()
+    val wifiPermissions = PermissionHelper.missingWifiDirectPermissions(context)
+    val localNetworkPermissions = PermissionHelper.missingLocalNetworkPermission(context)
+    val microphonePermissions = PermissionHelper.missingMicrophonePermission(context)
+
+    val nextStep = when {
+        bluetoothPermissions.isNotEmpty() -> PermissionStep(
+            bluetoothPermissions,
+            R.string.startup_permissions_bluetooth,
+        )
+        wifiPermissions.isNotEmpty() -> PermissionStep(
+            wifiPermissions,
+            R.string.startup_permissions_wifi,
+        )
+        localNetworkPermissions.isNotEmpty() -> PermissionStep(
+            localNetworkPermissions,
+            R.string.startup_permissions_local_network,
+        )
+        microphonePermissions.isNotEmpty() -> PermissionStep(
+            microphonePermissions,
+            R.string.startup_permissions_microphone,
+        )
+        else -> null
+    }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
     ) { results ->
-        deniedByUser = results.values.any { !it } ||
-            PermissionHelper.missingStartupRuntimePermissions(context).isNotEmpty()
+        requestInFlight = false
+        val allRequestedGranted = requestedPermissions.isNotEmpty() &&
+            requestedPermissions.all { PermissionHelper.isGranted(context, it) }
+        val callbackGranted = results.isNotEmpty() && results.values.all { it }
+
+        if (allRequestedGranted || callbackGranted) {
+            // Continue automatically to the next permission group. If Android
+            // granted the nearby-device group together, the next step will
+            // naturally skip Bluetooth/Wi-Fi permissions already granted.
+            deniedByUser = false
+            shouldAutoRequest =
+                PermissionHelper.missingStartupRuntimePermissions(context).isNotEmpty()
+        } else {
+            // Do not loop system dialogs after a denial; offer explicit retry
+            // and app settings instead.
+            deniedByUser = true
+            shouldAutoRequest = false
+        }
+        requestedPermissions = emptyList()
         refreshKey++
     }
 
-    if (missing.isEmpty()) {
+    LaunchedEffect(shouldAutoRequest, requestInFlight, nextStep, refreshKey) {
+        if (shouldAutoRequest && !requestInFlight && nextStep != null) {
+            requestedPermissions = nextStep.permissions
+            shouldAutoRequest = false
+            requestInFlight = true
+            permissionLauncher.launch(nextStep.permissions.toTypedArray())
+        }
+    }
+
+    if (nextStep == null) {
         content()
         return
     }
@@ -105,11 +166,26 @@ fun StartupPermissionGate(content: @Composable () -> Unit) {
             )
             Spacer(Modifier.height(16.dp))
             Card(modifier = Modifier.fillMaxWidth()) {
-                Text(
-                    text = stringResource(R.string.startup_permissions_details),
-                    modifier = Modifier.padding(18.dp),
-                    style = MaterialTheme.typography.bodyMedium,
-                )
+                Column(modifier = Modifier.padding(18.dp)) {
+                    Text(
+                        text = stringResource(R.string.startup_permissions_details),
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Text(
+                        text = stringResource(nextStep.labelRes),
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    if (requestInFlight) {
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            text = stringResource(R.string.startup_permissions_requesting),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
             }
             Spacer(Modifier.height(16.dp))
             if (deniedByUser) {
@@ -120,15 +196,22 @@ fun StartupPermissionGate(content: @Composable () -> Unit) {
                     style = MaterialTheme.typography.bodyMedium,
                 )
                 Spacer(Modifier.height(8.dp))
-            }
-            Button(
-                onClick = {
-                    deniedByUser = false
-                    permissionLauncher.launch(missing.toTypedArray())
-                },
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Text(stringResource(R.string.startup_permissions_continue))
+                Text(
+                    text = stringResource(R.string.startup_permissions_settings_hint),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center,
+                )
+                Spacer(Modifier.height(12.dp))
+                Button(
+                    onClick = {
+                        deniedByUser = false
+                        shouldAutoRequest = true
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(stringResource(R.string.startup_permissions_continue))
+                }
             }
             Spacer(Modifier.height(8.dp))
             OutlinedButton(
@@ -144,13 +227,6 @@ fun StartupPermissionGate(content: @Composable () -> Unit) {
             ) {
                 Text(stringResource(R.string.startup_permissions_open_settings))
             }
-            Spacer(Modifier.height(8.dp))
-            Text(
-                text = stringResource(R.string.startup_permissions_settings_hint),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = TextAlign.Center,
-            )
         }
     }
 }
