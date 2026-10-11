@@ -106,15 +106,32 @@ class BluetoothTransport(private val context: Context) : Transport {
     private var connectJob: Job? = null
     private var pendingConnectSocket: AtomicReference<BluetoothSocket?>? = null
     private var receiverRegistered = false
-    private val found = mutableMapOf<String, PeerDevice>()
-    private val bondedCache = mutableMapOf<String, PeerDevice>()
+    // Receiver callbacks and scan coroutines can touch these maps on different
+    // dispatchers. Bound the cache even though ACTION_FOUND is a protected
+    // platform broadcast; a dense environment can still contain many devices.
+    private val peerLock = Any()
+    private val found = LinkedHashMap<String, PeerDevice>()
+    private val bondedCache = LinkedHashMap<String, PeerDevice>()
 
-    /** Merges discovered + paired phones into the visible peer list. */
+    /** Merge a bounded snapshot without racing receiver and scan callbacks. */
     private fun publishPeers() {
-        _peers.value = found.values.toList() + bondedCache.values.filter {
-            it.id !in found.keys
+        val snapshot = synchronized(peerLock) {
+            val result = ArrayList<PeerDevice>(MAX_VISIBLE_PEERS)
+            found.values.take(MAX_DISCOVERED_PEERS).forEach(result::add)
+            for (peer in bondedCache.values) {
+                if (result.size >= MAX_VISIBLE_PEERS) break
+                if (peer.id !in found && result.none { it.id == peer.id }) result.add(peer)
+            }
+            result
         }
+        _peers.value = snapshot
     }
+
+    private fun isUsableBluetoothAddress(address: String): Boolean =
+        BluetoothAdapter.checkBluetoothAddress(address) &&
+            !address.equals("02:00:00:00:00:00", ignoreCase = true) &&
+            !address.equals("00:00:00:00:00:00", ignoreCase = true) &&
+            !address.equals("FF:FF:FF:FF:FF:FF", ignoreCase = true)
 
     /**
      * A bonded headset/speaker is not a HamSeda peer. Exclude devices that
@@ -192,8 +209,10 @@ class BluetoothTransport(private val context: Context) : Transport {
             // HS-11: always reconcile. A successfully empty bonded set clears
             // the cache (stale peers must not linger); only a permission
             // failure leaves the old cache (unknown state, logged as such).
-            bondedCache.clear()
-            bonded.forEach { bondedCache[it.id] = it }
+            synchronized(peerLock) {
+                bondedCache.clear()
+                bonded.take(MAX_VISIBLE_PEERS).forEach { bondedCache[it.id] = it }
+            }
             if (bonded.isNotEmpty()) {
                 AppLog.log(TAG, "found ${bonded.size} paired device(s)")
             } else {
@@ -248,7 +267,7 @@ class BluetoothTransport(private val context: Context) : Transport {
         registerReceiver()
         synchronized(discoveryLock) {
             if (attempt != discoveryGeneration) return
-            found.clear()
+            synchronized(peerLock) { found.clear() }
             _peers.value = emptyList()
         }
         updateDiscoverable()
@@ -342,7 +361,7 @@ class BluetoothTransport(private val context: Context) : Transport {
                 "(sdk=${Build.VERSION.SDK_INT}, adapterState=${finalSnapshot.first}, discovering=${finalSnapshot.second}, " +
                 "scanPermissionGranted=$scanPermissionGranted, fineLocationGranted=$fineLocationGranted, " +
                 "coarseLocationGranted=$coarseLocationGranted, scanMode=${finalSnapshot.third}, " +
-                "bondedCandidates=${bondedCache.size})",
+                "bondedCandidates=${synchronized(peerLock) { bondedCache.size }})",
         )
         updateDiscoveryOutcome(
             attempt,
@@ -879,7 +898,7 @@ class BluetoothTransport(private val context: Context) : Transport {
             // Preserve the terminal transport error for the UI diagnostics
             // banner; a subsequent stopDiscovery/new attempt clears it.
             _peers.value = emptyList()
-            found.clear()
+            synchronized(peerLock) { found.clear() }
         }
     }
 
@@ -922,12 +941,22 @@ class BluetoothTransport(private val context: Context) : Transport {
                         AppLog.log(TAG, "ignoring non-phone Audio/Video Bluetooth device during discovery")
                         return
                     }
+                    if (!isUsableBluetoothAddress(address)) return
+                    val displayName = name
+                        ?.filterNot { !it.isISOControl() }
+                        ?.take(MAX_PEER_NAME_CHARS)
+                        ?.takeIf { it.isNotBlank() }
+                        ?: address
                     val peer = PeerDevice(
                         id = address,
-                        displayName = name?.takeIf { it.isNotBlank() } ?: address,
+                        displayName = displayName,
                         transport = TransportType.BLUETOOTH,
                     )
-                    found[address] = peer
+                    synchronized(peerLock) {
+                        if (address in found || found.size < MAX_DISCOVERED_PEERS) {
+                            found[address] = peer
+                        }
+                    }
                     // Keep paired-but-not-discovered phones in the list too.
                     publishPeers()
                 }
@@ -1000,5 +1029,8 @@ class BluetoothTransport(private val context: Context) : Transport {
 
     companion object {
         private const val TAG = "HamSedaBluetooth"
+        private const val MAX_DISCOVERED_PEERS = 128
+        private const val MAX_VISIBLE_PEERS = 192
+        private const val MAX_PEER_NAME_CHARS = 64
     }
 }

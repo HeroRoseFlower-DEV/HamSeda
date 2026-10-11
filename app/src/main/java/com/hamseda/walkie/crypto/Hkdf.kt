@@ -20,6 +20,7 @@ object Hkdf {
         var prk: ByteArray? = null
         var okm: ByteArray? = null
         var previous = ByteArray(0)
+        var completed = false
         try {
             prk = hmac(realSalt, ikm)
             okm = ByteArray(length)
@@ -45,11 +46,11 @@ object Hkdf {
                 pos += take
                 counter++
             }
+            completed = true
             return requireNotNull(okm)
-        } catch (e: Exception) {
-            okm?.fill(0)
-            throw e
         } finally {
+            // Erase partial output if any Throwable aborts derivation before return.
+            if (!completed) okm?.fill(0)
             prk?.fill(0)
             previous.fill(0)
             if (generatedSalt) realSalt.fill(0)
