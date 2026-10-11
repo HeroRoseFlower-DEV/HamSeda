@@ -194,6 +194,14 @@ class WifiDirectTransport(private val context: Context) : Transport {
         // Seed the current radio state before deciding it is disabled. This
         // also makes startDiscovery() safe when called before availability().
         ensureReceiver()
+        if (Build.VERSION.SDK_INT >= 29) {
+            // The state-changed broadcast is not guaranteed to replay after
+            // a receiver is registered. Query the framework directly and wait
+            // briefly, otherwise a fresh launch can misclassify an enabled
+            // P2P radio as disabled and never invoke discoverPeers().
+            refreshP2pEnabledState()
+        }
+        AppLog.log(TAG, "p2p discovery radio check: p2pEnabled=$p2pEnabled, wifiEnabled=$wifiEnabled")
         if (!p2pEnabled) {
             _state.value = TransportState.UNAVAILABLE
             _error.value = TransportError.RadioDisabled(TransportType.WIFI_DIRECT)
@@ -881,6 +889,38 @@ class WifiDirectTransport(private val context: Context) : Transport {
                     }
                 }
             }
+        }
+    }
+
+    /**
+     * Query the current Wi-Fi P2P state on API 29+, instead of relying only on
+     * a state-changed broadcast that may have been sent before receiver setup.
+     * Returns null if the framework does not answer; the last known state is
+     * preserved in that case.
+     */
+    private suspend fun refreshP2pEnabledState(): Boolean? {
+        if (Build.VERSION.SDK_INT < 29) return p2pEnabled
+        val mgr = manager ?: return null
+        val ch = channel ?: return null
+        val state = CompletableDeferred<Int>()
+        return try {
+            mgr.requestP2pState(ch) { value ->
+                if (!state.isCompleted) state.complete(value)
+            }
+            val reportedState = withTimeout(1_500L) { state.await() }
+            (reportedState == WifiP2pManager.WIFI_P2P_STATE_ENABLED).also {
+                p2pEnabled = it
+                AppLog.log(TAG, "p2p framework state refreshed: enabled=$it")
+            }
+        } catch (e: TimeoutCancellationException) {
+            AppLog.log(TAG, "p2p state refresh timed out; keeping last state=$p2pEnabled")
+            null
+        } catch (e: SecurityException) {
+            AppLog.log(TAG, "p2p state refresh denied: ${e.message}")
+            null
+        } catch (e: IllegalStateException) {
+            AppLog.log(TAG, "p2p state refresh rejected: ${e.message}")
+            null
         }
     }
 
