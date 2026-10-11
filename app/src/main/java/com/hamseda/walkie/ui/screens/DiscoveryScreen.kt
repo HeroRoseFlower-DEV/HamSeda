@@ -2,6 +2,8 @@
 
 package com.hamseda.walkie.ui.screens
 
+import android.content.Intent
+import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -352,11 +354,26 @@ fun DiscoveryScreen(
                 }
             }
             transportError?.let { e ->
-                item {
-                    ErrorBanner(
-                        message = transportErrorMessage(e),
-                        onDismiss = { vm.clearTransportError() },
-                    )
+                if (
+                    activeType == TransportType.WIFI_DIRECT &&
+                    e is com.hamseda.walkie.transport.TransportError.ConnectFailed &&
+                    e.reason.contains("location services disabled", ignoreCase = true)
+                ) {
+                    item {
+                        LocationServicesCard(
+                            message = stringResource(R.string.err_wifi_location_disabled),
+                            onOpenSettings = {
+                                context.startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS))
+                            },
+                        )
+                    }
+                } else {
+                    item {
+                        ErrorBanner(
+                            message = transportErrorMessage(e),
+                            onDismiss = { vm.clearTransportError() },
+                        )
+                    }
                 }
             }
             // The selected role is exclusive for a session attempt. Do not
@@ -626,6 +643,33 @@ private fun AvailabilityCard(
 }
 
 @Composable
+private fun LocationServicesCard(message: String, onOpenSettings: () -> Unit) {
+    Card(
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
+    ) {
+        Column(Modifier.padding(16.dp)) {
+            Text(
+                text = stringResource(R.string.err_wifi_location_title),
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onErrorContainer,
+            )
+            Spacer(Modifier.height(6.dp))
+            Text(
+                text = message,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onErrorContainer,
+            )
+            Spacer(Modifier.height(12.dp))
+            Button(onClick = onOpenSettings, shape = RoundedCornerShape(12.dp)) {
+                Text(stringResource(R.string.open_location_settings))
+            }
+        }
+    }
+}
+
+@Composable
 private fun PermissionRationaleCard(message: String, onGrant: () -> Unit) {
     Card(
         shape = RoundedCornerShape(16.dp),
@@ -707,6 +751,8 @@ private fun transportErrorMessage(e: com.hamseda.walkie.transport.TransportError
                     (e.reason.contains("read failed", ignoreCase = true) ||
                         e.reason.contains("socket might closed", ignoreCase = true)) ->
                     stringResource(R.string.err_bt_rfcomm_closed)
+                e.reason.contains("location services disabled", ignoreCase = true) ->
+                    stringResource(R.string.err_wifi_location_disabled)
                 e.reason.startsWith("discovery failed:", ignoreCase = true) ->
                     stringResource(R.string.err_wifi_scan_failed)
                 e.reason.contains("wi-fi direct connect rejected", ignoreCase = true) ->
