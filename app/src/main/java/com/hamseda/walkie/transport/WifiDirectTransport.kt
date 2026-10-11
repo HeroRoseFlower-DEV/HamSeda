@@ -167,23 +167,50 @@ class WifiDirectTransport(private val context: Context) : Transport {
             return
         }
         registerReceiver()
-        manager?.discoverPeers(channel, object : WifiP2pManager.ActionListener {
-            override fun onSuccess() {
-                if (discoveryGeneration.get() != scanAttempt) return
-                _state.value = TransportState.DISCOVERING
-                _error.value = null
-            }
+        val mgr = manager
+        val ch = channel
+        if (mgr == null || ch == null) {
+            _state.value = TransportState.UNAVAILABLE
+            _error.value = TransportError.Unsupported("wifi_direct_init_failed")
+            return
+        }
+        try {
+            mgr.discoverPeers(ch, object : WifiP2pManager.ActionListener {
+                override fun onSuccess() {
+                    if (discoveryGeneration.get() != scanAttempt) return
+                    _state.value = TransportState.DISCOVERING
+                    _error.value = null
+                }
 
-            override fun onFailure(reason: Int) {
-                if (discoveryGeneration.get() != scanAttempt) return
-                val name = reasonName(reason)
-                AppLog.log(TAG, "p2p discovery failed: $name (code=$reason)")
+                override fun onFailure(reason: Int) {
+                    if (discoveryGeneration.get() != scanAttempt) return
+                    val name = reasonName(reason)
+                    AppLog.log(TAG, "p2p discovery failed: $name (code=$reason)")
+                    _error.value = TransportError.ConnectFailed(
+                        "discovery failed: $name (code=$reason)",
+                    )
+                    _state.value = TransportState.IDLE
+                }
+            })
+        } catch (e: SecurityException) {
+            if (discoveryGeneration.get() != scanAttempt) return
+            AppLog.log(TAG, "p2p discovery denied by Android: ${e.message}")
+            val stillMissing = PermissionHelper.missingWifiDirectPermissions(context)
+            if (stillMissing.isNotEmpty()) {
+                _error.value = TransportError.PermissionDenied(stillMissing)
+                _state.value = TransportState.UNAVAILABLE
+            } else {
                 _error.value = TransportError.ConnectFailed(
-                    "discovery failed: $name (code=$reason)",
+                    "Wi-Fi Direct discovery was denied by Android; re-check nearby-device/location permissions",
                 )
-                _state.value = TransportState.IDLE
+                _state.value = TransportState.FAILED
             }
-        })
+        } catch (e: IllegalStateException) {
+            if (discoveryGeneration.get() != scanAttempt) return
+            AppLog.log(TAG, "p2p discovery rejected by framework: ${e.message}")
+            _error.value = TransportError.ConnectFailed("Wi-Fi Direct discovery could not be started")
+            _state.value = TransportState.FAILED
+        }
     }
 
     override suspend fun stopDiscovery() {
@@ -762,17 +789,34 @@ class WifiDirectTransport(private val context: Context) : Transport {
                     }
                 }
                 WifiP2pManager.WIFI_P2P_PEERS_CHANGED_ACTION -> {
-                    // Permissions can be revoked mid-discovery; skip rather
-                    // than crash with SecurityException.
+                    // Permission checks are subject to a time-of-check/time-of-use
+                    // race, and callbacks can arrive after Stop/disconnect. Guard
+                    // both the framework call and the asynchronous result.
                     if (PermissionHelper.missingWifiDirectPermissions(ctx).isNotEmpty()) return
-                    manager?.requestPeers(channel) { list: WifiP2pDeviceList ->
-                        _peers.value = list.deviceList.map { d: WifiP2pDevice ->
-                            PeerDevice(
-                                id = d.deviceAddress,
-                                displayName = d.deviceName.ifBlank { d.deviceAddress },
-                                transport = TransportType.WIFI_DIRECT,
-                            )
+                    val mgr = manager
+                    val ch = channel
+                    if (mgr == null || ch == null) return
+                    val expectedDiscovery = discoveryGeneration.get()
+                    try {
+                        mgr.requestPeers(ch) { list: WifiP2pDeviceList ->
+                            if (expectedDiscovery == discoveryGeneration.get()) {
+                                _peers.value = list.deviceList.map { d: WifiP2pDevice ->
+                                    PeerDevice(
+                                        id = d.deviceAddress,
+                                        displayName = d.deviceName.ifBlank { d.deviceAddress },
+                                        transport = TransportType.WIFI_DIRECT,
+                                    )
+                                }
+                            }
                         }
+                    } catch (e: SecurityException) {
+                        AppLog.log(TAG, "peer-list request denied by Android: ${e.message}")
+                        val missingNow = PermissionHelper.missingWifiDirectPermissions(ctx)
+                        if (missingNow.isNotEmpty()) {
+                            _error.value = TransportError.PermissionDenied(missingNow)
+                        }
+                    } catch (e: IllegalStateException) {
+                        AppLog.log(TAG, "peer-list request rejected by framework: ${e.message}")
                     }
                 }
                 WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION -> {
