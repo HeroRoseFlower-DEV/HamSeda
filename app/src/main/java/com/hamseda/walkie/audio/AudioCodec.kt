@@ -7,11 +7,9 @@ import com.hamseda.walkie.proto.CodecId
  * 16 kHz (320 samples) — the unit the audio engine captures and plays.
  *
  * Two implementations ship:
- * - [OpusCodec] (default): Opus via the vendored Concentus pure-Java port,
- *   ~20 kbps. Comfortable on both Wi-Fi Direct and Bluetooth Classic.
- * - [PcmCodec] (fallback): raw 16-bit PCM, 256 kbps. Documented limitation:
- *   fine on Wi-Fi Direct, heavy for Bluetooth Classic; selectable in
- *   Settings for diagnostics.
+ * - [OpusCodec] (default): official native libopus 1.6.1, 24 kbps speech target.
+ * - [PcmCodec] (fallback): raw 16-bit PCM, 256 kbps. Fine on Wi-Fi Direct,
+ *   but heavy for Bluetooth Classic; selectable in Settings for diagnostics.
  */
 interface AudioCodec {
     val codecId: Byte
