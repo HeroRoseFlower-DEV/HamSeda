@@ -38,6 +38,22 @@ class AppLogTest {
     }
 
     @Test
+    fun `IPv6 redaction preserves ordinary colons and time-like values`() {
+        AppLog.clear()
+        AppLog.log(
+            "test",
+            "IOException: read failed; preflight: sdk=36; status=10:30:00; address=fe80::1%wlan0",
+        )
+
+        val dump = AppLog.dump()
+        assertTrue(dump.contains("IOException: read failed"))
+        assertTrue(dump.contains("preflight: sdk=36"))
+        assertTrue(dump.contains("status=10:30:00"))
+        assertFalse(dump.contains("fe80::1%wlan0"))
+        assertTrue(dump.contains("[IPv6]"))
+    }
+
+    @Test
     fun `diagnostics redact hyphenated MAC addresses`() {
         AppLog.clear()
         AppLog.log("test", "device=AA-BB-CC-11-22-33")
