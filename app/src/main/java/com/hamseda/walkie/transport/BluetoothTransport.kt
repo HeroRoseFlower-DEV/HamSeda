@@ -697,12 +697,7 @@ class BluetoothTransport(private val context: Context) : Transport {
             while (!Thread.currentThread().isInterrupted) {
                 try {
                     val socket: BluetoothSocket = server.accept()
-                    // One listening endpoint is enough for one authenticated
-                    // voice session. Close it immediately after the first accept
-                    // so an unauthenticated local peer cannot keep opening RFCOMM
-                    // sockets while the HELLO/SAS handshake is in progress.
-                    try { server.close() } catch (_: IOException) {}
-                    Log.i(TAG, "incoming RFCOMM connection accepted; listener closed")
+                    Log.i(TAG, "incoming RFCOMM connection accepted")
                     scope.launch {
                         // Decide under the mutex, then release it BEFORE
                         // onSocketReady: it also locks the mutex and Mutex
