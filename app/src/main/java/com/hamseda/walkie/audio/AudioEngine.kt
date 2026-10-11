@@ -472,6 +472,15 @@ class AudioEngine(private val context: Context) : AudioPipeline {
 
     override fun setSpeakerphone(on: Boolean) {
         speakerphoneOn = on
+        // Keep the logical route in sync with the speaker toggle on API 31+;
+        // communication-device routing no longer follows the legacy flag.
+        if (currentRoute == AudioRoute.SPEAKER || currentRoute == AudioRoute.EARPIECE) {
+            val route = if (on) AudioRoute.SPEAKER else AudioRoute.EARPIECE
+            if (route != currentRoute) {
+                currentRoute = route
+                routeListener?.invoke(route)
+            }
+        }
         applyAudioMode()
     }
 
