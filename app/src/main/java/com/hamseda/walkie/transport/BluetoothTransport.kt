@@ -224,7 +224,13 @@ class BluetoothTransport(private val context: Context) : Transport {
             )
             return
         }
-        if (!a.isEnabled) {
+        val enabled = try {
+            a.isEnabled
+        } catch (e: SecurityException) {
+            failDiscoveryAfterSecurityException(attempt, "read adapter state", e)
+            return
+        }
+        if (!enabled) {
             AppLog.log(TAG, "discovery failed: radio disabled")
             updateDiscoveryOutcome(
                 attempt,
@@ -254,7 +260,8 @@ class BluetoothTransport(private val context: Context) : Transport {
                 AppLog.log(TAG, "discovery already in progress; keeping it")
                 return
             }
-            DiscoveryStartResult.CANCELLED -> return
+            DiscoveryStartResult.CANCELLED,
+            DiscoveryStartResult.PERMISSION_ERROR -> return
             DiscoveryStartResult.FAILED -> Unit
         }
 
@@ -263,18 +270,30 @@ class BluetoothTransport(private val context: Context) : Transport {
         // the user stops scanning, disconnects, or starts a newer scan.
         val retryDelaysMs = longArrayOf(750L, 1_500L, 3_000L)
         for ((index, waitMs) in retryDelaysMs.withIndex()) {
+            val retrySnapshot = try {
+                a.state to a.isDiscovering
+            } catch (e: SecurityException) {
+                failDiscoveryAfterSecurityException(attempt, "inspect retry state", e)
+                return
+            }
             AppLog.log(
                 TAG,
                 "discovery start returned false; retry ${index + 1}/${retryDelaysMs.size} in ${waitMs}ms " +
-                    "(adapterState=${a.state}, discovering=${a.isDiscovering})",
+                    "(adapterState=${retrySnapshot.first}, discovering=${retrySnapshot.second})",
             )
             delay(waitMs)
             if (!isCurrentDiscovery(attempt)) {
                 AppLog.log(TAG, "discovery retry cancelled because the request is no longer current")
                 return
             }
-            if (a.state != BluetoothAdapter.STATE_ON) {
-                AppLog.log(TAG, "discovery retry stopped: adapter no longer STATE_ON (state=${a.state})")
+            val retryState = try {
+                a.state
+            } catch (e: SecurityException) {
+                failDiscoveryAfterSecurityException(attempt, "read adapter state during retry", e)
+                return
+            }
+            if (retryState != BluetoothAdapter.STATE_ON) {
+                AppLog.log(TAG, "discovery retry stopped: adapter no longer STATE_ON (state=$retryState)")
                 updateDiscoveryOutcome(
                     attempt,
                     state = TransportState.UNAVAILABLE,
@@ -291,7 +310,8 @@ class BluetoothTransport(private val context: Context) : Transport {
                     AppLog.log(TAG, "discovery became active during retry wait")
                     return
                 }
-                DiscoveryStartResult.CANCELLED -> return
+                DiscoveryStartResult.CANCELLED,
+                DiscoveryStartResult.PERMISSION_ERROR -> return
                 DiscoveryStartResult.FAILED -> Unit
             }
         }
@@ -305,12 +325,18 @@ class BluetoothTransport(private val context: Context) : Transport {
         val coarseLocationGranted = if (Build.VERSION.SDK_INT < 29) {
             PermissionHelper.isGranted(context, android.Manifest.permission.ACCESS_COARSE_LOCATION)
         } else null
+        val finalSnapshot = try {
+            Triple(a.state, a.isDiscovering, runCatching { a.scanMode }.getOrNull())
+        } catch (e: SecurityException) {
+            failDiscoveryAfterSecurityException(attempt, "collect final scan diagnostics", e)
+            return
+        }
         AppLog.log(
             TAG,
             "discovery failed after bounded retries: startDiscovery() returned false " +
-                "(sdk=${Build.VERSION.SDK_INT}, adapterState=${a.state}, discovering=${a.isDiscovering}, " +
+                "(sdk=${Build.VERSION.SDK_INT}, adapterState=${finalSnapshot.first}, discovering=${finalSnapshot.second}, " +
                 "scanPermissionGranted=$scanPermissionGranted, fineLocationGranted=$fineLocationGranted, " +
-                "coarseLocationGranted=$coarseLocationGranted, scanMode=${runCatching { a.scanMode }.getOrNull()}, " +
+                "coarseLocationGranted=$coarseLocationGranted, scanMode=${finalSnapshot.third}, " +
                 "bondedCandidates=${bondedCache.size})",
         )
         updateDiscoveryOutcome(
@@ -326,7 +352,37 @@ class BluetoothTransport(private val context: Context) : Transport {
         STARTED,
         ALREADY_ACTIVE,
         FAILED,
+        PERMISSION_ERROR,
         CANCELLED,
+    }
+
+    /**
+     * Android permissions can be revoked between our preflight check and the
+     * Bluetooth binder call. Convert that race into an observable transport
+     * error instead of letting the discovery coroutine crash.
+     */
+    private fun failDiscoveryAfterSecurityException(
+        attempt: Long,
+        operation: String,
+        error: SecurityException,
+    ) {
+        AppLog.log(TAG, "Bluetooth discovery denied during $operation: ${error.message}")
+        val missing = PermissionHelper.missingBluetoothPermissions(context, forDiscovery = true)
+        if (missing.isNotEmpty()) {
+            updateDiscoveryOutcome(
+                attempt,
+                state = TransportState.UNAVAILABLE,
+                error = TransportError.PermissionDenied(missing),
+            )
+        } else {
+            updateDiscoveryOutcome(
+                attempt,
+                state = TransportState.FAILED,
+                error = TransportError.ConnectFailed(
+                    "Android denied Bluetooth discovery access; re-check Bluetooth and nearby-device permissions",
+                ),
+            )
+        }
     }
 
     /** Start scan + commit the state atomically with Stop/disconnect. */
@@ -336,13 +392,28 @@ class BluetoothTransport(private val context: Context) : Transport {
         attempt: Long,
     ): DiscoveryStartResult = synchronized(discoveryLock) {
         if (attempt != discoveryGeneration) return@synchronized DiscoveryStartResult.CANCELLED
-        val alreadyActive = adapter.isDiscovering
-        if (!alreadyActive && !adapter.startDiscovery()) {
-            return@synchronized DiscoveryStartResult.FAILED
+        try {
+            val alreadyActive = adapter.isDiscovering
+            if (!alreadyActive && !adapter.startDiscovery()) {
+                return@synchronized DiscoveryStartResult.FAILED
+            }
+            _state.value = TransportState.DISCOVERING
+            _error.value = null
+            if (alreadyActive) DiscoveryStartResult.ALREADY_ACTIVE else DiscoveryStartResult.STARTED
+        } catch (e: SecurityException) {
+            AppLog.log(TAG, "Bluetooth discovery start denied by Android: ${e.message}")
+            val missing = PermissionHelper.missingBluetoothPermissions(context, forDiscovery = true)
+            if (missing.isNotEmpty()) {
+                _state.value = TransportState.UNAVAILABLE
+                _error.value = TransportError.PermissionDenied(missing)
+            } else {
+                _state.value = TransportState.FAILED
+                _error.value = TransportError.ConnectFailed(
+                    "Android denied Bluetooth discovery access; re-check Bluetooth and nearby-device permissions",
+                )
+            }
+            DiscoveryStartResult.PERMISSION_ERROR
         }
-        _state.value = TransportState.DISCOVERING
-        _error.value = null
-        if (alreadyActive) DiscoveryStartResult.ALREADY_ACTIVE else DiscoveryStartResult.STARTED
     }
 
     private fun isCurrentDiscovery(attempt: Long): Boolean =
