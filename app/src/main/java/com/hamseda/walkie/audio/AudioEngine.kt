@@ -7,6 +7,7 @@ import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.Manifest
 import android.media.AudioAttributes
+import android.media.AudioDeviceInfo
 import android.media.AudioFocusRequest
 import android.media.AudioFormat
 import android.media.AudioManager
@@ -19,6 +20,7 @@ import android.media.audiofx.NoiseSuppressor
 import android.os.Build
 import android.os.Process
 import android.util.Log
+import androidx.annotation.RequiresApi
 import com.hamseda.walkie.util.AppLog
 import androidx.core.content.ContextCompat
 import java.util.concurrent.atomic.AtomicBoolean
@@ -67,6 +69,7 @@ class AudioEngine(private val context: Context) : AudioPipeline {
     /** Audio routing is global to the device; restore the previous state when this app stops audio. */
     private var previousAudioMode: Int? = null
     private var previousSpeakerphoneOn: Boolean? = null
+    private var previousCommunicationDevice: AudioDeviceInfo? = null
     private var effects = mutableListOf<android.media.audiofx.AudioEffect>()
 
     @Volatile
@@ -105,7 +108,16 @@ class AudioEngine(private val context: Context) : AudioPipeline {
             addAction(AudioManager.ACTION_HEADSET_PLUG)
             addAction(AudioManager.ACTION_AUDIO_BECOMING_NOISY)
         }
-        context.registerReceiver(routeReceiver, filter)
+        // Be explicit on recent Android versions. Keep the fallback for older API levels.
+        try {
+            if (Build.VERSION.SDK_INT >= 33) {
+                context.registerReceiver(routeReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+            } else {
+                context.registerReceiver(routeReceiver, filter)
+            }
+        } catch (e: SecurityException) {
+            Log.w(TAG, "route receiver registration rejected: ${e.javaClass.simpleName}")
+        }
     }
 
     // -------------------------------------------------------------- capture
@@ -470,37 +482,123 @@ class AudioEngine(private val context: Context) : AudioPipeline {
         try {
             if (previousAudioMode == null) {
                 previousAudioMode = audioManager.mode
+                @Suppress("DEPRECATION")
                 previousSpeakerphoneOn = audioManager.isSpeakerphoneOn
+                if (Build.VERSION.SDK_INT >= 31) {
+                    previousCommunicationDevice = audioManager.communicationDevice
+                }
             }
             if (audioManager.mode != AudioManager.MODE_IN_COMMUNICATION) {
                 audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
             }
-            audioManager.isSpeakerphoneOn = speakerphoneOn && currentRoute != AudioRoute.WIRED_HEADSET
+            if (Build.VERSION.SDK_INT >= 31) {
+                applyCommunicationDevice()
+            } else {
+                @Suppress("DEPRECATION")
+                audioManager.isSpeakerphoneOn =
+                    speakerphoneOn && currentRoute != AudioRoute.WIRED_HEADSET
+            }
         } catch (e: SecurityException) {
-            Log.w(TAG, "audio mode change rejected: ${e.message}")
+            Log.w(TAG, "audio mode change rejected: ${e.javaClass.simpleName}")
+        } catch (e: IllegalStateException) {
+            Log.w(TAG, "audio routing state rejected: ${e.javaClass.simpleName}")
         }
+    }
+
+    /**
+     * API 31+ route selection must use communication devices; the legacy
+     * isSpeakerphoneOn flag is not authoritative on modern Android/OEM builds.
+     */
+    @RequiresApi(31)
+    private fun applyCommunicationDevice() {
+        val devices = try {
+            audioManager.availableCommunicationDevices
+        } catch (_: Exception) {
+            emptyList()
+        }
+        val preferredTypes = deviceTypesForRoute(currentRoute) +
+            AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
+        val target = preferredTypes.firstNotNullOfOrNull { wantedType ->
+            devices.firstOrNull { it.type == wantedType }
+        }
+        var selected = false
+        try {
+            if (target != null) {
+                selected = audioManager.setCommunicationDevice(target)
+                if (!selected) audioManager.clearCommunicationDevice()
+            } else {
+                audioManager.clearCommunicationDevice()
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "communication-device selection failed: ${e.javaClass.simpleName}")
+            try { audioManager.clearCommunicationDevice() } catch (_: Exception) {}
+        }
+        val actual = try { audioManager.communicationDevice } catch (_: Exception) { null }
+        val callVolume = try {
+            "${audioManager.getStreamVolume(AudioManager.STREAM_VOICE_CALL)}/" +
+                audioManager.getStreamMaxVolume(AudioManager.STREAM_VOICE_CALL)
+        } catch (_: Exception) {
+            "unknown"
+        }
+        AppLog.log(
+            TAG,
+            "audio route: requested=$currentRoute, speakerphonePreference=$speakerphoneOn, " +
+                "targetType=${target?.type}, actualType=${actual?.type}, selected=$selected, " +
+                "availableTypes=${devices.map { it.type }.distinct().sorted()}, voiceCallVolume=$callVolume",
+        )
     }
 
     private fun restoreAudioModeIfIdle() {
         if (captureRunning.get() || playbackRunning.get()) return
         val mode = previousAudioMode
         val speaker = previousSpeakerphoneOn
-        if (mode == null && speaker == null) return
+        val previousDevice = previousCommunicationDevice
+        if (mode == null && speaker == null && previousDevice == null) return
         try {
-            if (speaker != null) audioManager.isSpeakerphoneOn = speaker
+            if (Build.VERSION.SDK_INT >= 31) {
+                val available = try {
+                    audioManager.availableCommunicationDevices
+                } catch (_: Exception) {
+                    emptyList()
+                }
+                val matchingPrevious = previousDevice?.let { previous ->
+                    available.firstOrNull { it.id == previous.id }
+                }
+                val restored = matchingPrevious != null &&
+                    try { audioManager.setCommunicationDevice(matchingPrevious) } catch (_: Exception) { false }
+                if (!restored) {
+                    try { audioManager.clearCommunicationDevice() } catch (_: Exception) {}
+                }
+            } else if (speaker != null) {
+                @Suppress("DEPRECATION")
+                audioManager.isSpeakerphoneOn = speaker
+            }
             if (mode != null) audioManager.mode = mode
         } catch (e: SecurityException) {
-            Log.w(TAG, "audio mode restore rejected: ${e.message}")
+            Log.w(TAG, "audio mode restore rejected: ${e.javaClass.simpleName}")
+        } catch (e: IllegalStateException) {
+            Log.w(TAG, "audio mode restore rejected: ${e.javaClass.simpleName}")
         } finally {
             previousAudioMode = null
             previousSpeakerphoneOn = null
+            previousCommunicationDevice = null
         }
     }
 
-    private fun guessRoute(): AudioRoute =
-        if (audioManager.isWiredHeadsetOn) AudioRoute.WIRED_HEADSET
+    private fun guessRoute(): AudioRoute {
+        if (Build.VERSION.SDK_INT >= 31) {
+            val types = try {
+                audioManager.availableCommunicationDevices.map { it.type }.toSet()
+            } catch (_: Exception) {
+                emptySet()
+            }
+            return routeFromDeviceTypes(types, speakerphoneOn)
+        }
+        @Suppress("DEPRECATION")
+        return if (audioManager.isWiredHeadsetOn) AudioRoute.WIRED_HEADSET
         else if (audioManager.isBluetoothScoOn) AudioRoute.BLUETOOTH_SCO
         else if (speakerphoneOn) AudioRoute.SPEAKER else AudioRoute.EARPIECE
+    }
 
     private fun updateRoute(route: AudioRoute) {
         if (route != currentRoute) {
@@ -531,28 +629,55 @@ class AudioEngine(private val context: Context) : AudioPipeline {
 
     private fun attachEffects(sessionId: Int) {
         releaseEffects()
-        try {
-            if (AcousticEchoCanceler.isAvailable()) {
-                AcousticEchoCanceler.create(sessionId)?.let {
-                    it.enabled = true
-                    effects.add(it)
+        val status = mutableListOf<String>()
+
+        // Isolate each effect: a vendor failure while creating AEC must not
+        // silently prevent NS and AGC from being attempted on this device.
+        fun attach(
+            name: String,
+            available: () -> Boolean,
+            create: () -> android.media.audiofx.AudioEffect?,
+        ) {
+            var candidate: android.media.audiofx.AudioEffect? = null
+            try {
+                if (!available()) {
+                    status += "$name=unavailable"
+                    return
                 }
-            }
-            if (NoiseSuppressor.isAvailable()) {
-                NoiseSuppressor.create(sessionId)?.let {
-                    it.enabled = true
-                    effects.add(it)
+                candidate = create()
+                if (candidate == null) {
+                    status += "$name=create-null"
+                    return
                 }
-            }
-            if (AutomaticGainControl.isAvailable()) {
-                AutomaticGainControl.create(sessionId)?.let {
-                    it.enabled = true
-                    effects.add(it)
+                candidate.enabled = true
+                if (!candidate.enabled) {
+                    status += "$name=not-enabled"
+                    candidate.release()
+                    candidate = null
+                    return
                 }
+                effects.add(candidate)
+                status += "$name=on"
+                candidate = null
+            } catch (e: Exception) {
+                try {
+                    candidate?.enabled = false
+                    candidate?.release()
+                } catch (_: Exception) {}
+                status += "$name=error:${e.javaClass.simpleName}"
             }
-        } catch (e: Exception) {
-            Log.w(TAG, "audio effect attach failed: ${e.message}")
         }
+
+        attach("aec", { AcousticEchoCanceler.isAvailable() }) {
+            AcousticEchoCanceler.create(sessionId)
+        }
+        attach("ns", { NoiseSuppressor.isAvailable() }) {
+            NoiseSuppressor.create(sessionId)
+        }
+        attach("agc", { AutomaticGainControl.isAvailable() }) {
+            AutomaticGainControl.create(sessionId)
+        }
+        AppLog.log(TAG, "capture input effects: ${status.joinToString()}")
     }
 
     private fun releaseEffects() {
@@ -582,4 +707,27 @@ class AudioEngine(private val context: Context) : AudioPipeline {
         private const val MAX_CONSECUTIVE_READ_ERRORS = 10
         private const val READ_ERROR_BACKOFF_MS = 20L
     }
+}
+
+/** Preferred Android communication-device types for a logical audio route. */
+fun deviceTypesForRoute(route: AudioEngine.AudioRoute): List<Int> = when (route) {
+    AudioEngine.AudioRoute.WIRED_HEADSET -> listOf(
+        AudioDeviceInfo.TYPE_WIRED_HEADSET,
+        AudioDeviceInfo.TYPE_WIRED_HEADPHONES,
+    )
+    AudioEngine.AudioRoute.BLUETOOTH_SCO -> listOf(AudioDeviceInfo.TYPE_BLUETOOTH_SCO)
+    AudioEngine.AudioRoute.EARPIECE -> listOf(AudioDeviceInfo.TYPE_BUILTIN_EARPIECE)
+    AudioEngine.AudioRoute.SPEAKER -> listOf(AudioDeviceInfo.TYPE_BUILTIN_SPEAKER)
+}
+
+/** Deterministic API 31+ route classification from currently available devices. */
+fun routeFromDeviceTypes(
+    types: Set<Int>,
+    speakerphoneOn: Boolean,
+): AudioEngine.AudioRoute = when {
+    AudioDeviceInfo.TYPE_WIRED_HEADSET in types ||
+        AudioDeviceInfo.TYPE_WIRED_HEADPHONES in types -> AudioEngine.AudioRoute.WIRED_HEADSET
+    AudioDeviceInfo.TYPE_BLUETOOTH_SCO in types -> AudioEngine.AudioRoute.BLUETOOTH_SCO
+    speakerphoneOn -> AudioEngine.AudioRoute.SPEAKER
+    else -> AudioEngine.AudioRoute.EARPIECE
 }
