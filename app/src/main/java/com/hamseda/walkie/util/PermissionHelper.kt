@@ -35,6 +35,23 @@ object PermissionHelper {
     /** API level where ACCESS_LOCAL_NETWORK enforcement begins. */
     const val LOCAL_NETWORK_SDK = 37
 
+    /**
+     * Runtime permissions required before entering the app for the first time.
+     *
+     * Android groups nearby-device permissions in the system UI where
+     * applicable, but microphone access is a separate user decision. Legacy
+     * Android versions need location for radio discovery; Android 13+ uses
+     * NEARBY_WIFI_DEVICES for Wi-Fi Direct. Android 17+ additionally requires
+     * local-network access for the Wi-Fi Direct TCP socket.
+     */
+    fun missingStartupRuntimePermissions(context: Context): List<String> =
+        (
+            missingBluetoothPermissions(context, forDiscovery = true) +
+                missingBluetoothAdvertisePermission(context) +
+                missingWifiDirectConnectPermissions(context) +
+                missingMicrophonePermission(context)
+            ).distinct()
+
     fun missingWifiDirectPermissions(context: Context): List<String> {
         val needed = when {
             Build.VERSION.SDK_INT >= 33 -> listOf(Manifest.permission.NEARBY_WIFI_DEVICES)
