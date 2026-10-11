@@ -1,4 +1,4 @@
-# HamSeda Wire Protocol v1
+# HamSeda Wire Protocol v2
 
 Transport-agnostic framing over a reliable byte stream (TCP socket for
 Wi-Fi Direct, RFCOMM socket stream for Bluetooth Classic). All integers are
@@ -19,7 +19,7 @@ protocol violation → drop the connection.
 
 ```
  0..1   magic        0x48 0x53 ("HS")
- 2      version      0x01
+ 2      version      0x02
  3      type         see below
  4..11  sessionId    8 bytes (zeros until keys are derived)
  12..15 seq          uint32, per-direction sequence number
@@ -29,7 +29,7 @@ protocol violation → drop the connection.
  29..   payload      payloadLen bytes
 ```
 
-Validation: magic, version == 1, known type, payloadLen bounds, exact
+Validation: magic, version == 2, known type, payloadLen bounds, exact
 `29 + payloadLen` total size. The timestamp is diagnostic only (HS-08) —
 it is NOT validated, because two offline phones may have different manual
 clock settings. Anti-replay relies on AEAD + sequence numbers.
@@ -62,7 +62,7 @@ full queue to bound latency; control frames are never expected to overflow.
 |---|---|---|
 | 0x01 | HELLO | `version(1) || codecPref(1)` — plaintext |
 | 0x02 | KEY_EXCHANGE | `pubLen(2) || X.509 P-256 pubkey || nonce(16)` — plaintext |
-| 0x03 | KEY_CONFIRM | `SHA-256(ordered pubkeys \|\| ordered nonces)` — sealed (control key) |
+| 0x03 | KEY_CONFIRM | `SHA-256(domain || ordered(pubkey, nonce, HELLO) records)` — sealed (control key) |
 | 0x04 | SAS_CONFIRM | empty — sealed (control key) |
 | 0x10 | AUDIO | `nonce(12) \|\| AES-256-GCM(audio)` — sealed (audio key) |
 | 0x20 | FLOOR_REQUEST | empty — sealed (control key) |
@@ -87,7 +87,7 @@ A -> B: KEY_EXCHANGE     (on first HELLO; duplicates ignored)
 B -> A: KEY_EXCHANGE
 A: derive keys; A -> B: KEY_CONFIRM
 B: derive keys; B -> A: KEY_CONFIRM
-A,B: verify transcript; display SAS = HMAC(sasSeed,"HamSeda-v1/sas") mod 1e6
+A,B: verify transcript; display SAS = HMAC(sasSeed,"HamSeda-v2/sas") mod 1e6
 A -> B: SAS_CONFIRM      (after local user confirms match)
 B -> A: SAS_CONFIRM      (after local user confirms match)
 => IN_SESSION (audio enabled)
@@ -95,6 +95,8 @@ B -> A: SAS_CONFIRM      (after local user confirms match)
 
 Codec negotiation: `codec = min(prefA, prefB)` from the two HELLOs
 (Opus=0x00 wins unless both prefer PCM).
+
+Both HELLO payloads are included in a domain-separated KEY_CONFIRM transcript, canonicalized together with the corresponding public key and nonce. A modified codec preference or reassigned nonce changes the transcript and causes the session to fail closed.
 
 ## Floor control (half-duplex)
 
@@ -113,5 +115,4 @@ TRANSPORT_LOST / PEER_TIMEOUT). Session keys are wiped on teardown.
 
 ## Versioning
 
-`version` is checked strictly: any frame with `version != 1` is rejected.
-Future versions must negotiate in HELLO before changing framing.
+`version` is checked strictly: any frame with `version != 2` is rejected. Protocol v1 and v2 are not wire-compatible; update both phones. The v2 KEY_CONFIRM transcript includes both exact HELLO payloads (including codec preferences) and each peer's associated public key and nonce.

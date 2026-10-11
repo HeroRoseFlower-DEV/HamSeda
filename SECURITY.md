@@ -32,15 +32,15 @@ completed the in-app pairing flow, against:
    `ECGenParameterSpec("secp256r1")`, `KeyAgreement("ECDH")`). Keys are
    generated per session and never persisted.
 2. **Key derivation:** HKDF-SHA-256 (RFC 5869, over platform HMAC-SHA-256)
-   with salt = SHA-256(ordered nonces), info = `"HamSeda-v1/session-keys"`,
+   with salt = SHA-256(ordered nonces), info = `"HamSeda-v2/session-keys"`,
    output = 32-byte audio key + 32-byte control key + 8-byte session id +
    32-byte SAS seed. Key separation is structural, not by convention.
 3. **Encryption:** AES-256-GCM (`AES/GCM/NoPadding`, 128-bit tag), random
    96-bit nonce per frame, header+role as AAD.
 4. **Authentication of the exchange:** each side seals
    `SHA-256(ordered pubkeys || ordered nonces)` with the control key. A peer
-   that substituted a key or nonce cannot produce a matching transcript.
-5. **SAS:** 6 digits = `HMAC-SHA256(sasSeed, "HamSeda-v1/sas") mod 1_000_000`,
+   that substituted a key, nonce, protocol version, or codec preference cannot produce a matching transcript. The transcript is canonicalized by public-key role and includes each peer's exact HELLO payload.
+5. **SAS:** 6 digits = `HMAC-SHA256(sasSeed, "HamSeda-v2/sas") mod 1_000_000`,
    displayed on both phones. The SAS is *detection*, not key material: users
    compare it out-of-band and each confirm. A six-digit code carries ~20 bits;
    it is safe here because it authenticates an already-strong ECDH exchange
