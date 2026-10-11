@@ -278,7 +278,6 @@ class SessionHandshakeTest {
         rig.await("replay rejected") { rig.b.authFailures.value > failuresBefore }
         // ...and the session is unaffected.
         assertEquals(SessionManager.Phase.IN_SESSION, rig.b.phase.value)
-        opus.close()
         rig.close()
     }
 }
