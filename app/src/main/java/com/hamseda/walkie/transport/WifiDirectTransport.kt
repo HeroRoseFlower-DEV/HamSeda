@@ -697,6 +697,12 @@ class WifiDirectTransport(private val context: Context) : Transport {
             ) {
                 _error.value = TransportError.ConnectionLost(reason)
             }
+            // A lost/failed group ends the active listen/connect attempt. Bump
+            // the generation and clear the listen intent before releasing the
+            // lock so delayed framework callbacks cannot resurrect an old
+            // socket after SessionManager has started teardown.
+            operationGeneration.incrementAndGet()
+            listeningRequested = false
             closeSocketLocked()
             _state.value = TransportState.IDLE
         }
