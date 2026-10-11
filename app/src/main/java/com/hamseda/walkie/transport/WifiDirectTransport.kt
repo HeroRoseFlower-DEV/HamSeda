@@ -103,10 +103,6 @@ class WifiDirectTransport(private val context: Context) : Transport {
     private val discoveryGeneration = AtomicLong(0L)
     private val peerSnapshotGeneration = AtomicLong(0L)
     @Volatile private var listeningRequested = false
-    // True from the moment discoverPeers is submitted until Stop or an
-    // outgoing connect begins. Framework group callbacks can arrive before
-    // discoverPeers.onSuccess(), so TransportState alone is not sufficient.
-    @Volatile private var discoveryRequested = false
 
     private fun ensureInit(force: Boolean = false): Boolean {
         if (!force && manager != null && channel != null) return true
@@ -156,7 +152,6 @@ class WifiDirectTransport(private val context: Context) : Transport {
     @SuppressLint("MissingPermission")
     override suspend fun startDiscovery() {
         val scanAttempt = discoveryGeneration.incrementAndGet()
-        discoveryRequested = false
         _peers.value = emptyList()
         _error.value = null
 
@@ -221,8 +216,6 @@ class WifiDirectTransport(private val context: Context) : Transport {
             _error.value = TransportError.Unsupported("wifi_direct_init_failed")
             return
         }
-
-        discoveryRequested = true
         try {
             mgr.discoverPeers(ch, object : WifiP2pManager.ActionListener {
                 override fun onSuccess() {
@@ -238,7 +231,6 @@ class WifiDirectTransport(private val context: Context) : Transport {
 
                 override fun onFailure(reason: Int) {
                     if (discoveryGeneration.get() != scanAttempt) return
-                    discoveryRequested = false
                     val name = reasonName(reason)
                     AppLog.log(TAG, "p2p discovery failed: $name (code=$reason)")
                     _error.value = TransportError.ConnectFailed(
@@ -249,7 +241,6 @@ class WifiDirectTransport(private val context: Context) : Transport {
             })
         } catch (e: SecurityException) {
             if (discoveryGeneration.get() != scanAttempt) return
-            discoveryRequested = false
             AppLog.log(TAG, "p2p discovery denied by Android: ${e.message}")
             val stillMissing = PermissionHelper.missingWifiDirectPermissions(context)
             if (stillMissing.isNotEmpty()) {
@@ -263,7 +254,6 @@ class WifiDirectTransport(private val context: Context) : Transport {
             }
         } catch (e: IllegalStateException) {
             if (discoveryGeneration.get() != scanAttempt) return
-            discoveryRequested = false
             AppLog.log(TAG, "p2p discovery rejected by framework: ${e.message}")
             _error.value = TransportError.ConnectFailed("Wi-Fi Direct discovery could not be started")
             _state.value = TransportState.FAILED
@@ -272,7 +262,6 @@ class WifiDirectTransport(private val context: Context) : Transport {
 
     override suspend fun stopDiscovery() {
         discoveryGeneration.incrementAndGet()
-        discoveryRequested = false
         try {
             manager?.stopPeerDiscovery(channel, null)
         } catch (_: Exception) {}
@@ -307,7 +296,6 @@ class WifiDirectTransport(private val context: Context) : Transport {
                 _state.value == TransportState.CONNECTING
             ) return
             discoveryGeneration.incrementAndGet()
-            discoveryRequested = false
             listeningRequested = false
             val attempt = operationGeneration.incrementAndGet()
             if (!ensureInit() || !p2pEnabled) {
@@ -466,7 +454,6 @@ class WifiDirectTransport(private val context: Context) : Transport {
             return
         }
         val attempt = operationGeneration.incrementAndGet()
-        discoveryRequested = false
         listeningRequested = true
         registerReceiver()
 
@@ -549,13 +536,12 @@ class WifiDirectTransport(private val context: Context) : Transport {
             _state.value == TransportState.UNAVAILABLE
         ) {
             _state.value = TransportState.IDLE
-            discoveryRequested = false
         }
         _error.value = null
         AppLog.log(
             TAG,
             "prepared Wi-Fi Direct connect without stopPeerDiscovery race " +
-                "(state=${_state.value}, discoveryRequested=$discoveryRequested)",
+                "(state=${_state.value})
         )
     }
 
@@ -571,7 +557,6 @@ class WifiDirectTransport(private val context: Context) : Transport {
             return
         }
         discoveryGeneration.incrementAndGet()
-        discoveryRequested = false
         if (_state.value == TransportState.DISCOVERING ||
             _state.value == TransportState.FAILED ||
             _state.value == TransportState.UNAVAILABLE
@@ -622,7 +607,7 @@ class WifiDirectTransport(private val context: Context) : Transport {
         if (expectedGeneration != operationGeneration.get()) return
         // The receiver exists from app startup for availability diagnostics.
         // Do not attach to unrelated P2P groups without an explicit user action.
-        if (!listeningRequested && !discoveryRequested &&
+        if (!listeningRequested &&
             _state.value != TransportState.CONNECTING &&
             _state.value != TransportState.AUTHENTICATING &&
             _state.value != TransportState.CONNECTED
@@ -647,7 +632,7 @@ class WifiDirectTransport(private val context: Context) : Transport {
         scope.launch {
             mutex.withLock {
                 if (expectedGeneration != operationGeneration.get()) return@withLock
-                if (!listeningRequested && !discoveryRequested &&
+                if (!listeningRequested &&
                     _state.value != TransportState.CONNECTING &&
                     _state.value != TransportState.AUTHENTICATING &&
                     _state.value != TransportState.CONNECTED
@@ -677,7 +662,6 @@ class WifiDirectTransport(private val context: Context) : Transport {
                 // The group formed from a user-selected incoming peer or
                 // outgoing connect; neither discovery nor listen is needed
                 // while this socket is being established.
-                discoveryRequested = false
                 listeningRequested = false
                 socketJob?.cancel()
                 socketJob = scope.launch {
@@ -882,7 +866,6 @@ class WifiDirectTransport(private val context: Context) : Transport {
             // lock so delayed framework callbacks cannot resurrect an old
             // socket after SessionManager has started teardown.
             operationGeneration.incrementAndGet()
-            discoveryRequested = false
             listeningRequested = false
             closeSocketLocked()
             _state.value = TransportState.IDLE
@@ -916,7 +899,6 @@ class WifiDirectTransport(private val context: Context) : Transport {
         // setup. Those callbacks must not publish CONNECTED after user Stop.
         operationGeneration.incrementAndGet()
         discoveryGeneration.incrementAndGet()
-        discoveryRequested = false
         listeningRequested = false
         mutex.withLock {
             closeSocketLocked()
