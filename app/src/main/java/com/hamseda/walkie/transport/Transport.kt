@@ -93,6 +93,22 @@ interface Transport {
     suspend fun stopDiscovery()
 
     /**
+     * Prepare a selected peer connection. Wi-Fi Direct can stop peer discovery
+     * itself when connect() begins; other transports may need an explicit stop.
+     */
+    suspend fun prepareForConnect() {
+        stopDiscovery()
+    }
+
+    /**
+     * Prepare this device to wait for an incoming peer. Wi-Fi Direct's modern
+     * listen mode must not race an asynchronous stopPeerDiscovery() request.
+     */
+    suspend fun prepareForListen() {
+        stopDiscovery()
+    }
+
+    /**
      * Connects to [peer] and establishes the framed socket. On success the
      * state becomes CONNECTED (or AUTHENTICATING while the session layer
      * runs its handshake). Never blocks the caller indefinitely — bounded
