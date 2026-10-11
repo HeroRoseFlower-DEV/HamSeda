@@ -33,6 +33,7 @@ import com.hamseda.walkie.ui.screens.PairingScreen
 import com.hamseda.walkie.ui.screens.PrivacyScreen
 import com.hamseda.walkie.ui.screens.SettingsScreen
 import com.hamseda.walkie.ui.theme.HamSedaTheme
+import com.hamseda.walkie.ui.screens.StartupPermissionGate
 import com.hamseda.walkie.ui.vm.VmDeps
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -101,24 +102,26 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background,
                 ) {
-                    val manager = managerState.value
-                    if (manager == null) {
-                        Box(
-                            modifier = Modifier.fillMaxSize(),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            CircularProgressIndicator()
+                    StartupPermissionGate {
+                        val manager = managerState.value
+                        if (manager == null) {
+                            Box(
+                                modifier = Modifier.fillMaxSize(),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                CircularProgressIndicator()
+                            }
+                        } else {
+                            val deps = remember(manager) {
+                                VmDeps(
+                                    appContext = applicationContext,
+                                    manager = manager,
+                                    transports = app.transportManager,
+                                    settings = app.settings,
+                                )
+                            }
+                            HamSedaRoot(deps = deps, onLanguageChanged = { recreate() })
                         }
-                    } else {
-                        val deps = remember(manager) {
-                            VmDeps(
-                                appContext = applicationContext,
-                                manager = manager,
-                                transports = app.transportManager,
-                                settings = app.settings,
-                            )
-                        }
-                        HamSedaRoot(deps = deps, onLanguageChanged = { recreate() })
                     }
                 }
             }
