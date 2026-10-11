@@ -80,6 +80,10 @@ class BluetoothTransport(private val context: Context) : Transport {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val mutex = Mutex()
 
+    // Serializes incoming-frame publication with socket replacement. A reader
+    // from an old RFCOMM socket must never publish frames into a later session.
+    private val readerGate = Any()
+
     // Serializes scan starts with Stop/disconnect so a delayed retry cannot
     // resurrect discovery after the user has explicitly stopped it.
     private val discoveryLock = Any()
@@ -729,44 +733,58 @@ class BluetoothTransport(private val context: Context) : Transport {
             closeSocketLocked()
             btSocket = socket
             AppLog.log(TAG, "RFCOMM socket ready")
-            framed = FramedSocket.fromStreams(socket.inputStream, socket.outputStream) {
-                scope.launch { handleLost("peer closed the connection") }
+            val sourceRef = AtomicReference<FramedSocket?>()
+            val newFramed = FramedSocket.fromStreams(socket.inputStream, socket.outputStream) {
+                sourceRef.get()?.let { source ->
+                    scope.launch { handleLost("peer closed the connection", source) }
+                }
             }
+            sourceRef.set(newFramed)
+            synchronized(readerGate) { framed = newFramed }
             _state.value = TransportState.CONNECTED
             _error.value = null
-            startReaderLocked()
+            startReaderLocked(newFramed)
         }
     }
 
-    private fun startReaderLocked() {
+    private fun startReaderLocked(source: FramedSocket) {
         readerJob?.cancel()
-        val f = framed ?: return
         readerJob = scope.launch {
-            while (_state.value == TransportState.CONNECTED) {
-                // HS-04: readFrame() throws FrameException on protocol
-                // violation — route it through the common disconnect path
-                // instead of stranding the transport in CONNECTED.
+            while (isCurrentSocketConnected(source)) {
+                // HS-04: malformed frames and I/O failures use the common
+                // cleanup path. Always carry the source socket identity so a
+                // cancelled old reader cannot tear down a newer connection.
                 val r = try {
-                    f.readFrame()
+                    source.readFrame()
                 } catch (e: FrameException) {
                     AppLog.log(TAG, "framing error: ${e.message}")
-                    handleLost("framing error: ${e.message}")
+                    handleLost("framing error: ${e.message}", source)
                     return@launch
                 } catch (e: CancellationException) {
                     throw e // normal shutdown; not an error
                 } catch (e: Exception) {
                     AppLog.log(TAG, "reader failed: ${e.javaClass.simpleName}")
-                    handleLost("read error: ${e.message}")
+                    handleLost("read error: ${e.message}", source)
                     return@launch
                 }
                 when (r) {
-                    is FramedSocket.ReadResult.Frame -> _incomingFrames.emit(r.frame)
+                    is FramedSocket.ReadResult.Frame -> {
+                        when (publishIncomingFrame(source, r.frame)) {
+                            0 -> return@launch // socket was replaced or closed
+                            1 -> Unit
+                            else -> {
+                                AppLog.log(TAG, "incoming frame queue overflow; closing RFCOMM connection")
+                                handleLost("incoming frame queue overflow", source)
+                                return@launch
+                            }
+                        }
+                    }
                     is FramedSocket.ReadResult.Closed -> {
-                        handleLost("peer closed the connection")
+                        handleLost("peer closed the connection", source)
                         return@launch
                     }
                     is FramedSocket.ReadResult.Error -> {
-                        handleLost(r.cause.message ?: "read error")
+                        handleLost(r.cause.message ?: "read error", source)
                         return@launch
                     }
                 }
@@ -774,12 +792,38 @@ class BluetoothTransport(private val context: Context) : Transport {
         }
     }
 
-    private suspend fun handleLost(reason: String) {
-        mutex.withLock {
-            AppLog.log(TAG, "connection lost: $reason (was ${_state.value})")
-            if (_state.value == TransportState.CONNECTED) {
-                _error.value = TransportError.ConnectionLost(reason)
+    /**
+     * Returns 0 for a stale socket, 1 for a published frame, and 2 if the
+     * bounded SharedFlow buffer is saturated. tryEmit inside the gate makes
+     * the current-socket check and publication atomic with respect to cleanup.
+     */
+    private fun publishIncomingFrame(source: FramedSocket, frame: ByteArray): Int =
+        synchronized(readerGate) {
+            if (framed !== source || _state.value != TransportState.CONNECTED) {
+                0
+            } else if (_incomingFrames.tryEmit(frame)) {
+                1
+            } else {
+                2
             }
+        }
+
+    private fun isCurrentSocketConnected(source: FramedSocket): Boolean =
+        synchronized(readerGate) {
+            framed === source && _state.value == TransportState.CONNECTED
+        }
+
+    private suspend fun handleLost(reason: String, source: FramedSocket) {
+        mutex.withLock {
+            if (framed !== source || _state.value != TransportState.CONNECTED) {
+                AppLog.log(
+                    TAG,
+                    "ignoring stale RFCOMM close/error (reason=$reason, state=${_state.value})",
+                )
+                return@withLock
+            }
+            AppLog.log(TAG, "connection lost: $reason (was ${_state.value})")
+            _error.value = TransportError.ConnectionLost(reason)
             closeSocketLocked()
             _state.value = TransportState.IDLE
         }
@@ -797,8 +841,13 @@ class BluetoothTransport(private val context: Context) : Transport {
     }
 
     private fun closeSocketLocked() {
+        // Invalidate this reader before closing the stream. Closing an old
+        // RFCOMM socket can unblock its read concurrently with a new connect.
+        val oldFramed = synchronized(readerGate) {
+            framed.also { framed = null }
+        }
         readerJob?.cancel(); readerJob = null
-        framed?.close(); framed = null
+        oldFramed?.close()
         try { btSocket?.close() } catch (_: IOException) {}
         btSocket = null
     }
@@ -815,7 +864,7 @@ class BluetoothTransport(private val context: Context) : Transport {
                 f.writeFrame(frameBytes)
             }
         } catch (e: IOException) {
-            scope.launch { handleLost(e.message ?: "write error") }
+            scope.launch { handleLost(e.message ?: "write error", f) }
             throw e
         }
     }

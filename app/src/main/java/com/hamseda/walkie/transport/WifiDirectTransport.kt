@@ -405,19 +405,43 @@ class WifiDirectTransport(private val context: Context) : Transport {
             connectWatchdog?.cancel()
             connectWatchdog = scope.launch {
                 delay(Protocol.P2P_INVITE_TIMEOUT_MS)
+
+                // Some OEM P2P stacks miss/delay the final connection-change
+                // broadcast. Re-query the authoritative state before declaring
+                // that the peer did not accept the invitation.
+                val latestInfo = requestConnectionInfoSync()
                 mutex.withLock {
-                    if (operationGeneration.get() == attempt &&
-                        _state.value == TransportState.CONNECTING
-                    ) {
-                        AppLog.log(TAG, "p2p invitation timed out (peer did not accept)")
-                        try {
-                            manager?.cancelConnect(channel, null)
-                        } catch (_: Exception) {}
-                        _error.value = TransportError.ConnectFailed(
-                            "peer did not accept the wi-fi direct invitation in time",
+                    if (operationGeneration.get() != attempt ||
+                        _state.value != TransportState.CONNECTING
+                    ) return@withLock
+
+                    if (latestInfo?.groupFormed == true) {
+                        AppLog.log(
+                            TAG,
+                            "invitation watchdog recovered an already-formed P2P group; adopting it",
                         )
-                        _state.value = TransportState.FAILED
+                        onConnectionInfo(latestInfo, attempt)
+                        return@withLock
                     }
+
+                    AppLog.log(
+                        TAG,
+                        "p2p invitation timed out with no formed group " +
+                            "(groupFormed=${latestInfo?.groupFormed}, peer may need to accept on the other device)",
+                    )
+                    // Invalidate delayed framework callbacks before publishing
+                    // FAILED, so a stale response cannot resurrect this attempt.
+                    operationGeneration.incrementAndGet()
+                    listeningRequested = false
+                    p2pDiscoveryActive = false
+                    p2pListenModeActive = false
+                    try {
+                        manager?.cancelConnect(channel, null)
+                    } catch (_: Exception) {}
+                    _error.value = TransportError.ConnectFailed(
+                        "Wi-Fi Direct group was not formed before timeout; verify the other device is listening and accept its system invitation",
+                    )
+                    _state.value = TransportState.FAILED
                 }
             }
         }
@@ -455,6 +479,11 @@ class WifiDirectTransport(private val context: Context) : Transport {
             return builder.build().apply {
                 @Suppress("DEPRECATION")
                 wps.setup = WpsInfo.PBC
+                // Keep modern and legacy configurations consistent. Prefer this
+                // device as group owner where supported so its TCP listener can
+                // be brought up immediately after group formation.
+                @Suppress("DEPRECATION")
+                groupOwnerIntent = 7
             }
         }
         @Suppress("DEPRECATION")
