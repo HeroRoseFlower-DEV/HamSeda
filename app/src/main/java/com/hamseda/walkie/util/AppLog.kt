@@ -26,8 +26,13 @@ object AppLog {
     private val MAC_RE = Regex("(?i)(?<![0-9a-f])(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}(?![0-9a-f])")
     /** Redacts local Wi-Fi Direct addresses that can appear in socket errors. */
     private val IPV4_RE = Regex("""\b(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?:\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}\b""")
-    /** Includes compressed/expanded IPv6 literals and optional interface zones. */
-    private val IPV6_RE = Regex("""(?i)(?<![0-9a-f:])(?:(?:[0-9a-f]{1,4}:){7}[0-9a-f]{1,4}|(?:[0-9a-f]{1,4}:){0,7}:(?:[0-9a-f]{1,4}:?){0,7}|::(?:[0-9a-f]{1,4}:?){0,7})(?:%[a-z0-9_.-]+)?(?![0-9a-f:])""")
+    /**
+     * Candidate IPv6 tokens must contain at least two colons; validating the
+     * candidate below prevents ordinary punctuation (for example the colon
+     * in "IOException: read failed") and time-like values from being redacted.
+     */
+    private val IPV6_CANDIDATE_RE =
+        Regex("""(?i)(?<![0-9a-z:.])(?:[0-9a-f]{0,4}:){2,7}[0-9a-f]{0,4}(?:%[a-z0-9_.-]+)?(?![0-9a-z:.])""")
     /** Prevents attacker-controlled newlines/control bytes from forging log entries. */
     private val CONTROL_RE = Regex("[\\r\\n\\u0000-\\u001F\\u007F]+")
 
@@ -45,7 +50,15 @@ object AppLog {
         // Redact identifiers before they hit the in-memory buffer or dump/share.
         val withoutMacs = MAC_RE.replace(oneLine, "[MAC]")
         val withoutIpv4 = IPV4_RE.replace(withoutMacs, "[IP]")
-        val redacted = IPV6_RE.replace(withoutIpv4, "[IPv6]")
+        val redacted = IPV6_CANDIDATE_RE.replace(withoutIpv4) { match ->
+            val literal = match.value.substringBefore('%')
+            val isIpv6 = try {
+                java.net.InetAddress.getByName(literal) is java.net.Inet6Address
+            } catch (_: Exception) {
+                false
+            }
+            if (isIpv6) "[IPv6]" else match.value
+        }
         val safeMessage = if (redacted.length > MAX_MESSAGE_CHARS) {
             redacted.take(MAX_MESSAGE_CHARS - "[truncated]".length) + "[truncated]"
         } else redacted
