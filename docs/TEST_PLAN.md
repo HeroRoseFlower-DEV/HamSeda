@@ -27,13 +27,14 @@ procedure and its device variations).
 
 ### 2.1 Wi-Fi Direct voice (primary path)
 1. Choose **Wi-Fi Direct** explicitly on both phones for this test; avoid Automatic initially because each phone can select a different transport.
-2. Phone B: Discovery → tap "Start waiting" and keep the screen open.
-3. Phone A: Discovery → tap "Scan"; verify B appears, then tap "اتصال امن" on B. Only A initiates the connection.
-4. Both show the 6-digit SAS. Read the codes aloud; confirm they match on both → session starts.
-5. A holds PTT for 10 s and speaks; B hears. Release is immediate (< 300 ms
+2. Phone B: Discovery → select Wi-Fi Direct → tap "Start waiting" and keep the screen open. On Android 13+, the app must log that Wi-Fi Direct incoming-listen mode started.
+3. Phone A: Discovery → select Wi-Fi Direct → tap "Scan"; verify B appears, then tap "اتصال امن" on B's peer card. Only A initiates the connection.
+4. Do not use two independent outgoing attempts. One phone must remain in Wait for connection so it has an active SessionManager listener ready to accept the socket and secure handshake.
+5. Both show the 6-digit SAS. Read the codes aloud; confirm they match on both → session starts.
+6. A holds PTT for 10 s and speaks; B hears. Release is immediate (< 300 ms
    perceived). B then holds PTT; A hears.
-6. While A transmits, B presses PTT → B sees "peer busy", A keeps the floor.
-7. A walks out of range / disables Wi-Fi → both show "connection lost",
+7. While A transmits, B presses PTT → B sees "peer busy", A keeps the floor.
+8. A walks out of range / disables Wi-Fi → both show "connection lost",
    session ends, keys wiped (no crash, no stuck mic icon).
 
 ### 2.2 SAS mismatch (MITM simulation)
