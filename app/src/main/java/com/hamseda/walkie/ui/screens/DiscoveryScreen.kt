@@ -114,12 +114,15 @@ fun DiscoveryScreen(
         if (result.resultCode == android.app.Activity.RESULT_OK) {
             action?.invoke()
         } else {
-            // Declining visibility leaves the app in listen-not-ready state.
+            // The RFCOMM listener is already active at this point. If the user
+            // declines visibility, end the pending wait rather than leaving a
+            // hidden server running with a misleading "waiting" state.
             android.widget.Toast.makeText(
                 context,
                 context.getString(R.string.discoverable_declined),
                 android.widget.Toast.LENGTH_LONG,
             ).show()
+            vm.cancelSession()
         }
     }
 
@@ -173,8 +176,8 @@ fun DiscoveryScreen(
     fun doListen() {
         val missing = missingForSessionStart()
         if (missing.isNotEmpty()) {
-            // Re-enter this whole flow after permission grant so Bluetooth
-            // discoverability is still requested before opening the listener.
+            // Re-enter the full role setup after permission grant; Bluetooth
+            // discoverability is requested once the listener is ready.
             pendingAction = { doListen() }
             permLauncher.launch(missing.toTypedArray())
             return
@@ -190,7 +193,12 @@ fun DiscoveryScreen(
                 permLauncher.launch(missingAdvertise.toTypedArray())
                 return
             }
-            requestDiscoverable { vm.listenForIncoming() }
+            // Open the RFCOMM server first, then expose the device. If
+            // discoverability is enabled first, a peer can see the phone and
+            // tap Connect before the server socket has been created.
+            vm.listenForIncoming {
+                requestDiscoverable { /* listener is already waiting */ }
+            }
         } else {
             vm.listenForIncoming()
         }

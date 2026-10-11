@@ -337,18 +337,39 @@ class SessionManager(
         }
     }
 
-    /** Incoming session: the transport is already listening for a peer. */
-    fun acceptIncoming(t: Transport, codecPref: Byte = CodecId.OPUS) {
+    /**
+     * Starts an incoming listener. [onListeningReady] is invoked after the
+     * transport has actually created its listening endpoint, not merely after
+     * the UI tap. Bluetooth uses this to request system discoverability only
+     * after its RFCOMM server socket is ready to accept connections.
+     */
+    fun acceptIncoming(
+        t: Transport,
+        codecPref: Byte = CodecId.OPUS,
+        onListeningReady: (() -> Unit)? = null,
+    ) {
         if (!claimSessionStart("acceptIncoming")) return
         AppLog.log(TAG, "listening for incoming via ${t.type}")
         myCodecPref = codecPref
         attachTransport(t, "")
+        val listenerGeneration = sessionGeneration
         // The transport may already report CONNECTED (peer connected first);
         // the state-flow collector below only fires on *changes*.
         if (t.state.value == TransportState.CONNECTED) beginHandshake()
         scope.launch {
             try {
                 t.listen()
+                // A canceled/failed old listener must not launch a late
+                // discoverability prompt over a newer or already-ended session.
+                if (onListeningReady != null &&
+                    sessionGeneration == listenerGeneration &&
+                    transport === t &&
+                    _phase.value != Phase.IDLE &&
+                    _phase.value != Phase.ENDED &&
+                    t.state.value == TransportState.IDLE
+                ) {
+                    onListeningReady()
+                }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {

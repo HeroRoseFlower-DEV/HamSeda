@@ -14,6 +14,7 @@ import com.hamseda.walkie.transport.TransportManager
 import com.hamseda.walkie.transport.TransportPreference
 import com.hamseda.walkie.transport.TransportState
 import com.hamseda.walkie.transport.TransportType
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -152,7 +153,7 @@ class DiscoveryViewModel(private val deps: VmDeps) : ViewModel() {
     }
 
     /** Listen for an incoming connection on the active transport. */
-    fun listenForIncoming() {
+    fun listenForIncoming(onListeningReady: (() -> Unit)? = null) {
         viewModelScope.launch {
             // Do not present a new listening attempt as active if the prior
             // session failed to finish teardown and the manager is not IDLE.
@@ -160,13 +161,18 @@ class DiscoveryViewModel(private val deps: VmDeps) : ViewModel() {
 
             val transport = activeTransport()
             // Scanning and listening have distinct UI states. Stop any scan
-            // left running from the previous role before starting the server;
-            // otherwise DISCOVERING can mask the listening state and leave
-            // the Search/Stop-scan controls active during an incoming wait.
+            // left running from the previous role before starting the server.
             transport.stopDiscovery()
             VoiceService.start(deps.appContext)
             val codec = deps.settings.codecPref()
-            deps.manager.acceptIncoming(transport, codec)
+            deps.manager.acceptIncoming(transport, codec) {
+                onListeningReady?.let { ready ->
+                    // Activity-result launchers must be invoked on the UI thread.
+                    viewModelScope.launch(Dispatchers.Main.immediate) {
+                        ready()
+                    }
+                }
+            }
         }
     }
 
