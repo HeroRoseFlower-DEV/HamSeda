@@ -4,6 +4,7 @@ import android.util.Log
 import com.hamseda.walkie.audio.AudioCodec
 import com.hamseda.walkie.audio.AudioPipeline
 import com.hamseda.walkie.audio.JitterBuffer
+import com.hamseda.walkie.audio.OpusCodec
 import com.hamseda.walkie.crypto.ReplayProtection
 import com.hamseda.walkie.crypto.SessionCrypto
 import com.hamseda.walkie.crypto.SessionKeys
@@ -1152,6 +1153,8 @@ class SessionManager(
                 plaintext.isEmpty() -> "empty audio payload"
                 activeCodecId == CodecId.PCM16 && plaintext.size != AudioCodec.FRAME_BYTES_PCM ->
                     "invalid PCM frame length"
+                activeCodecId == CodecId.OPUS && plaintext.size > OpusCodec.MAX_PACKET_BYTES ->
+                    "Opus packet exceeds the local encoder's maximum"
                 else -> null
             }
             MessageType.FLOOR_REQUEST, MessageType.FLOOR_RELEASE ->

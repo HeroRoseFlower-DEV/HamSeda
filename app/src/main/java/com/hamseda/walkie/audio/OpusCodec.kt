@@ -51,6 +51,9 @@ class OpusCodec(
 
     override fun decode(data: ByteArray): ShortArray {
         require(data.isNotEmpty()) { "empty opus packet" }
+        require(data.size <= MAX_PACKET_BYTES) {
+            "Opus packet exceeds maximum size $MAX_PACKET_BYTES"
+        }
         synchronized(lock) {
             val dec = decoder ?: throw IllegalStateException("codec closed")
             val out = ShortArray(frameSamples)

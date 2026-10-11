@@ -73,4 +73,14 @@ class AppLogTest {
         assertTrue(message.length <= 1024)
         assertTrue(message.endsWith("[truncated]"))
     }
+
+    @Test
+    fun `diagnostics bound long input before retaining it`() {
+        AppLog.clear()
+        AppLog.log("test", "aa:bb:cc:dd:ee:ff " + "z".repeat(100_000))
+        val message = AppLog.entries.value.single().message
+        assertTrue(message.length <= 1024)
+        assertTrue(message.startsWith("[MAC]"))
+        assertTrue(message.endsWith("[truncated]"))
+    }
 }

@@ -107,6 +107,14 @@ class CodecTest {
     }
 
     @Test
+    fun `opus rejects packets larger than the local protocol limit`() {
+        val codec = OpusCodec()
+        assertThrows(IllegalArgumentException::class.java) {
+            codec.decode(ByteArray(OpusCodec.MAX_PACKET_BYTES + 1))
+        }
+    }
+
+    @Test
     fun `opus rejects short pcm`() {
         val codec = OpusCodec()
         assertThrows(IllegalArgumentException::class.java) { codec.encode(ShortArray(100)) }

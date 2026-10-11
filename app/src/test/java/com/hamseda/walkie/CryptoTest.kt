@@ -66,6 +66,22 @@ class CryptoTest {
     }
 
     @Test
+    fun `hkdf matches RFC 5869 test case 1`() {
+        val ikm = ByteArray(22) { 0x0b }
+        val salt = hexBytes("000102030405060708090a0b0c")
+        val info = hexBytes("f0f1f2f3f4f5f6f7f8f9")
+        val expected = hexBytes(
+            "3cb25f25faacd57a90434f64d0362f2a" +
+                "2d2d0a90cf1a5a4c5db02d56ecc4c5bf" +
+                "34007208d5b887185865",
+        )
+        assertArrayEquals(expected, Hkdf.derive(ikm, salt, info, 42))
+    }
+
+    private fun hexBytes(value: String): ByteArray =
+        value.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+
+    @Test
     fun `aes-gcm seal open roundtrip`() {
         val (a, _, _) = ecdhPair()
         val aad = "header".toByteArray()
@@ -181,6 +197,16 @@ class CryptoTest {
         }
         assertThrows(IllegalArgumentException::class.java) {
             SessionCrypto.decodePublicKey(ByteArray(300))
+        }
+    }
+
+    @Test
+    fun `public keys on a different EC curve are rejected`() {
+        val otherCurve = java.security.KeyPairGenerator.getInstance("EC").apply {
+            initialize(java.security.spec.ECGenParameterSpec("secp521r1"))
+        }.generateKeyPair()
+        assertThrows(java.security.InvalidKeyException::class.java) {
+            SessionCrypto.decodePublicKey(otherCurve.public.encoded)
         }
     }
 

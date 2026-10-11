@@ -81,6 +81,15 @@ is no TLS network to pin to — by design).
 - The `INTERNET` manifest permission exists solely because Android requires
   it to open local TCP sockets; the app never opens a socket to a public IP.
 
+## Additional hardening (2026-10-12)
+
+- Peer ECDH public keys are rejected unless their parameters match secp256r1/P-256; provider-supported alternate curves are not silently accepted.
+- HKDF clears its PRK, per-round intermediate blocks, temporary input buffer, and any substitute salt it allocates. Session key derivation clears its combined output and salt after extracting the individual keys, and the temporary SAS HMAC digest is cleared. This is best-effort JVM memory hygiene, not a guarantee against crypto-provider or garbage-collector copies.
+- Opus packets are bounded to the local encoder's maximum at both the authenticated session-validation and decoder boundaries.
+- The SAS screen blocks screenshots/recent-task snapshots while visible and disables confirmation until a code has actually been generated.
+- Diagnostic text is capped before normalization and address-redaction regexes run.
+- The Gradle wrapper JAR and distribution ZIP are checksum-verified, and Dependabot is configured for Gradle/GitHub Actions update monitoring.
+
 ## Reporting
 
 This is a personal project without a bug-bounty process. If you find a

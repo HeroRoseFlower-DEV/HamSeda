@@ -55,7 +55,11 @@ jobs:
             || sdkmanager "platforms;android-37.0" "build-tools;36.0.0" "platform-tools"
 
       - name: Verify Gradle wrapper
-        run: ./gradlew --version
+        # Verify the wrapper JAR before executing it; checksum published by Gradle.
+        run: |
+          set -e
+          echo "ad16bca46cb71bb5887c546860d93992aeee35c1fdaf4a242b0a612375d937e0  gradle/wrapper/gradle-wrapper.jar" | sha256sum --check --strict
+          ./gradlew --version
 
       - name: Run unit tests
         run: ./gradlew :app:testDebugUnitTest --no-daemon --stacktrace

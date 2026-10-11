@@ -15,21 +15,37 @@ object Hkdf {
         require(length > 0 && length <= 255 * HASH_LEN) {
             "invalid HKDF output length: $length"
         }
-        val realSalt = if (salt.isEmpty()) ByteArray(HASH_LEN) else salt
+        val generatedSalt = salt.isEmpty()
+        val realSalt = if (generatedSalt) ByteArray(HASH_LEN) else salt
         val prk = hmac(realSalt, ikm)
         val okm = ByteArray(length)
         var previous = ByteArray(0)
-        var pos = 0
-        var counter = 1
-        while (pos < length) {
-            val input = previous + info + counter.toByte()
-            previous = hmac(prk, input)
-            val take = minOf(previous.size, length - pos)
-            previous.copyInto(okm, pos, 0, take)
-            pos += take
-            counter++
+        try {
+            var pos = 0
+            var counter = 1
+            while (pos < length) {
+                val input = previous + info + counter.toByte()
+                val next = try {
+                    hmac(prk, input)
+                } finally {
+                    input.fill(0)
+                }
+                previous.fill(0)
+                previous = next
+                val take = minOf(previous.size, length - pos)
+                previous.copyInto(okm, pos, 0, take)
+                pos += take
+                counter++
+            }
+            return okm
+        } catch (e: Exception) {
+            okm.fill(0)
+            throw e
+        } finally {
+            prk.fill(0)
+            previous.fill(0)
+            if (generatedSalt) realSalt.fill(0)
         }
-        return okm
     }
 
     private fun hmac(key: ByteArray, data: ByteArray): ByteArray {

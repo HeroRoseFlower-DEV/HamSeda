@@ -1,11 +1,15 @@
 package com.hamseda.walkie.crypto
 
+import java.security.AlgorithmParameters
+import java.security.InvalidKeyException
 import java.security.KeyFactory
 import java.security.KeyPair
 import java.security.KeyPairGenerator
 import java.security.PublicKey
 import java.security.SecureRandom
+import java.security.interfaces.ECPublicKey
 import java.security.spec.ECGenParameterSpec
+import java.security.spec.ECParameterSpec
 import java.security.spec.X509EncodedKeySpec
 import javax.crypto.Cipher
 import javax.crypto.KeyAgreement
@@ -55,6 +59,11 @@ object SessionCrypto {
     fun sealedLength(plaintextLen: Int): Int = NONCE_LEN + plaintextLen + GCM_TAG_BITS / 8
 
     private val random = SecureRandom()
+    private val p256Params: ECParameterSpec by lazy {
+        AlgorithmParameters.getInstance("EC").apply {
+            init(ECGenParameterSpec(EC_CURVE))
+        }.getParameterSpec(ECParameterSpec::class.java)
+    }
 
     // ------------------------------------------------------------------ keys
 
@@ -70,7 +79,25 @@ object SessionCrypto {
         require(bytes.size in 1..MAX_PUBKEY_BYTES) {
             "public key size out of bounds: ${bytes.size}"
         }
-        return KeyFactory.getInstance("EC").generatePublic(X509EncodedKeySpec(bytes))
+        val decoded = KeyFactory.getInstance("EC")
+            .generatePublic(X509EncodedKeySpec(bytes))
+        val ecKey = decoded as? ECPublicKey
+            ?: throw InvalidKeyException("peer key is not an EC public key")
+        if (!isP256(ecKey.params)) {
+            throw InvalidKeyException("peer key must use secp256r1/P-256")
+        }
+        return ecKey
+    }
+
+    /** Reject provider-accepted EC encodings that negotiate a different curve. */
+    private fun isP256(actual: ECParameterSpec): Boolean {
+        val expected = p256Params
+        return actual.curve.field == expected.curve.field &&
+            actual.curve.a == expected.curve.a &&
+            actual.curve.b == expected.curve.b &&
+            actual.generator == expected.generator &&
+            actual.order == expected.order &&
+            actual.cofactor == expected.cofactor
     }
 
     fun agreeSharedSecret(own: KeyPair, peerPublic: PublicKey): ByteArray {
@@ -90,13 +117,19 @@ object SessionCrypto {
         require(nonceA.size == 16 && nonceB.size == 16) { "nonces must be 16 bytes" }
         val (first, second) = ordered(nonceA, nonceB)
         val salt = Hkdf.sha256(first, second)
-        val okm = Hkdf.derive(sharedSecret, salt, INFO.toByteArray(), 32 + 32 + 8 + 32)
-        return SessionKeys(
-            audioKey = okm.copyOfRange(0, 32),
-            controlKey = okm.copyOfRange(32, 64),
-            sessionId = okm.copyOfRange(64, 72),
-            sasSeed = okm.copyOfRange(72, 104),
-        )
+        var okm: ByteArray? = null
+        try {
+            okm = Hkdf.derive(sharedSecret, salt, INFO.toByteArray(), 32 + 32 + 8 + 32)
+            return SessionKeys(
+                audioKey = okm.copyOfRange(0, 32),
+                controlKey = okm.copyOfRange(32, 64),
+                sessionId = okm.copyOfRange(64, 72),
+                sasSeed = okm.copyOfRange(72, 104),
+            )
+        } finally {
+            salt.fill(0)
+            okm?.fill(0)
+        }
     }
 
     /**
@@ -133,9 +166,13 @@ object SessionCrypto {
         val mac = javax.crypto.Mac.getInstance("HmacSHA256")
         mac.init(SecretKeySpec(sasSeed, "HmacSHA256"))
         val digest = mac.doFinal(SAS_INFO.toByteArray())
-        var acc = 0L
-        for (i in 0 until 6) acc = (acc shl 8) or (digest[i].toLong() and 0xFF)
-        return String.format(java.util.Locale.ROOT, "%06d", acc % 1_000_000)
+        return try {
+            var acc = 0L
+            for (i in 0 until 6) acc = (acc shl 8) or (digest[i].toLong() and 0xFF)
+            String.format(java.util.Locale.ROOT, "%06d", acc % 1_000_000)
+        } finally {
+            digest.fill(0)
+        }
     }
 
     fun newNonce16(): ByteArray = ByteArray(16).also(random::nextBytes)
@@ -200,7 +237,7 @@ object SessionCrypto {
 }
 
 /** Ephemeral session key material. Call [wipe] when the session ends. */
-data class SessionKeys(
+class SessionKeys(
     val audioKey: ByteArray,
     val controlKey: ByteArray,
     val sessionId: ByteArray,
@@ -230,4 +267,6 @@ data class SessionKeys(
         r = 31 * r + sasSeed.contentHashCode()
         return r
     }
+
+    override fun toString(): String = "SessionKeys(<redacted>)"
 }

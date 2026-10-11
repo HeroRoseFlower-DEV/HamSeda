@@ -2,6 +2,10 @@
 
 package com.hamseda.walkie.ui.screens
 
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
+import android.view.WindowManager
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -27,7 +31,10 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
@@ -58,6 +65,19 @@ fun PairingScreen(
 ) {
     val sasCode by vm.sasCode.collectAsStateWithLifecycle()
     val peerConfirmed by vm.peerConfirmed.collectAsStateWithLifecycle()
+
+    // Hide the one-time authentication string from screenshots and task snapshots.
+    val context = LocalContext.current
+    val window = remember(context) { findActivity(context)?.window }
+    DisposableEffect(window) {
+        val wasSecure = window?.let {
+            it.attributes.flags and WindowManager.LayoutParams.FLAG_SECURE != 0
+        } ?: false
+        window?.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        onDispose {
+            if (!wasSecure) window?.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        }
+    }
 
     Scaffold(
         modifier = modifier,
@@ -133,6 +153,7 @@ fun PairingScreen(
             }
             Button(
                 onClick = { vm.confirm(true) },
+                enabled = sasCode != null,
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(16.dp),
             ) {
@@ -166,5 +187,18 @@ fun PairingScreen(
                 Text(stringResource(R.string.pairing_cancel))
             }
         }
+    }
+}
+
+
+/** Finds the hosting Activity without assuming ContextWrapper nesting depth. */
+private fun findActivity(context: Context): Activity? {
+    var current: Context = context
+    while (true) {
+        if (current is Activity) return current
+        if (current !is ContextWrapper) return null
+        val next = current.baseContext
+        if (next === current) return null
+        current = next
     }
 }

@@ -20,6 +20,7 @@ import java.util.Locale
 object AppLog {
     private const val MAX_ENTRIES = 300
     private const val MAX_MESSAGE_CHARS = 1024
+    private const val MAX_INPUT_CHARS = 4096
     private const val MAX_TAG_CHARS = 48
 
     /** Matches MAC addresses with either colon or hyphen separators. */
@@ -45,8 +46,11 @@ object AppLog {
 
     @Synchronized
     fun log(tag: String, message: String) {
+        // Bound untrusted text before regex/address parsing to cap CPU and memory work.
+        val inputWasTruncated = message.length > MAX_INPUT_CHARS
+        val boundedInput = message.take(MAX_INPUT_CHARS)
         // Normalize first so an exception/device name cannot inject fake lines.
-        val oneLine = CONTROL_RE.replace(message, " ")
+        val oneLine = CONTROL_RE.replace(boundedInput, " ")
         // Redact identifiers before they hit the in-memory buffer or dump/share.
         val withoutMacs = MAC_RE.replace(oneLine, "[MAC]")
         val withoutIpv4 = IPV4_RE.replace(withoutMacs, "[IP]")
@@ -59,7 +63,7 @@ object AppLog {
             }
             if (isIpv6) "[IPv6]" else match.value
         }
-        val safeMessage = if (redacted.length > MAX_MESSAGE_CHARS) {
+        val safeMessage = if (inputWasTruncated || redacted.length > MAX_MESSAGE_CHARS) {
             redacted.take(MAX_MESSAGE_CHARS - "[truncated]".length) + "[truncated]"
         } else redacted
         val safeTag = CONTROL_RE.replace(tag, " ").take(MAX_TAG_CHARS)
