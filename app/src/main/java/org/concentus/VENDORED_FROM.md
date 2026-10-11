@@ -1,17 +1,15 @@
-# Vendored Concentus — pure-Java Opus codec
+# Legacy Concentus source — retained for provenance only
 
-This directory contains the Java port of the Opus audio codec from the
-Concentus project, vendored as source (unmodified) rather than pulled from a
-third-party Maven republish, so the exact code that ships is auditable and
-the build never depends on an external artifact host at *runtime*.
+The pure-Java Concentus source in this directory is a historical vendored copy
+from https://github.com/lostromb/concentus. It is **not** the codec used by the
+current app, and it is deliberately excluded from the Android main source set
+by `app/build.gradle.kts`.
 
-- Source: https://github.com/lostromb/concentus
-- Path in upstream: `Java/Concentus/src/main/java/org/concentus`
-- License: see `LICENSE.txt` in this directory — permissive BSD-style terms,
-  the same terms as the Opus reference library itself (redistribution in
-  source and binary forms permitted with copyright notice retained).
-- Used by: `com.hamseda.walkie.audio.OpusCodec` (16 kHz mono, 20 ms frames,
-  ~20 kbps, VOIP application).
+The production APK uses the official native Xiph `libopus 1.6.1` implementation
+built from the pinned upstream archive in `app/src/main/cpp/CMakeLists.txt`.
+Its JNI bridge, source hash, and full license notice live alongside that build
+configuration. No codec source is downloaded at app runtime.
 
-If Concentus publishes an official, verified Maven Central release, this
-vendored copy may be replaced by that dependency.
+The legacy Java files remain in the repository to preserve their origin and
+license record; do not re-enable them as the production backend or label them
+as an up-to-date Opus implementation.
