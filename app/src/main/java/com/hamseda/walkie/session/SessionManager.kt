@@ -756,7 +756,36 @@ class SessionManager(
                 }
             }
             MessageType.DISCONNECT -> {
-                endSession(SessionError.PEER_REJECTED, notifyPeer = false)
+                // Once keys exist, DISCONNECT must authenticate like every
+                // other control frame. Before derivation, accept only the
+                // protocol's exact plaintext shape.
+                val activeKeys = keys
+                val payload = if (activeKeys != null) {
+                    try {
+                        openControl(frame, activeKeys)
+                    } catch (e: Exception) {
+                        _authFailures.value += 1
+                        AppLog.log(
+                            TAG,
+                            "unauthenticated handshake DISCONNECT rejected (${e.javaClass.simpleName})",
+                        )
+                        return
+                    }
+                } else {
+                    if (frame.codecId != 0xFF.toByte() ||
+                        frame.sessionId.any { it != 0.toByte() }
+                    ) {
+                        fail(SessionError.PROTOCOL_ERROR, "invalid plaintext DISCONNECT during handshake")
+                        return
+                    }
+                    frame.payload
+                }
+                val reason = decodeDisconnectReason(payload)
+                if (reason == null) {
+                    fail(SessionError.PROTOCOL_ERROR, "invalid DISCONNECT reason during handshake")
+                    return
+                }
+                endSession(sessionErrorForDisconnect(reason), notifyPeer = false)
             }
             else -> {
                 Log.w(TAG, "unexpected ${frame.type} during handshake")
@@ -862,7 +891,22 @@ class SessionManager(
                 maybeEnterSession()
             }
             MessageType.DISCONNECT -> {
-                endSession(SessionError.PEER_REJECTED, notifyPeer = false)
+                val plaintext = try {
+                    openControl(frame, k)
+                } catch (e: Exception) {
+                    _authFailures.value += 1
+                    AppLog.log(
+                        TAG,
+                        "unauthenticated SAS-phase DISCONNECT rejected (${e.javaClass.simpleName})",
+                    )
+                    return
+                }
+                val reason = decodeDisconnectReason(plaintext)
+                if (reason == null) {
+                    fail(SessionError.PROTOCOL_ERROR, "invalid authenticated DISCONNECT payload")
+                    return
+                }
+                endSession(sessionErrorForDisconnect(reason), notifyPeer = false)
             }
             else -> fail(
                 SessionError.PROTOCOL_ERROR,
@@ -1045,13 +1089,10 @@ class SessionManager(
                 _peerSasConfirmed.value = true
             }
             MessageType.DISCONNECT -> {
-                val reason = plaintext.firstOrNull()
-                    ?: DisconnectReason.USER_HANGUP
-                val err = when (reason) {
-                    DisconnectReason.AUTH_MISMATCH -> SessionError.AUTH_MISMATCH
-                    else -> SessionError.PEER_REJECTED
-                }
-                endSession(err, notifyPeer = false)
+                // validateSessionPayload() has already checked the length and
+                // reason enum; preserve the peer's actual teardown cause.
+                val reason = plaintext[0]
+                endSession(sessionErrorForDisconnect(reason), notifyPeer = false)
             }
             MessageType.ERROR -> Log.w(TAG, "peer error frame")
             MessageType.KEY_CONFIRM -> {
@@ -1060,6 +1101,27 @@ class SessionManager(
             }
             else -> Log.w(TAG, "unexpected ${frame.type} in session")
         }
+    }
+
+    private fun decodeDisconnectReason(payload: ByteArray): Byte? {
+        if (payload.size != 1) return null
+        val reason = payload[0]
+        return if (
+            reason == DisconnectReason.USER_HANGUP ||
+            reason == DisconnectReason.AUTH_MISMATCH ||
+            reason == DisconnectReason.PROTOCOL_ERROR ||
+            reason == DisconnectReason.TRANSPORT_LOST ||
+            reason == DisconnectReason.PEER_TIMEOUT
+        ) reason else null
+    }
+
+    private fun sessionErrorForDisconnect(reason: Byte): SessionError? = when (reason) {
+        DisconnectReason.USER_HANGUP -> null
+        DisconnectReason.AUTH_MISMATCH -> SessionError.AUTH_MISMATCH
+        DisconnectReason.PROTOCOL_ERROR -> SessionError.PROTOCOL_ERROR
+        DisconnectReason.TRANSPORT_LOST -> SessionError.TRANSPORT_LOST
+        DisconnectReason.PEER_TIMEOUT -> SessionError.PEER_TIMEOUT
+        else -> SessionError.PEER_REJECTED
     }
 
     /** Returns a protocol error for an authenticated but malformed session payload. */

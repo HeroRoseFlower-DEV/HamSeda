@@ -2,6 +2,7 @@ package com.hamseda.walkie
 
 import com.hamseda.walkie.audio.OpusCodec
 import com.hamseda.walkie.audio.JitterBuffer
+import com.hamseda.walkie.proto.DisconnectReason
 import com.hamseda.walkie.proto.Frame
 import com.hamseda.walkie.proto.MessageType
 import com.hamseda.walkie.session.FloorController
@@ -175,6 +176,74 @@ class SessionSecurityTest {
         rig.await("session recovered after malformed SAS frame") {
             rig.a.phase.value == SessionManager.Phase.IN_SESSION &&
                 rig.b.phase.value == SessionManager.Phase.IN_SESSION
+        }
+        rig.close()
+    }
+
+    @Test
+    fun `unauthenticated disconnect during SAS phase is ignored`() {
+        val rig = newRig()
+        rig.start()
+        rig.await("both endpoints waiting for SAS") {
+            rig.a.phase.value == SessionManager.Phase.AWAITING_SAS_CONFIRM &&
+                rig.b.phase.value == SessionManager.Phase.AWAITING_SAS_CONFIRM
+        }
+
+        val failuresBefore = rig.b.authFailures.value
+        val forgedDisconnect = Frame(
+            type = MessageType.DISCONNECT,
+            sessionId = ByteArray(8),
+            seq = 1L,
+            timestamp = System.currentTimeMillis(),
+            codecId = 0xFF.toByte(),
+            payload = byteArrayOf(DisconnectReason.USER_HANGUP),
+        ).encode()
+        assertTrue(rig.tb.inject(forgedDisconnect))
+        rig.await("unauthenticated disconnect counted") {
+            rig.b.authFailures.value > failuresBefore
+        }
+        assertEquals(SessionManager.Phase.AWAITING_SAS_CONFIRM, rig.b.phase.value)
+
+        // The rejected frame must not poison the collector or prevent a valid
+        // secure session from completing after both users confirm the SAS.
+        rig.a.confirmSas(true)
+        rig.b.confirmSas(true)
+        rig.await("session completes after forged disconnect") {
+            rig.a.phase.value == SessionManager.Phase.IN_SESSION &&
+                rig.b.phase.value == SessionManager.Phase.IN_SESSION
+        }
+        rig.close()
+    }
+
+    @Test
+    fun `authenticated disconnect preserves peer timeout reason`() {
+        val rig = newRig()
+        rig.start()
+        rig.await("both endpoints in SAS phase") {
+            rig.a.phase.value == SessionManager.Phase.AWAITING_SAS_CONFIRM &&
+                rig.b.phase.value == SessionManager.Phase.AWAITING_SAS_CONFIRM
+        }
+        rig.a.confirmSas(true)
+        rig.b.confirmSas(true)
+        rig.await("both endpoints in session") {
+            rig.a.phase.value == SessionManager.Phase.IN_SESSION &&
+                rig.b.phase.value == SessionManager.Phase.IN_SESSION
+        }
+
+        val enqueueControl = SessionManager::class.java.getDeclaredMethod(
+            "enqueueControl",
+            java.lang.Byte.TYPE,
+            ByteArray::class.java,
+        )
+        enqueueControl.isAccessible = true
+        enqueueControl.invoke(
+            rig.a,
+            MessageType.DISCONNECT,
+            byteArrayOf(DisconnectReason.PEER_TIMEOUT),
+        )
+        rig.await("peer timeout reason propagated") {
+            rig.b.phase.value == SessionManager.Phase.IDLE &&
+                rig.b.error.value == SessionManager.SessionError.PEER_TIMEOUT
         }
         rig.close()
     }
