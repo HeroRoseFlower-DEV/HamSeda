@@ -20,8 +20,8 @@ import androidx.core.content.ContextCompat
  * - API ≤30: BLUETOOTH + BLUETOOTH_ADMIN (install-time) and location only
  *   where the platform required it for discovery (API 23–30)
  *
- * Microphone: RECORD_AUDIO, requested contextually when a voice session
- * starts. Notifications: POST_NOTIFICATIONS on API 33+ for the foreground
+ * Microphone: RECORD_AUDIO, requested during first-run setup before entering
+ * the app. Audio capture itself still starts only during push-to-talk. Notifications: POST_NOTIFICATIONS on API 33+ for the foreground
  * service notification.
  *
  * Local network (API 37+): Android 17 blocks local-network access by
