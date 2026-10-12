@@ -85,6 +85,10 @@ fun DiscoveryScreen(
     val discoverable by vm.discoverable.collectAsStateWithLifecycle()
 
     val context = LocalContext.current
+    // Resolve user-facing strings in composition instead of reading resources from
+    // LocalContext inside activity-result callbacks (configuration-aware Compose API).
+    val permissionDeniedMessage = stringResource(R.string.perm_denied_hint)
+    val discoverabilityDeclinedMessage = stringResource(R.string.discoverable_declined)
     var pendingAction by remember { mutableStateOf<(() -> Unit)?>(null) }
     val permLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
@@ -100,7 +104,7 @@ fun DiscoveryScreen(
         } else {
             android.widget.Toast.makeText(
                 context,
-                context.getString(R.string.perm_denied_hint),
+                permissionDeniedMessage,
                 android.widget.Toast.LENGTH_LONG,
             ).show()
         }
@@ -125,7 +129,7 @@ fun DiscoveryScreen(
             // hidden server running with a misleading "waiting" state.
             android.widget.Toast.makeText(
                 context,
-                context.getString(R.string.discoverable_declined),
+                discoverabilityDeclinedMessage,
                 android.widget.Toast.LENGTH_LONG,
             ).show()
             vm.cancelSession()
