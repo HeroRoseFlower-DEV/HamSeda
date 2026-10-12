@@ -1,19 +1,16 @@
 // Top-level build file — HamSeda
 //
-// Toolchain (verified 2026-10-09, building green on GitHub Actions):
-//   AGP 8.13.2  — latest 8.x stable (Google Maven); supports compileSdk/
-//                 targetSdk 37. AGP 9.x changes the Kotlin plugin model
-//                 (built-in KGP) and is intentionally not adopted until the
-//                 migration is validated.
-//   Kotlin 2.1.20 (kotlin-android + compose compiler plugin, same version)
-//   Gradle 8.14.6 via the committed wrapper (satisfies AGP 8.13.2's >= 8.13)
-//   JDK 17 (Eclipse Temurin) for the Gradle daemon and compilation
-//   compileSdk 37 / targetSdk 37 — above Google Play's API 36 requirement
-//                 (in force since 2026-08-31); API 37 is stable.
-//   minSdk 26 — per the project spec (Android 8.0).
-//   Compose BOM 2025.04.00 — verified compatible with Kotlin 2.1.20.
+// Toolchain (verified 2026-10-12 against official release notes and compatibility docs):
+//   AGP 9.3.3 — supports compileSdk/targetSdk 37, requires Gradle >= 9.5,
+//               and includes the 9.3.2 fix for lint on JDK 17.
+//   Gradle 9.7.0 — pinned wrapper; within Kotlin 2.4.x's documented fully-supported range.
+//   Kotlin 2.4.21 — current stable Kotlin patch; AGP supplies built-in Android Kotlin
+//                   support, while the matching Compose compiler plugin is version-pinned.
+//   JDK 17 (Eclipse Temurin) — supported by AGP 9.3.3 and kept aligned with CI.
+//   compileSdk 37 / targetSdk 37; minSdk 26 (Android 8.0).
+//   The Compose BOM and application libraries are intentionally out of scope for this
+//   build-toolchain-only migration and will be considered in the dependency-upgrade phase.
 plugins {
     alias(libs.plugins.android.application) apply false
-    alias(libs.plugins.kotlin.android) apply false
     alias(libs.plugins.kotlin.compose) apply false
 }

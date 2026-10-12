@@ -55,11 +55,11 @@ jobs:
             || sdkmanager "platforms;android-37.0" "build-tools;36.0.0" "platform-tools" "ndk;28.2.13676358" "cmake;3.22.1"
 
       - name: Verify Gradle wrapper
-        # This checked-in wrapper JAR matches Gradle's published official 8.12.1 checksum.
-        # The wrapper distribution itself is separately pinned to 8.14.6 below.
+        # The checked-in wrapper JAR is pinned to Gradle's published official 9.7.0 checksum.
+        # The wrapper distribution itself is SHA-256 pinned to 9.7.0 in gradle-wrapper.properties.
         run: |
           set -e
-          echo "2db75c40782f5e8ba1fc278a5574bab070adccb2d21ca5a6e5ed840888448046  gradle/wrapper/gradle-wrapper.jar" | sha256sum --check --strict
+          echo "7a9ce74cff467ca1bf60a4fcd9f05185acceda4d0f382434d393e17864262c5d  gradle/wrapper/gradle-wrapper.jar" | sha256sum --check --strict
           ./gradlew --version
 
       - name: Run unit tests

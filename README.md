@@ -51,15 +51,15 @@
 
 | مؤلفه | نسخه | دلیل انتخاب |
 |---|---|---|
-| Android Gradle Plugin | 8.13.2 | آخرین 8.x پایدار (تأیید 2026-10-09) |
-| Gradle Wrapper | 8.14.6 | سازگار با AGP 8.13.2 (فایل wrapper داخل ریپو کامیت شده) |
-| Kotlin | 2.1.20 | همان نسخه برای پلاگین اندروید و کامپایلر Compose |
-| JDK | 17 (Temurin) | موردنیاز AGP 8.x؛ در CI روی `ubuntu-24.04` |
-| compileSdk / targetSdk | 37 | جدیدترین SDK پایدار (اندروید ۱۷)؛ بالاتر از الزام Play (API 36) |
+| Android Gradle Plugin | 9.3.3 | پشتیبانی از API 37؛ Gradle حداقل 9.5؛ شامل اصلاح lint برای JDK 17 |
+| Gradle Wrapper | 9.7.0 | در بازهٔ سازگاری مستندشدهٔ Kotlin 2.4.x؛ SHA-256 توزیع پین شده |
+| Kotlin / Compose compiler plugin | 2.4.21 | نسخهٔ پایدار؛ Kotlin اندروید از AGP 9 به‌صورت built-in تأمین می‌شود |
+| JDK | 17 (Temurin) | پشتیبانی‌شده توسط AGP 9.3.3؛ در CI روی `ubuntu-24.04` |
+| compileSdk / targetSdk | 37 | پشتیبانی‌شده توسط AGP 9.3.x |
 | minSdk | 26 | طبق اسپک پروژه (اندروید ۸) |
 | Android NDK | 28.2.13676358 | نسخهٔ ثابت برای ساخت کتابخانهٔ native و هم‌ترازی ۱۶ KiB |
 | CMake | 3.22.1 | ساخت JNI و کدک Opus از سورس |
-| Compose BOM | 2025.04.00 | سازگار با Kotlin 2.1.20 |
+| Compose BOM | 2025.04.00 | نسخهٔ فعلی؛ ارتقای وابستگی‌های برنامه جدا از ارتقای زنجیرهٔ ساخت انجام می‌شود |
 | actions/checkout | v7.0.1 (SHA-pinned) | امنیت supply-chain |
 | actions/setup-java | v6.0.1 (SHA-pinned) | امنیت supply-chain |
 | actions/upload-artifact | v7.0.2 (SHA-pinned) | امنیت supply-chain + SHA-256 checksum |

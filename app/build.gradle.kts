@@ -1,6 +1,5 @@
 plugins {
     alias(libs.plugins.android.application)
-    alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
 }
 
@@ -58,9 +57,8 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    kotlinOptions {
-        jvmTarget = "17"
-    }
+    // AGP 9's built-in Kotlin compiler defaults to the Java targetCompatibility.
+    // Keep Java/Kotlin bytecode aligned at JVM 17 without the legacy kotlinOptions DSL.
     buildFeatures {
         compose = true
         buildConfig = true

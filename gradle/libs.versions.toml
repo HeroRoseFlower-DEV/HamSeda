@@ -1,8 +1,9 @@
 [versions]
-# Verified 2026-10-09 from official Maven repositories.
-# AGP 8.13.2 = latest 8.x (Google Maven). Kotlin 2.1.20 = stable.
-agp = "8.13.2"
-kotlin = "2.1.20"
+# Toolchain versions verified against official Android, Kotlin and Gradle release notes (2026-10-12).
+# AGP 9.3.3 supports API 37 and includes the JDK 17 lint fix; Gradle 9.7.0
+# stays within Kotlin 2.4.x's documented fully-supported Gradle range.
+agp = "9.3.3"
+kotlin = "2.4.21"
 composeBom = "2025.04.00"
 coreKtx = "1.16.0"
 lifecycle = "2.9.1"
@@ -40,5 +41,4 @@ kotlinx-coroutines-test = { group = "org.jetbrains.kotlinx", name = "kotlinx-cor
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
-kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
 kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
