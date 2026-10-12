@@ -51,8 +51,8 @@ jobs:
           export PATH="$CT/bin:$PATH"
           yes | sdkmanager --licenses > /dev/null || true
           # API 37 platform: try the canonical path, fall back to the .0 variant.
-          sdkmanager "platforms;android-37" "build-tools;36.0.0" "platform-tools" "ndk;28.2.13676358" "cmake;3.22.1" \
-            || sdkmanager "platforms;android-37.0" "build-tools;36.0.0" "platform-tools" "ndk;28.2.13676358" "cmake;3.22.1"
+          sdkmanager "platforms;android-37" "build-tools;36.0.0" "platform-tools" "ndk;30.0.16248370" "cmake;3.31.6" \
+            || sdkmanager "platforms;android-37.0" "build-tools;36.0.0" "platform-tools" "ndk;30.0.16248370" "cmake;3.31.6"
 
       - name: Verify Gradle wrapper
         # The checked-in wrapper JAR is pinned to Gradle's published official 9.7.0 checksum.
@@ -76,14 +76,38 @@ jobs:
         # (see docs/TEST_PLAN.md). Compilation is verified here.
         run: ./gradlew :app:assembleAndroidTest --no-daemon --stacktrace
 
-      - name: Verify APK and compute SHA-256
+      - name: Verify APK native ABIs and compute SHA-256
         id: apk
         run: |
-          set -e
+          set -euo pipefail
           APK=$(ls app/build/outputs/apk/debug/*.apk | head -n1)
           echo "APK: $APK"
           test -s "$APK"
           ls -lh "$APK"
+
+          # Verify all four ABIs declared in app/build.gradle.kts contain the JNI codec.
+          NATIVE_TMP="$(mktemp -d)"
+          trap 'rm -rf "$NATIVE_TMP"' EXIT
+          unzip -q "$APK" 'lib/*/libhamseda_opus_jni.so' -d "$NATIVE_TMP"
+          LLVM_READELF="$ANDROID_HOME/ndk/30.0.16248370/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
+          test -x "$LLVM_READELF"
+          for ABI in arm64-v8a armeabi-v7a x86_64 x86; do
+            LIB="$NATIVE_TMP/lib/$ABI/libhamseda_opus_jni.so"
+            if [ ! -s "$LIB" ]; then
+              echo "::error::Missing native Opus JNI library for ABI $ABI in $APK"
+              exit 1
+            fi
+            # Android 15+ devices can use 16 KiB memory pages. Confirm each
+            # packaged ELF has a LOAD segment aligned to 16 KiB, matching the
+            # explicit -Wl,-z,max-page-size=16384 link option in CMakeLists.txt.
+            if ! "$LLVM_READELF" -lW "$LIB" | awk '$1 == "LOAD" && $NF ~ /^0x0*4000$/ { found=1 } END { exit !found }'; then
+              echo "::error::Native library for $ABI has no 16 KiB-aligned LOAD segment"
+              "$LLVM_READELF" -lW "$LIB"
+              exit 1
+            fi
+            echo "Verified native Opus JNI: ABI=$ABI, 16KiB ELF LOAD alignment"
+          done
+
           SHA=$(sha256sum "$APK" | cut -d' ' -f1)
           echo "SHA-256: $SHA"
           echo "$SHA  $(basename "$APK")" > "$APK.sha256"

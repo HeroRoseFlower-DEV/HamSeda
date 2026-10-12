@@ -57,8 +57,8 @@
 | JDK | 17 (Temurin) | پشتیبانی‌شده توسط AGP 9.3.3؛ در CI روی `ubuntu-24.04` |
 | compileSdk / targetSdk | 37 | پشتیبانی‌شده توسط AGP 9.3.x |
 | minSdk | 26 | طبق اسپک پروژه (اندروید ۸) |
-| Android NDK | 28.2.13676358 | نسخهٔ ثابت برای ساخت کتابخانهٔ native و هم‌ترازی ۱۶ KiB |
-| CMake | 3.22.1 | ساخت JNI و کدک Opus از سورس |
+| Android NDK | 30.0.16248370 (r30 LTS) | جدیدترین شاخهٔ LTS تأییدشده؛ Clang به‌روزشده و Android API 37 |
+| CMake | 3.31.6 | نسخهٔ SDK Manager برای ساخت تکرارپذیر JNI در CI و Android Studio |
 | Compose BOM | 2026.09.00 | نسخهٔ پایدار؛ مدیریت نسخهٔ کتابخانه‌های Compose |
 | AndroidX Core | 1.19.1 | استفاده از `androidx.core:core`؛ APIهای KTX در Core ادغام شده‌اند |
 | AndroidX Lifecycle | 2.11.0 | Runtime، Compose و ViewModel |
