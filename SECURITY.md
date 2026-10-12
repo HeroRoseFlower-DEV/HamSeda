@@ -32,15 +32,19 @@ completed the in-app pairing flow, against:
    `ECGenParameterSpec("secp256r1")`, `KeyAgreement("ECDH")`). Keys are
    generated per session and never persisted.
 2. **Key derivation:** HKDF-SHA-256 (RFC 5869, over platform HMAC-SHA-256)
-   with salt = SHA-256(ordered nonces), info = `"HamSeda-v2/session-keys"`,
+   with salt = SHA-256(ordered nonces), info = `HamSeda-v3/session-keys`,
    output = 32-byte audio key + 32-byte control key + 8-byte session id +
    32-byte SAS seed. Key separation is structural, not by convention.
 3. **Encryption:** AES-256-GCM (`AES/GCM/NoPadding`, 128-bit tag), random
    96-bit nonce per frame, header+role as AAD.
-4. **Authentication of the exchange:** each side seals
-   `SHA-256(ordered pubkeys || ordered nonces)` with the control key. A peer
-   that substituted a key, nonce, protocol version, or codec preference cannot produce a matching transcript. The transcript is length-prefixed and canonicalized by public-key role; it includes each peer's exact HELLO payload and associated nonce/public key.
-5. **SAS:** 6 digits = `HMAC-SHA256(sasSeed, "HamSeda-v2/sas") mod 1_000_000`,
+4. **Authentication of the exchange (wire protocol v3):** KEY_CONFIRM
+   authenticates a SHA-256 transcript with domain separator
+   `HamSeda-v3/key-confirm`. The canonical, length-prefixed transcript binds
+   each peer's exact two-byte HELLO payload (protocol version + codec preference),
+   16-byte nonce, and encoded ECDH public key, ordered deterministically by
+   public-key role. Changing the key, nonce, protocol version, or codec
+   preference changes the transcript and causes authentication to fail.
+5. **SAS:** 6 digits = `HMAC-SHA256(sasSeed, "HamSeda-v3/sas") mod 1_000_000`,
    displayed on both phones. The SAS is *detection*, not key material: users
    compare it out-of-band and each confirm. A six-digit code carries ~20 bits;
    it is safe here because it authenticates an already-strong ECDH exchange
@@ -88,7 +92,7 @@ is no TLS network to pin to — by design).
 - Opus packets are bounded to the local encoder's maximum at both the authenticated session-validation and decoder boundaries.
 - The SAS screen blocks screenshots/recent-task snapshots while visible and disables confirmation until a code has actually been generated. BLUETOOTH_ADVERTISE is not requested at startup; it is requested only for the explicit Bluetooth-listen role. Outbound queue payloads, decrypted session buffers, jitter-queue entries, decoded playback scratch, AES-GCM nonce/ciphertext scratch buffers, and ECDH/HKDF temporary material are cleared on their applicable consume/drop/teardown paths.
 - Diagnostic text is capped before normalization and address-redaction regexes run.
-- The checked-in Gradle wrapper JAR is matched against its official published checksum (the repo currently carries the 8.12.1 wrapper binary); the Gradle distribution ZIP is separately checksum-pinned to 8.14.6. Dependabot monitors Gradle and GitHub Actions updates.
+- The checked-in Gradle Wrapper JAR is SHA-256 checked in CI against the published checksum for Gradle 9.7.0 (`7a9ce74cff467ca1bf60a4fcd9f05185acceda4d0f382434d393e17864262c5d`). The wrapper distribution is pinned to Gradle 9.7.0 and its ZIP checksum is recorded in `gradle/wrapper/gradle-wrapper.properties` (`84fbba45c7f4c64abc77460e1c00f541e9f960e3c7ed2538f1ede19eacd873ae`). CI verifies these before building. Dependabot monitors Gradle and GitHub Actions updates.
 
 ## Reporting
 

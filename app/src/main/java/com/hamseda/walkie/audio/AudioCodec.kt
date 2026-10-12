@@ -15,7 +15,7 @@ interface AudioCodec {
     val sampleRate: Int
     val channels: Int
 
-    /** Samples per 20 ms frame — always 320 at 16 kHz mono. */
+    /** Samples per 20 ms frame — 960 at 48 kHz mono (see FRAME_SAMPLES). */
     val frameSamples: Int
 
     /**

@@ -51,8 +51,8 @@ jobs:
           export PATH="$CT/bin:$PATH"
           yes | sdkmanager --licenses > /dev/null || true
           # API 37 platform: try the canonical path, fall back to the .0 variant.
-          sdkmanager "platforms;android-37" "build-tools;36.0.0" "platform-tools" "ndk;30.0.16248370" "cmake;3.31.6" \
-            || sdkmanager "platforms;android-37.0" "build-tools;36.0.0" "platform-tools" "ndk;30.0.16248370" "cmake;3.31.6"
+          sdkmanager "platforms;android-37" "build-tools;36.0.0" "ndk;30.0.16248370" "cmake;3.31.6" \
+            || sdkmanager "platforms;android-37.0" "build-tools;36.0.0" "ndk;30.0.16248370" "cmake;3.31.6"
 
       - name: Verify Gradle wrapper
         # The checked-in wrapper JAR is pinned to Gradle's published official 9.7.0 checksum.
@@ -61,6 +61,30 @@ jobs:
           set -e
           echo "7a9ce74cff467ca1bf60a4fcd9f05185acceda4d0f382434d393e17864262c5d  gradle/wrapper/gradle-wrapper.jar" | sha256sum --check --strict
           ./gradlew --version
+
+      - name: Check documented versions and crypto domains
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP_VERSION="$(sed -nE 's/^[[:space:]]*versionName = "([^"]+)".*/\1/p' app/build.gradle.kts)"
+          APP_CODE="$(sed -nE 's/^[[:space:]]*versionCode = ([0-9]+).*/\1/p' app/build.gradle.kts)"
+          WIRE_VERSION="$(sed -nE 's/^[[:space:]]*const val VERSION: Byte = ([0-9]+).*/\1/p' app/src/main/java/com/hamseda/walkie/proto/Protocol.kt)"
+          KEY_INFO="$(sed -nE 's/^[[:space:]]*private const val INFO = "([^"]+)".*/\1/p' app/src/main/java/com/hamseda/walkie/crypto/SessionCrypto.kt)"
+          SAS_INFO="$(sed -nE 's/^[[:space:]]*private const val SAS_INFO = "([^"]+)".*/\1/p' app/src/main/java/com/hamseda/walkie/crypto/SessionCrypto.kt)"
+          test -n "$APP_VERSION" && test -n "$APP_CODE" && test -n "$WIRE_VERSION"
+          test -n "$KEY_INFO" && test -n "$SAS_INFO"
+          grep -Fq -- "$APP_VERSION" README.md
+          grep -Fq -- "$APP_CODE" README.md
+          grep -Fq -- "$WIRE_VERSION" README.md
+          grep -Fq -- "$KEY_INFO" SECURITY.md
+          grep -Fq -- "$SAS_INFO" SECURITY.md
+          grep -Fq -- "Gradle 9.7.0" SECURITY.md
+          if grep -Eq 'HamSeda-v2/(session-keys|sas)|8\.12\.1|8\.14\.6' SECURITY.md; then
+            echo "::error::SECURITY.md contains stale protocol-domain or Gradle version metadata"
+            exit 1
+          fi
+          grep -Fq -- "48 kHz" README.md
+          grep -Fq -- "40 kbps" README.md
 
       - name: Run unit tests
         run: ./gradlew :app:testDebugUnitTest --no-daemon --stacktrace

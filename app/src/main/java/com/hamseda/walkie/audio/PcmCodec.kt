@@ -7,9 +7,9 @@ import java.nio.ByteOrder
 /**
  * Pass-through 16-bit little-endian PCM codec.
  *
- * Bandwidth: 16 kHz × 16 bit × mono = 256 kbps — fine for Wi-Fi Direct,
- * marginal for Bluetooth Classic RFCOMM. Kept as a tested fallback and a
- * diagnostic option; Opus is the default.
+ * Bandwidth: 48 kHz × 16 bit × mono = 768 kbps — appropriate only for
+ * diagnostics over Wi-Fi Direct, not for Bluetooth Classic RFCOMM. Opus is
+ * the default and is strongly preferred for voice.
  */
 class PcmCodec : AudioCodec {
     override val codecId: Byte = CodecId.PCM16
