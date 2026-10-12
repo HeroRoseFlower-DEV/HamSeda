@@ -59,7 +59,15 @@
 | minSdk | 26 | طبق اسپک پروژه (اندروید ۸) |
 | Android NDK | 28.2.13676358 | نسخهٔ ثابت برای ساخت کتابخانهٔ native و هم‌ترازی ۱۶ KiB |
 | CMake | 3.22.1 | ساخت JNI و کدک Opus از سورس |
-| Compose BOM | 2025.04.00 | نسخهٔ فعلی؛ ارتقای وابستگی‌های برنامه جدا از ارتقای زنجیرهٔ ساخت انجام می‌شود |
+| Compose BOM | 2026.09.00 | نسخهٔ پایدار؛ مدیریت نسخهٔ کتابخانه‌های Compose |
+| AndroidX Core | 1.19.1 | استفاده از `androidx.core:core`؛ APIهای KTX در Core ادغام شده‌اند |
+| AndroidX Lifecycle | 2.11.0 | Runtime، Compose و ViewModel |
+| Activity Compose | 1.13.0 | پشتیبانی Activity و Compose |
+| DataStore Preferences | 1.2.1 | نسخهٔ پایدار تنظیمات محلی |
+| Kotlin Coroutines | 1.11.0 | نسخهٔ مشترک Runtime و تست |
+| JUnit 4 | 4.13.2 | نسخهٔ پایدار آزمون‌های واحد |
+| AndroidX Test JUnit | 1.3.0 | افزونهٔ JUnit برای تست Android |
+| AndroidX Test Runner / Rules | 1.7.0 | نسخه‌های پایدار تست ابزاری |
 | actions/checkout | v7.0.1 (SHA-pinned) | امنیت supply-chain |
 | actions/setup-java | v6.0.1 (SHA-pinned) | امنیت supply-chain |
 | actions/upload-artifact | v7.0.2 (SHA-pinned) | امنیت supply-chain + SHA-256 checksum |
