@@ -7,13 +7,30 @@ plugins {
 android {
     namespace = "com.hamseda.walkie"
     compileSdk = 37
+    ndkVersion = "28.2.13676358"
 
     defaultConfig {
         applicationId = "com.hamseda.walkie"
         minSdk = 26
         targetSdk = 37
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "1.1"
+
+        ndk {
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64", "x86")
+        }
+
+        externalNativeBuild {
+            cmake {
+                arguments += listOf(
+                    "-DANDROID_STL=c++_static",
+                    "-DOPUS_BUILD_PROGRAMS=OFF",
+                    "-DOPUS_BUILD_TESTING=OFF",
+                    "-DOPUS_DRED=OFF",
+                    "-DOPUS_OSCE=OFF",
+                )
+            }
+        }
     }
 
     buildTypes {
@@ -25,6 +42,17 @@ android {
             )
         }
     }
+
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
+    }
+
+    // Retain legacy Concentus source for provenance, but exclude it from Java compilation.
+    // SourceSet.java.exclude is not exposed consistently by AGP's Kotlin DSL; excluding
+    // at the JavaCompile task level works with the Android Gradle Plugin used here.
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -81,4 +109,9 @@ dependencies {
 
     debugImplementation(libs.androidx.compose.ui.tooling)
     debugImplementation(libs.androidx.compose.ui.test.manifest)
+}
+
+// The old Concentus port is kept in Git for provenance, not compiled into the APK.
+tasks.withType<org.gradle.api.tasks.compile.JavaCompile>().configureEach {
+    exclude("org/concentus/**")
 }

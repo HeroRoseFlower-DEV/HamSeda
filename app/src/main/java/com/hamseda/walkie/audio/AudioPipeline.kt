@@ -12,6 +12,8 @@ interface AudioPipeline {
         /** Transient audio focus loss (e.g. phone call) — stop TX now. */
         fun onAudioFocusLost()
         fun onCaptureError(message: String)
+        /** Playback can fail after a session has successfully started. */
+        fun onPlaybackError(message: String)
     }
 
     var pipelineListener: PipelineListener?

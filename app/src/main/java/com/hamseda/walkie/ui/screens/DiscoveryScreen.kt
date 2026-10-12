@@ -2,6 +2,8 @@
 
 package com.hamseda.walkie.ui.screens
 
+import android.content.Intent
+import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -86,30 +88,48 @@ fun DiscoveryScreen(
     var pendingAction by remember { mutableStateOf<(() -> Unit)?>(null) }
     val permLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
-    ) {
-        // Re-run whatever the user tried to do; transports re-check.
-        pendingAction?.invoke()
+    ) { results ->
+        // Clear the old action BEFORE invoking it: the action can open a
+        // second system prompt and install a new pending action. Do not retry
+        // automatically when the user denied a permission; that would reopen
+        // the same system dialog in a loop.
+        val action = pendingAction
         pendingAction = null
+        if (results.isNotEmpty() && results.values.all { it }) {
+            action?.invoke()
+        } else {
+            android.widget.Toast.makeText(
+                context,
+                context.getString(R.string.perm_denied_hint),
+                android.widget.Toast.LENGTH_LONG,
+            ).show()
+        }
         vm.refreshAvailability()
     }
     // System dialog that makes this phone visible to Bluetooth scans.
-    // Needs BLUETOOTH_ADVERTISE on API 31+ (requested via the permission
-    // flow before listen/scan).
+    // BLUETOOTH_ADVERTISE is requested only when this dialog is needed.
     val discoverableLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
     ) { result ->
-        if (result.resultCode == android.app.Activity.RESULT_OK) {
-            pendingAction?.invoke()
+        val action = pendingAction
+        pendingAction = null
+        // ACTION_REQUEST_DISCOVERABLE returns the accepted duration in
+        // seconds (e.g. 300), not Activity.RESULT_OK (-1). Any positive
+        // result means Android accepted discoverability; 0 / RESULT_CANCELED
+        // means it was denied or the system could not enable it.
+        if (result.resultCode > 0) {
+            action?.invoke()
         } else {
-            // L5: declining the dialog silently dropped the pending action.
-            // Tell the user why nothing happened.
+            // The RFCOMM listener is already active at this point. If the user
+            // declines visibility, end the pending wait rather than leaving a
+            // hidden server running with a misleading "waiting" state.
             android.widget.Toast.makeText(
                 context,
                 context.getString(R.string.discoverable_declined),
                 android.widget.Toast.LENGTH_LONG,
             ).show()
+            vm.cancelSession()
         }
-        pendingAction = null
     }
 
     fun requestDiscoverable(then: () -> Unit) {
@@ -131,12 +151,13 @@ fun DiscoveryScreen(
         PermissionHelper.missingBluetoothPermissions(context, forDiscovery = true)
     }
 
-    /** Connect-time permissions: discovery + local-network access on API 37+. */
-    fun missingForConnect(): List<String> = if (activeType == TransportType.WIFI_DIRECT) {
-        PermissionHelper.missingWifiDirectConnectPermissions(context)
-    } else {
-        PermissionHelper.missingBluetoothPermissions(context, forDiscovery = false)
-    }
+    /** Permissions required before starting the microphone foreground service/session. */
+    fun missingForSessionStart(): List<String> =
+        (if (activeType == TransportType.WIFI_DIRECT) {
+            PermissionHelper.missingWifiDirectConnectPermissions(context)
+        } else {
+            PermissionHelper.missingBluetoothPermissions(context, forDiscovery = false)
+        } + PermissionHelper.missingMicrophonePermission(context)).distinct()
 
     fun doScan() {
         val missing = missingForScan()
@@ -149,7 +170,7 @@ fun DiscoveryScreen(
     }
 
     fun doConnectPeer(peer: com.hamseda.walkie.transport.PeerDevice) {
-        val missing = missingForConnect()
+        val missing = missingForSessionStart()
         if (missing.isNotEmpty()) {
             pendingAction = { vm.connectPeer(peer) }
             permLauncher.launch(missing.toTypedArray())
@@ -159,16 +180,31 @@ fun DiscoveryScreen(
     }
 
     fun doListen() {
-        val missing = missingForConnect()
+        val missing = missingForSessionStart()
         if (missing.isNotEmpty()) {
-            pendingAction = { vm.listenForIncoming() }
+            // Re-enter the full role setup after permission grant; Bluetooth
+            // discoverability is requested once the listener is ready.
+            pendingAction = { doListen() }
             permLauncher.launch(missing.toTypedArray())
             return
         }
-        // Bluetooth classic only finds *discoverable* phones: make this
-        // phone visible first, then open the RFCOMM server socket.
+        // Bluetooth Classic scans only find discoverable phones. Request the
+        // additional permission only if this screen needs to make the phone
+        // visible; outgoing scans/connections do not need ADVERTISE.
         if (activeType == TransportType.BLUETOOTH && !discoverable) {
-            requestDiscoverable { vm.listenForIncoming() }
+            val missingAdvertise =
+                PermissionHelper.missingBluetoothAdvertisePermission(context)
+            if (missingAdvertise.isNotEmpty()) {
+                pendingAction = { doListen() }
+                permLauncher.launch(missingAdvertise.toTypedArray())
+                return
+            }
+            // Open the RFCOMM server first, then expose the device. If
+            // discoverability is enabled first, a peer can see the phone and
+            // tap Connect before the server socket has been created.
+            vm.listenForIncoming {
+                requestDiscoverable { /* listener is already waiting */ }
+            }
         } else {
             vm.listenForIncoming()
         }
@@ -213,7 +249,17 @@ fun DiscoveryScreen(
                 ModeSelector(
                     preference = preference,
                     onSelect = vm::setPreference,
+                    enabled = phase == SessionManager.Phase.IDLE,
                 )
+            }
+            if (phase != SessionManager.Phase.IDLE) {
+                item {
+                    Text(
+                        text = stringResource(R.string.transport_locked_hint),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
             if (choiceExplanation.isNotEmpty()) {
                 item {
@@ -278,41 +324,74 @@ fun DiscoveryScreen(
             item {
                 WaitCard(
                     activeType = activeType,
+                    active = phase != SessionManager.Phase.IDLE,
+                    // Listening leaves the radio transport in IDLE until a peer
+                    // arrives. CONNECTING/AUTHENTICATING/CONNECTED are active
+                    // connection work, not a reason to offer "Start waiting".
                     waiting = phase != SessionManager.Phase.IDLE &&
-                        transportState != TransportState.CONNECTING,
+                        transportState == TransportState.IDLE,
                     onStartWaiting = { doListen() },
                     onStopWaiting = { vm.cancelSession() },
                 )
             }
             // ---- Mode B: scan and connect to a peer ----
-            item {
-                ScanCard(
-                    scanning = transportState == TransportState.DISCOVERING,
-                    connecting = transportState == TransportState.CONNECTING,
-                    activeType = activeType,
-                    onScanToggle = { if (transportState == TransportState.DISCOVERING) vm.stopScan() else doScan() },
-                    onCancelConnect = { vm.cancelSession() },
-                )
+            // While this phone is explicitly waiting in IDLE transport state,
+            // hide the scan action. A single phone must not accidentally run
+            // both roles, and a connected/authenticating transport must not
+            // fall back to showing an enabled Search button.
+            if (phase == SessionManager.Phase.IDLE ||
+                transportState != TransportState.IDLE
+            ) {
+                item {
+                    ScanCard(
+                        scanning = transportState == TransportState.DISCOVERING,
+                        connecting = phase != SessionManager.Phase.IDLE &&
+                            transportState != TransportState.DISCOVERING,
+                        activeType = activeType,
+                        onScanToggle = { if (transportState == TransportState.DISCOVERING) vm.stopScan() else doScan() },
+                        onCancelConnect = { vm.cancelSession() },
+                    )
+                }
             }
             transportError?.let { e ->
-                item {
-                    ErrorBanner(
-                        message = transportErrorMessage(e),
-                        onDismiss = { vm.clearTransportError() },
-                    )
+                if (
+                    activeType == TransportType.WIFI_DIRECT &&
+                    e is com.hamseda.walkie.transport.TransportError.ConnectFailed &&
+                    e.reason.contains("location services disabled", ignoreCase = true)
+                ) {
+                    item {
+                        LocationServicesCard(
+                            message = stringResource(R.string.err_wifi_location_disabled),
+                            onOpenSettings = {
+                                context.startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS))
+                            },
+                        )
+                    }
+                } else {
+                    item {
+                        ErrorBanner(
+                            message = transportErrorMessage(e),
+                            onDismiss = { vm.clearTransportError() },
+                        )
+                    }
                 }
             }
-            if (peers.isEmpty()) {
-                item {
-                    EmptyPeers()
-                }
-            } else {
-                items(peers, key = { it.id }) { peer ->
-                    PeerCard(
-                        peer = peer,
-                        connecting = transportState == TransportState.CONNECTING,
-                        onConnect = { doConnectPeer(peer) },
-                    )
+            // The selected role is exclusive for a session attempt. Do not
+            // leave stale peer cards tappable while this device is waiting or
+            // already connecting; switching roles must happen after Stop.
+            if (phase == SessionManager.Phase.IDLE) {
+                if (peers.isEmpty()) {
+                    item {
+                        EmptyPeers()
+                    }
+                } else {
+                    items(peers, key = { it.id }) { peer ->
+                        PeerCard(
+                            peer = peer,
+                            connecting = transportState == TransportState.CONNECTING,
+                            onConnect = { doConnectPeer(peer) },
+                        )
+                    }
                 }
             }
         }
@@ -322,6 +401,7 @@ fun DiscoveryScreen(
 @Composable
 private fun WaitCard(
     activeType: TransportType,
+    active: Boolean,
     waiting: Boolean,
     onStartWaiting: () -> Unit,
     onStopWaiting: () -> Unit,
@@ -366,6 +446,28 @@ private fun WaitCard(
                         shape = RoundedCornerShape(12.dp),
                     ) {
                         Text(stringResource(R.string.btn_stop))
+                    }
+                }
+            } else if (active) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(20.dp),
+                        strokeWidth = 2.dp,
+                    )
+                    Spacer(Modifier.width(12.dp))
+                    Text(
+                        text = stringResource(R.string.mode_connecting),
+                        modifier = Modifier.weight(1f),
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    OutlinedButton(
+                        onClick = onStopWaiting,
+                        shape = RoundedCornerShape(12.dp),
+                    ) {
+                        Text(stringResource(R.string.btn_cancel))
                     }
                 }
             } else {
@@ -465,6 +567,7 @@ private fun ScanCard(
 private fun ModeSelector(
     preference: TransportPreference,
     onSelect: (TransportPreference) -> Unit,
+    enabled: Boolean,
 ) {
     val options = listOf(
         Triple(TransportPreference.AUTO_RECOMMEND, R.string.transport_auto, Icons.Filled.Radar),
@@ -482,13 +585,14 @@ private fun ModeSelector(
                         .fillMaxWidth()
                         .selectable(
                             selected = preference == pref,
+                            enabled = enabled,
                             onClick = { onSelect(pref) },
                             role = Role.RadioButton,
                         )
                         .padding(horizontal = 16.dp, vertical = 10.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    RadioButton(selected = preference == pref, onClick = null)
+                    RadioButton(selected = preference == pref, onClick = null, enabled = enabled)
                     Spacer(Modifier.width(8.dp))
                     Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
                     Spacer(Modifier.width(12.dp))
@@ -533,6 +637,33 @@ private fun AvailabilityCard(
             Spacer(Modifier.width(8.dp))
             OutlinedButton(onClick = onRetry, shape = RoundedCornerShape(12.dp)) {
                 Text(stringResource(R.string.retry))
+            }
+        }
+    }
+}
+
+@Composable
+private fun LocationServicesCard(message: String, onOpenSettings: () -> Unit) {
+    Card(
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
+    ) {
+        Column(Modifier.padding(16.dp)) {
+            Text(
+                text = stringResource(R.string.err_wifi_location_title),
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onErrorContainer,
+            )
+            Spacer(Modifier.height(6.dp))
+            Text(
+                text = message,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onErrorContainer,
+            )
+            Spacer(Modifier.height(12.dp))
+            Button(onClick = onOpenSettings, shape = RoundedCornerShape(12.dp)) {
+                Text(stringResource(R.string.open_location_settings))
             }
         }
     }
@@ -613,7 +744,23 @@ private fun transportErrorMessage(e: com.hamseda.walkie.transport.TransportError
                 else R.string.err_radio_disabled_bt,
             )
         is com.hamseda.walkie.transport.TransportError.ConnectFailed ->
-            stringResource(R.string.err_connect_failed)
+            when {
+                e.reason.contains("bluetooth discovery failed", ignoreCase = true) ->
+                    stringResource(R.string.err_bluetooth_scan_failed)
+                e.reason.contains("bluetooth connect failed", ignoreCase = true) &&
+                    (e.reason.contains("read failed", ignoreCase = true) ||
+                        e.reason.contains("socket might closed", ignoreCase = true)) ->
+                    stringResource(R.string.err_bt_rfcomm_closed)
+                e.reason.contains("location services disabled", ignoreCase = true) ->
+                    stringResource(R.string.err_wifi_location_disabled)
+                e.reason.startsWith("discovery failed:", ignoreCase = true) ->
+                    stringResource(R.string.err_wifi_scan_failed)
+                e.reason.contains("p2p listen failed", ignoreCase = true) ->
+                    stringResource(R.string.err_wifi_listen_failed)
+                e.reason.contains("wi-fi direct connect rejected", ignoreCase = true) ->
+                    stringResource(R.string.err_wifi_p2p_connect_rejected)
+                else -> stringResource(R.string.err_connect_failed)
+            }
         is com.hamseda.walkie.transport.TransportError.ConnectionLost ->
             stringResource(R.string.err_transport_lost)
         is com.hamseda.walkie.transport.TransportError.PeerNotFound ->

@@ -1,53 +1,67 @@
 package com.hamseda.walkie.crypto
 
+import java.util.HashSet
+
 /**
  * Sliding-window replay / duplicate detector over uint32 sequence numbers.
  *
  * Accepts a sequence number iff it has not been seen before and is not older
- * than [windowSize] behind the highest accepted number. Out-of-order frames
- * *inside* the window are accepted (wireless links reorder); anything at or
- * below `highest - windowSize`, or any repeat, is rejected.
+ * than [windowSize] behind the highest accepted number under uint32 serial
+ * arithmetic. A forward distance in (0, 2^31) means newer; the other half of
+ * the uint32 space is interpreted as older. This supports the ordinary
+ * 0xFFFFFFFF -> 0 rollover without treating the first post-rollover frames
+ * as stale. Values are stored explicitly rather than in a modulo-indexed bit
+ * array, so custom window sizes cannot collide at the uint32 wrap boundary.
  *
  * Not thread-safe — the session layer serializes frame processing.
  */
 class ReplayProtection(private val windowSize: Int = 128) {
+    private val mask = 0xFFFFFFFFL
+    private val halfRange = 0x80000000L
     private var highest: Long = -1L
-    private val seen = BooleanArray(windowSize)
+    private val seen = HashSet<Long>()
+
+    init {
+        require(windowSize > 0) { "windowSize must be positive" }
+    }
 
     /** @return true if the frame may be processed, false if it must be dropped. */
     fun accept(seq: Long): Boolean {
         require(seq in 0..0xFFFFFFFFL) { "seq out of uint32 range" }
         if (highest == -1L) {
             highest = seq
-            seen[(seq % windowSize).toInt()] = true
+            seen.add(seq)
             return true
         }
-        if (seq > highest) {
-            val jump = seq - highest
+
+        val forwardDistance = (seq - highest) and mask
+        if (forwardDistance == 0L) return false
+
+        if (forwardDistance < halfRange) {
+            val jump = forwardDistance
             if (jump >= windowSize) {
-                // Far jump: stale window, start over.
-                seen.fill(false)
+                // A large forward jump makes all previously seen numbers stale.
+                seen.clear()
             } else {
-                // Clear bits that fall out of the window.
-                var s = highest + 1
-                while (s <= seq) {
-                    seen[(s % windowSize).toInt()] = false
-                    s++
+                // Evict exactly the values that move behind the replay window.
+                var step = 1L
+                while (step <= jump) {
+                    seen.remove((highest - windowSize + step) and mask)
+                    step++
                 }
             }
             highest = seq
-            seen[(seq % windowSize).toInt()] = true
+            seen.add(seq)
             return true
         }
-        if (seq <= highest - windowSize) return false // too old
-        val idx = (seq % windowSize).toInt()
-        if (seen[idx]) return false // duplicate / replay
-        seen[idx] = true
-        return true
+
+        val backwardDistance = (highest - seq) and mask
+        if (backwardDistance >= windowSize) return false // too old or ambiguous serial distance
+        return seen.add(seq) // accepts an unseen out-of-order frame once
     }
 
     fun reset() {
         highest = -1L
-        seen.fill(false)
+        seen.clear()
     }
 }

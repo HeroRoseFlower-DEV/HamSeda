@@ -20,6 +20,9 @@
     <!-- Local peer-to-peer sockets only. Never used for internet traffic. -->
     <uses-permission android:name="android.permission.INTERNET" />
 
+    <!-- Keep active voice processing scheduled while the display is off. -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
     <!-- Android 17 (API 37): local-network access is blocked by default for
          apps targeting API 37. Wi-Fi Direct group sockets are local-network
          connections, so this must be granted before connecting. -->
@@ -43,8 +46,16 @@
         android:name="android.permission.ACCESS_COARSE_LOCATION"
         android:maxSdkVersion="32" />
 
-    <!-- Bluetooth Classic on Android 12+ -->
-    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
+    <!--
+      Bluetooth Classic discovery never derives physical location. On Android
+      12+ this assertion is important because fine-location permission is
+      capped to API 32 for Wi-Fi Direct's legacy permission model; without
+      neverForLocation, modern Bluetooth scan behavior can be rejected on
+      devices whose target-SDK permission checks require the location assertion.
+    -->
+    <uses-permission
+        android:name="android.permission.BLUETOOTH_SCAN"
+        android:usesPermissionFlags="neverForLocation" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
     <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
     <!-- Bluetooth Classic on Android 11 and below -->
@@ -55,7 +66,7 @@
         android:name="android.permission.BLUETOOTH_ADMIN"
         android:maxSdkVersion="30" />
 
-    <!-- Push-to-talk microphone, requested only when the user starts a session -->
+    <!-- Microphone runtime permission is explained and requested in the first-run gate -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
 

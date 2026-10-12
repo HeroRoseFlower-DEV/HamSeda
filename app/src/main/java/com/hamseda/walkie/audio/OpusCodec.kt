@@ -1,86 +1,130 @@
 package com.hamseda.walkie.audio
 
 import com.hamseda.walkie.proto.CodecId
-import org.concentus.OpusApplication
-import org.concentus.OpusDecoder
-import org.concentus.OpusEncoder
-import org.concentus.OpusException
+import java.io.Closeable
 
 /**
- * Opus voice codec via the vendored Concentus pure-Java port
- * (see `org/concentus/VENDORED_FROM.md`).
+ * Real-time speech codec backed by the official native libopus 1.6.1 build.
  *
- * Configuration: 16 kHz, mono, 20 ms frames (320 samples),
- * VOIP application, ~20 kbps target bitrate — a low-latency speech
- * setting validated for real-time push-to-talk. A 20 ms frame encodes to
- * roughly 40–60 bytes, leaving ample headroom on both transports.
+ * Profile: 48 kHz mono PCM16, 20 ms frames, VOIP application, 40 kbps,
+ * complexity 10, voice signal hint, full-band maximum bandwidth and
+ * unconstrained VBR. The upstream source archive is hash-pinned in CMake;
+ * the codec is packaged in the APK and does not download anything at runtime.
  *
- * The codec is bundled in the APK: nothing is downloaded at runtime.
+ * JVM tests can construct this class for protocol wiring, but real encode /
+ * decode operations require Android's packaged native library and are covered
+ * by OpusCodecInstrumentedTest.
  */
 class OpusCodec(
     private val bitrateBps: Int = DEFAULT_BITRATE_BPS,
-) : AudioCodec {
+) : AudioCodec, Closeable {
     override val codecId: Byte = CodecId.OPUS
     override val sampleRate: Int = AudioCodec.SAMPLE_RATE
     override val channels: Int = AudioCodec.CHANNELS
     override val frameSamples: Int = AudioCodec.FRAME_SAMPLES
 
-    private var encoder: OpusEncoder? = null
-    private var decoder: OpusDecoder? = null
+    private val native = NativeOpusCodec()
+    private var encoderHandle: Long = 0L
+    private var decoderHandle: Long = 0L
     private val encodeBuf = ByteArray(MAX_PACKET_BYTES)
     private val lock = Any()
+
+    /** Reports the actual version string returned by the linked native library. */
+    val implementationVersion: String
+        get() = native.version()
 
     init {
         reset()
     }
 
     override fun encode(pcm: ShortArray): ByteArray {
-        require(pcm.size >= frameSamples) { "need $frameSamples samples, got ${pcm.size}" }
+        require(pcm.size >= frameSamples) {
+            "need $frameSamples samples, got ${pcm.size}"
+        }
         synchronized(lock) {
-            val enc = encoder ?: throw IllegalStateException("codec closed")
-            try {
-                val n = enc.encode(pcm, 0, frameSamples, encodeBuf, 0, encodeBuf.size)
-                require(n > 0) { "opus encoder produced empty packet" }
-                return encodeBuf.copyOf(n)
-            } catch (e: OpusException) {
-                throw IllegalArgumentException("opus encode failed", e)
+            val enc = encoderHandle
+            check(enc != 0L) {
+                "Native libopus is unavailable in this runtime; run codec I/O tests on Android."
             }
+            val n = native.encode(enc, pcm, frameSamples, encodeBuf)
+            require(n > 0) { "opus encode failed (native result=$n)" }
+            return encodeBuf.copyOf(n)
         }
     }
 
     override fun decode(data: ByteArray): ShortArray {
         require(data.isNotEmpty()) { "empty opus packet" }
+        require(data.size <= MAX_PACKET_BYTES) {
+            "Opus packet exceeds maximum size $MAX_PACKET_BYTES"
+        }
         synchronized(lock) {
-            val dec = decoder ?: throw IllegalStateException("codec closed")
-            val out = ShortArray(frameSamples)
-            try {
-                // decodeFec=false: lost frames are concealed by the player
-                // (last-frame repeat with decay), not by the codec.
-                dec.decode(data, 0, data.size, out, 0, frameSamples, false)
-                return out
-            } catch (e: OpusException) {
-                throw IllegalArgumentException("opus decode failed", e)
+            val dec = decoderHandle
+            check(dec != 0L) {
+                "Native libopus is unavailable in this runtime; run codec I/O tests on Android."
             }
+            val out = ShortArray(frameSamples)
+            // The app sends one 20 ms frame per packet. FEC stays off because
+            // TCP/RFCOMM are reliable byte streams and retransmit transport loss.
+            val decodedSamples = native.decode(dec, data, out, frameSamples, decodeFec = false)
+            require(decodedSamples >= 0) {
+                "opus decode failed (native result=$decodedSamples)"
+            }
+            require(decodedSamples == frameSamples) {
+                "expected $frameSamples decoded samples, got $decodedSamples"
+            }
+            return out
         }
     }
 
     override fun reset() {
         synchronized(lock) {
-            encoder = OpusEncoder(sampleRate, channels, OpusApplication.OPUS_APPLICATION_VOIP)
-                .also { it.bitrate = bitrateBps }
-            decoder = OpusDecoder(sampleRate, channels)
+            releaseHandlesLocked()
+
+            // Plain JVM tests have no Android ABI-specific .so. They can wire
+            // the AudioCodec factory without exercising native audio processing.
+            if (!native.isAvailable) return
+
+            val newEncoder = native.createEncoder(
+                sampleRate = sampleRate,
+                channels = channels,
+                bitrateBps = bitrateBps,
+                complexity = ENCODER_COMPLEXITY,
+            )
+            check(newEncoder != 0L) { "libopus could not create an encoder" }
+
+            var newDecoder = 0L
+            try {
+                newDecoder = native.createDecoder(sampleRate, channels)
+                check(newDecoder != 0L) { "libopus could not create a decoder" }
+                encoderHandle = newEncoder
+                decoderHandle = newDecoder
+            } catch (error: Throwable) {
+                native.destroyDecoder(newDecoder)
+                native.destroyEncoder(newEncoder)
+                throw error
+            }
         }
+    }
+
+    private fun releaseHandlesLocked() {
+        val oldEncoder = encoderHandle
+        val oldDecoder = decoderHandle
+        encoderHandle = 0L
+        decoderHandle = 0L
+        native.destroyEncoder(oldEncoder)
+        native.destroyDecoder(oldDecoder)
     }
 
     override fun close() {
         synchronized(lock) {
-            encoder = null
-            decoder = null
+            releaseHandlesLocked()
         }
     }
 
     companion object {
-        const val DEFAULT_BITRATE_BPS = 20_000
-        const val MAX_PACKET_BYTES = 512
+        const val LIBOPUS_VERSION = "1.6.1"
+        const val DEFAULT_BITRATE_BPS = 40_000
+        const val ENCODER_COMPLEXITY = 10
+        const val MAX_PACKET_BYTES = 1275
     }
 }

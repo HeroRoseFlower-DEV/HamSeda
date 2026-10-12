@@ -4,14 +4,11 @@ import com.hamseda.walkie.proto.CodecId
 
 /**
  * Voice codec abstraction. All codecs operate on 20 ms mono frames at
- * 16 kHz (320 samples) — the unit the audio engine captures and plays.
+ * 48 kHz (960 samples) — the unit the audio engine captures and plays.
  *
  * Two implementations ship:
- * - [OpusCodec] (default): Opus via the vendored Concentus pure-Java port,
- *   ~20 kbps. Comfortable on both Wi-Fi Direct and Bluetooth Classic.
- * - [PcmCodec] (fallback): raw 16-bit PCM, 256 kbps. Documented limitation:
- *   fine on Wi-Fi Direct, heavy for Bluetooth Classic; selectable in
- *   Settings for diagnostics.
+ * - [OpusCodec] (default): official native libopus 1.6.1, 40 kbps high-quality voice profile.
+ * - [PcmCodec] (fallback): raw 16-bit PCM, 768 kbps. Use only for diagnostics over Wi-Fi Direct.
  */
 interface AudioCodec {
     val codecId: Byte
@@ -39,7 +36,7 @@ interface AudioCodec {
     fun close()
 
     companion object {
-        const val SAMPLE_RATE = 16000
+        const val SAMPLE_RATE = 48000
         const val CHANNELS = 1
         const val FRAME_SAMPLES = SAMPLE_RATE / 50 // 20 ms
         const val FRAME_BYTES_PCM = FRAME_SAMPLES * 2

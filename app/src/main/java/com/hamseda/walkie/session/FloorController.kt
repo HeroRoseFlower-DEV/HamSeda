@@ -17,7 +17,7 @@ import com.hamseda.walkie.proto.DenyReason
  * Pure logic, no Android dependencies — fully unit-tested.
  */
 class FloorController(
-    private val clock: () -> Long = System::currentTimeMillis,
+    private val clock: () -> Long = { System.nanoTime() / 1_000_000L },
     private val listener: Listener? = null,
 ) {
     enum class Holder { NONE, SELF, PEER }

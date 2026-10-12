@@ -67,11 +67,12 @@
     <!-- Settings -->
     <string name="settings_title">Settings</string>
     <string name="settings_transport">Connection mode</string>
+    <string name="transport_locked_hint">Connection mode cannot be changed during an active session.</string>
     <string name="settings_codec">Audio codec</string>
-    <string name="codec_opus">Opus (default, efficient)</string>
-    <string name="codec_opus_desc">About 20 kbps; suits both connection modes.</string>
+    <string name="codec_opus">Opus (default, high quality)</string>
+    <string name="codec_opus_desc">40 kbps target; 48 kHz mono voice audio.</string>
     <string name="codec_pcm">Raw PCM (diagnostic)</string>
-    <string name="codec_pcm_desc">256 kbps; only suitable for Wi-Fi Direct.</string>
+    <string name="codec_pcm_desc">768 kbps; diagnostic mode for Wi-Fi Direct only.</string>
     <string name="settings_speakerphone">Speakerphone output</string>
     <string name="settings_vibration">Vibrate while transmitting</string>
     <string name="settings_theme">Theme</string>
@@ -103,6 +104,19 @@
     <string name="privacy_p5">Application-layer end-to-end encryption (ECDH on P-256, HKDF-SHA-256 key derivation, AES-256-GCM) on all audio and control frames; keys are ephemeral and wiped from memory when the session ends.</string>
     <string name="privacy_p6">No behavioral analytics, ads, or cloud crash reporting.</string>
 
+    <!-- First-run permissions gate -->
+    <string name="startup_permissions_title">Set up permissions</string>
+    <string name="startup_permissions_message">Before you start, HamSeda needs permission to use nearby radios and your microphone.</string>
+    <string name="startup_permissions_details">Bluetooth is used to discover and connect to nearby phones. Wi-Fi Direct and local-network access (on supported Android versions) enable a direct phone-to-phone connection. Microphone access is used only during a voice session when you hold the talk button. HamSeda does not send this data to a server.</string>
+    <string name="startup_permissions_continue">Review and grant permissions</string>
+    <string name="startup_permissions_open_settings">Open app settings</string>
+    <string name="startup_permissions_denied">Some permissions were not granted. HamSeda cannot start until the required permissions are enabled.</string>
+    <string name="startup_permissions_settings_hint">If Android no longer shows a permission prompt, open app settings and enable the required permissions there.</string>
+    <string name="startup_permissions_requesting">Requesting the next required permission from Android…</string>
+    <string name="startup_permissions_nearby">Nearby devices: allow Bluetooth scanning, connecting and discoverability, plus Wi-Fi Direct discovery and direct phone-to-phone connections. Android groups these permissions into its Nearby devices prompt.</string>
+    <string name="startup_permissions_local_network">Local network: allow the direct Wi-Fi connection on Android 17 and newer.</string>
+    <string name="startup_permissions_microphone">Microphone: allow push-to-talk voice. Audio capture still runs only during a voice session while you hold the talk button.</string>
+
     <!-- Permissions -->
     <string name="perm_title">Permission needed</string>
     <string name="perm_wifi_message">To find nearby phones with Wi-Fi Direct, Android requires this permission. Your location is never stored or sent anywhere.</string>
@@ -118,10 +132,18 @@
     <string name="err_peer_busy">Your peer is talking; please wait.</string>
     <string name="err_transport_lost">Connection lost.</string>
     <string name="err_connect_failed">Could not connect to that phone. Make sure it is listening and nearby, then try again.</string>
+    <string name="err_bluetooth_scan_failed">Android refused to start Bluetooth discovery. Check the Nearby devices permission, toggle Bluetooth off and on, then retry.</string>
+    <string name="err_bt_rfcomm_closed">The Bluetooth connection was closed before HamSeda could connect. On the other phone, select Bluetooth mode and tap Start waiting; keep it discoverable. Pair the phones in Android Bluetooth settings if they are not paired. Only one phone should initiate the connection.</string>
+    <string name="err_wifi_location_title">Location services are off</string>
+    <string name="err_wifi_location_disabled">Android requires the system Location switch to be enabled for Wi-Fi Direct peer discovery, even when Nearby devices permission is granted. Turn on Location in system settings on both phones, return here, then tap Scan again. HamSeda does not collect or send your location.</string>
+    <string name="open_location_settings">Open Location settings</string>
+    <string name="err_wifi_scan_failed">Android refused to start Wi-Fi Direct discovery. Check Nearby devices permission and make sure Wi-Fi is enabled, then retry.</string>
+        <string name="err_wifi_listen_failed">Android could not start Wi-Fi Direct listen mode. Keep Wi-Fi enabled, make sure Nearby devices permission is granted, then stop and restart waiting. If connecting from another phone, keep this phone in Wait for connection mode.</string>
+    <string name="err_wifi_p2p_connect_rejected">Android rejected the Wi-Fi Direct connection request. Keep both phones nearby with Wi-Fi enabled. Put the receiving phone in Wait for connection mode, keep the initiating phone in Scan mode, and only initiate from one phone. Accept the Android invitation if it appears.</string>
     <string name="err_peer_not_found">That phone is no longer visible. Scan again.</string>
     <string name="err_handshake_timeout">The phone did not answer in time. Try again.</string>
     <string name="err_peer_timeout">Peer stopped responding; connection closed.</string>
-    <string name="err_protocol">Protocol error; connection closed.</string>
+    <string name="err_protocol">The handshake from the other phone is incompatible or invalid. Install the same latest HamSeda APK on both phones, then retry.</string>
     <string name="err_mic">Microphone unavailable.</string>
     <string name="err_peer_rejected">Peer rejected the connection.</string>
     <string name="err_radio_disabled_wifi">Wi-Fi Direct is off; please enable it.</string>
@@ -145,4 +167,5 @@
     <string name="back">Back</string>
     <string name="discoverable_declined">Visibility declined — your phone will not be discoverable to Bluetooth scans.</string>
     <string name="err_playback">Speaker unavailable — could not start audio playback.</string>
+    <string name="err_restart_timeout">The previous session is still closing. Wait a moment and try again.</string>
 </resources>

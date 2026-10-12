@@ -28,6 +28,26 @@ class JitterBufferTest {
     }
 
     @Test
+    fun `default buffer primes at 60ms and abandons a gap promptly`() {
+        val clock = Clock()
+        val jb = JitterBuffer(nowMs = clock::get)
+        jb.push(0, payload(0))
+        jb.push(2, payload(2))
+        assertTrue(jb.takeNext() is JitterBuffer.TakeResult.NotReady)
+        jb.push(3, payload(3))
+        assertEquals(0L, (jb.takeNext() as JitterBuffer.TakeResult.Frame).packet.seq)
+        assertTrue(jb.takeNext() is JitterBuffer.TakeResult.NotReady)
+
+        clock.now += 39
+        assertTrue(jb.takeNext() is JitterBuffer.TakeResult.NotReady)
+        clock.now += 1
+        val lost = jb.takeNext()
+        assertTrue(lost is JitterBuffer.TakeResult.Lost)
+        assertEquals(1L, (lost as JitterBuffer.TakeResult.Lost).skippedSeq)
+        assertEquals(2L, (jb.takeNext() as JitterBuffer.TakeResult.Frame).packet.seq)
+    }
+
+    @Test
     fun `gap becomes Lost after max wait`() {
         val clock = Clock()
         val jb = JitterBuffer(targetFrames = 2, maxWaitMs = 100, nowMs = clock::get)
@@ -132,4 +152,33 @@ class JitterBufferTest {
         assertEquals(droppedBefore + 1, jb.droppedStale)
         assertEquals(4, jb.bufferedFrames())
     }
+    @Test
+    fun `hs12 queue overflow advances past an evicted expected frame`() {
+        val clock = Clock()
+        val jb = JitterBuffer(targetFrames = 2, maxFrames = 3, maxWaitMs = 100, nowMs = clock::get)
+        jb.push(0, payload(0))
+        jb.push(1, payload(1))
+        jb.push(2, payload(2))
+        assertEquals(0L, (jb.takeNext() as JitterBuffer.TakeResult.Frame).packet.seq)
+        // Queue is [1,2,3], nextSeq=1. Pushing 4 evicts expected seq 1.
+        jb.push(3, payload(3))
+        jb.push(4, payload(4))
+        val next = jb.takeNext()
+        assertTrue("playhead should skip the evicted frame without a timeout", next is JitterBuffer.TakeResult.Frame)
+        assertEquals(2L, (next as JitterBuffer.TakeResult.Frame).packet.seq)
+    }
+
+
+    @Test
+    fun `jitter buffer keeps its own payload copy`() {
+        val clock = Clock()
+        val jb = JitterBuffer(targetFrames = 1, nowMs = clock::get)
+        val callerBuffer = byteArrayOf(7)
+        jb.push(0, callerBuffer)
+        callerBuffer.fill(0)
+        val packet = (jb.takeNext() as JitterBuffer.TakeResult.Frame).packet
+        assertEquals(7, packet.payload[0].toInt())
+    }
+
 }
+

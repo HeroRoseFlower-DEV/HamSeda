@@ -44,6 +44,7 @@ import com.hamseda.walkie.BuildConfig
 import com.hamseda.walkie.R
 import com.hamseda.walkie.data.SettingsRepository
 import com.hamseda.walkie.proto.CodecId
+import com.hamseda.walkie.session.SessionManager
 import com.hamseda.walkie.transport.TransportPreference
 import com.hamseda.walkie.ui.vm.SettingsViewModel
 import com.hamseda.walkie.ui.vm.VmDeps
@@ -60,6 +61,8 @@ fun SettingsScreen(
     vm: SettingsViewModel = viewModel(factory = VmFactory(deps)),
 ) {
     val transportPref by vm.transportPreference.collectAsStateWithLifecycle()
+    val phase by vm.phase.collectAsStateWithLifecycle()
+    val transportSelectionEnabled = phase == SessionManager.Phase.IDLE
     val codecPref by vm.codecPref.collectAsStateWithLifecycle()
     val speakerphone by vm.speakerphone.collectAsStateWithLifecycle()
     val vibration by vm.vibration.collectAsStateWithLifecycle()
@@ -97,16 +100,26 @@ fun SettingsScreen(
                     selected = transportPref == TransportPreference.AUTO_RECOMMEND,
                     title = stringResource(R.string.transport_auto),
                     onClick = { vm.setTransportPreference(TransportPreference.AUTO_RECOMMEND) },
+                    enabled = transportSelectionEnabled,
                 )
                 RadioOption(
                     selected = transportPref == TransportPreference.WIFI_DIRECT,
                     title = stringResource(R.string.transport_wifi_direct),
                     onClick = { vm.setTransportPreference(TransportPreference.WIFI_DIRECT) },
+                    enabled = transportSelectionEnabled,
                 )
                 RadioOption(
                     selected = transportPref == TransportPreference.BLUETOOTH,
                     title = stringResource(R.string.transport_bluetooth),
                     onClick = { vm.setTransportPreference(TransportPreference.BLUETOOTH) },
+                    enabled = transportSelectionEnabled,
+                )
+            }
+            if (!transportSelectionEnabled) {
+                Text(
+                    text = stringResource(R.string.transport_locked_hint),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
 
@@ -267,15 +280,16 @@ private fun RadioOption(
     title: String,
     subtitle: String? = null,
     onClick: () -> Unit,
+    enabled: Boolean = true,
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .selectable(selected = selected, onClick = onClick, role = Role.RadioButton)
+            .selectable(selected = selected, enabled = enabled, onClick = onClick, role = Role.RadioButton)
             .padding(horizontal = 16.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        RadioButton(selected = selected, onClick = null)
+        RadioButton(selected = selected, onClick = null, enabled = enabled)
         Spacer(Modifier.width(8.dp))
         Column(Modifier.weight(1f)) {
             Text(

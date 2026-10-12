@@ -2,6 +2,7 @@ package com.hamseda.walkie.transport
 
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothClass
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothServerSocket
@@ -34,8 +35,10 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withContext
 import java.io.IOException
 import java.net.SocketTimeoutException
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
 /**
@@ -77,6 +80,15 @@ class BluetoothTransport(private val context: Context) : Transport {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val mutex = Mutex()
 
+    // Serializes incoming-frame publication with socket replacement. A reader
+    // from an old RFCOMM socket must never publish frames into a later session.
+    private val readerGate = Any()
+
+    // Serializes scan starts with Stop/disconnect so a delayed retry cannot
+    // resurrect discovery after the user has explicitly stopped it.
+    private val discoveryLock = Any()
+    private var discoveryGeneration = 0L
+
     private val adapter: BluetoothAdapter? by lazy {
         (context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
     }
@@ -86,24 +98,74 @@ class BluetoothTransport(private val context: Context) : Transport {
     private var serverSocket: BluetoothServerSocket? = null
     private var readerJob: Job? = null
     private var acceptThread: Thread? = null
-    private var receiverRegistered = false
-    private val found = mutableMapOf<String, PeerDevice>()
-    private val bondedCache = mutableMapOf<String, PeerDevice>()
 
-    /** Merges discovered + paired phones into the visible peer list. */
+    // Outgoing RFCOMM connect() is a blocking platform call. Keep its job and
+    // socket reference so disconnect() can close it immediately instead of
+    // allowing a delayed connection to resurrect CONNECTED afterwards.
+    private val connectionGeneration = AtomicLong(0L)
+    private var connectJob: Job? = null
+    private var pendingConnectSocket: AtomicReference<BluetoothSocket?>? = null
+    private var receiverRegistered = false
+    // Receiver callbacks and scan coroutines can touch these maps on different
+    // dispatchers. Bound the cache even though ACTION_FOUND is a protected
+    // platform broadcast; a dense environment can still contain many devices.
+    private val peerLock = Any()
+    private val found = LinkedHashMap<String, PeerDevice>()
+    private val bondedCache = LinkedHashMap<String, PeerDevice>()
+
+    /** Merge a bounded snapshot without racing receiver and scan callbacks. */
     private fun publishPeers() {
-        _peers.value = found.values.toList() + bondedCache.values.filter {
-            it.id !in found.keys
+        val snapshot = synchronized(peerLock) {
+            val result = ArrayList<PeerDevice>(MAX_VISIBLE_PEERS)
+            found.values.take(MAX_DISCOVERED_PEERS).forEach(result::add)
+            for (peer in bondedCache.values) {
+                if (result.size >= MAX_VISIBLE_PEERS) break
+                if (peer.id !in found && result.none { it.id == peer.id }) result.add(peer)
+            }
+            result
         }
+        _peers.value = snapshot
+    }
+
+    private fun isUsableBluetoothAddress(address: String): Boolean =
+        BluetoothAdapter.checkBluetoothAddress(address) &&
+            !address.equals("02:00:00:00:00:00", ignoreCase = true) &&
+            !address.equals("00:00:00:00:00:00", ignoreCase = true) &&
+            !address.equals("FF:FF:FF:FF:FF:FF", ignoreCase = true)
+
+    /**
+     * A bonded headset/speaker is not a HamSeda peer. Exclude devices that
+     * advertise the Bluetooth Audio/Video major class from the candidate list
+     * so the app does not try RFCOMM against ordinary audio accessories.
+     *
+     * Unknown classes are intentionally retained: Android/vendor stacks may
+     * not expose a class for every phone, and the authenticated HamSeda
+     * handshake remains the definitive protocol check.
+     */
+    @SuppressLint("MissingPermission")
+    private fun isLikelyAudioAccessory(device: BluetoothDevice): Boolean = try {
+        device.bluetoothClass?.majorDeviceClass == BluetoothClass.Device.Major.AUDIO_VIDEO
+    } catch (_: SecurityException) {
+        false
     }
 
     override fun availability(): Availability {
         val a = adapter ?: return Availability(false, false, "bluetooth_unsupported")
-        // Register eagerly so the discoverability state is live as soon as
-        // the Discovery screen opens (same reason as Wi-Fi Direct).
-        registerReceiver()
-        updateDiscoverable()
-        return Availability(true, a.isEnabled, if (a.isEnabled) "" else "bluetooth_disabled")
+        // Adapter state and scan mode require BLUETOOTH_CONNECT on Android 12+.
+        // TransportManager calls availability during startup, before the user
+        // necessarily grants that runtime permission.
+        if (PermissionHelper.missingBluetoothPermissions(context, forDiscovery = false).isNotEmpty()) {
+            return Availability(true, false, "bluetooth_permission_missing")
+        }
+        return try {
+            val enabled = a.isEnabled
+            registerReceiver()
+            updateDiscoverable()
+            Availability(true, enabled, if (enabled) "" else "bluetooth_disabled")
+        } catch (e: SecurityException) {
+            AppLog.log(TAG, "adapter availability denied: ${e.message}")
+            Availability(true, false, "bluetooth_permission_missing")
+        }
     }
 
     override fun clearError() {
@@ -134,19 +196,23 @@ class BluetoothTransport(private val context: Context) : Transport {
         val a = adapter ?: return
         try {
             if (!a.isEnabled) return
-            val bonded = a.bondedDevices.map { d ->
-                val name = try {
-                    d.name?.ifBlank { d.address } ?: d.address
-                } catch (_: SecurityException) {
-                    d.address
+            val bonded = a.bondedDevices
+                .filterNot { isLikelyAudioAccessory(it) }
+                .map { d ->
+                    val name = try {
+                        d.name?.ifBlank { d.address } ?: d.address
+                    } catch (_: SecurityException) {
+                        d.address
+                    }
+                    PeerDevice(id = d.address, displayName = name, transport = TransportType.BLUETOOTH)
                 }
-                PeerDevice(id = d.address, displayName = name, transport = TransportType.BLUETOOTH)
-            }
             // HS-11: always reconcile. A successfully empty bonded set clears
             // the cache (stale peers must not linger); only a permission
             // failure leaves the old cache (unknown state, logged as such).
-            bondedCache.clear()
-            bonded.forEach { bondedCache[it.id] = it }
+            synchronized(peerLock) {
+                bondedCache.clear()
+                bonded.take(MAX_VISIBLE_PEERS).forEach { bondedCache[it.id] = it }
+            }
             if (bonded.isNotEmpty()) {
                 AppLog.log(TAG, "found ${bonded.size} paired device(s)")
             } else {
@@ -162,71 +228,254 @@ class BluetoothTransport(private val context: Context) : Transport {
 
     @SuppressLint("MissingPermission")
     override suspend fun startDiscovery() {
+        val attempt = synchronized(discoveryLock) { ++discoveryGeneration }
         val missing = PermissionHelper.missingBluetoothPermissions(context, forDiscovery = true)
         if (missing.isNotEmpty()) {
             AppLog.log(TAG, "discovery blocked: missing permissions $missing")
-            _error.value = TransportError.PermissionDenied(missing)
+            updateDiscoveryOutcome(
+                attempt,
+                state = TransportState.UNAVAILABLE,
+                error = TransportError.PermissionDenied(missing),
+            )
             return
         }
         val a = adapter ?: run {
             AppLog.log(TAG, "discovery failed: no adapter")
-            _state.value = TransportState.UNAVAILABLE
-            _error.value = TransportError.Unsupported("bluetooth_unsupported")
+            updateDiscoveryOutcome(
+                attempt,
+                state = TransportState.UNAVAILABLE,
+                error = TransportError.Unsupported("bluetooth_unsupported"),
+            )
             return
         }
-        if (!a.isEnabled) {
+        val enabled = try {
+            a.isEnabled
+        } catch (e: SecurityException) {
+            failDiscoveryAfterSecurityException(attempt, "read adapter state", e)
+            return
+        }
+        if (!enabled) {
             AppLog.log(TAG, "discovery failed: radio disabled")
-            _state.value = TransportState.UNAVAILABLE
-            _error.value = TransportError.RadioDisabled(TransportType.BLUETOOTH)
+            updateDiscoveryOutcome(
+                attempt,
+                state = TransportState.UNAVAILABLE,
+                error = TransportError.RadioDisabled(TransportType.BLUETOOTH),
+            )
             return
         }
+        if (!isCurrentDiscovery(attempt)) return
         registerReceiver()
-        found.clear()
-        _peers.value = emptyList()
+        synchronized(discoveryLock) {
+            if (attempt != discoveryGeneration) return
+            synchronized(peerLock) { found.clear() }
+            _peers.value = emptyList()
+        }
         updateDiscoverable()
         // Paired phones are connectable without discovery — list them even
         // if the discovery scan itself fails on this device.
         refreshBondedPeers()
-        // If a previous discovery is still running, keep it instead of
-        // cancel+restart: hammering startDiscovery() right after a cancel
-        // makes the stack return false.
-        if (a.isDiscovering) {
-            AppLog.log(TAG, "discovery already in progress; keeping it")
-            _state.value = TransportState.DISCOVERING
-            _error.value = null
-            return
+
+        when (tryStartDiscovery(a, attempt)) {
+            DiscoveryStartResult.STARTED -> {
+                AppLog.log(TAG, "discovery started")
+                return
+            }
+            DiscoveryStartResult.ALREADY_ACTIVE -> {
+                AppLog.log(TAG, "discovery already in progress; keeping it")
+                return
+            }
+            DiscoveryStartResult.CANCELLED,
+            DiscoveryStartResult.PERMISSION_ERROR -> return
+            DiscoveryStartResult.FAILED -> Unit
         }
-        AppLog.log(TAG, "starting discovery (adapterState=${a.state})")
-        if (a.startDiscovery()) {
-            AppLog.log(TAG, "discovery started")
-            _state.value = TransportState.DISCOVERING
-            _error.value = null
-            return
-        }
-        // One retry after a settle delay — the stack sometimes rejects an
-        // immediate start while still tearing down a previous session.
-        AppLog.log(TAG, "discovery start returned false; retrying after settle delay")
-        delay(1_000)
-        if (!a.isDiscovering && a.startDiscovery()) {
-            AppLog.log(TAG, "discovery started on retry")
-            _state.value = TransportState.DISCOVERING
-            _error.value = null
-        } else {
+
+        // Bluetooth service readiness can lag behind STATE_ON on some OEM
+        // builds. Retry with bounded backoff, but abandon this generation if
+        // the user stops scanning, disconnects, or starts a newer scan.
+        val retryDelaysMs = longArrayOf(750L, 1_500L, 3_000L)
+        for ((index, waitMs) in retryDelaysMs.withIndex()) {
+            val retrySnapshot = try {
+                a.state to a.isDiscovering
+            } catch (e: SecurityException) {
+                failDiscoveryAfterSecurityException(attempt, "inspect retry state", e)
+                return
+            }
             AppLog.log(
                 TAG,
-                "discovery failed: startDiscovery() returned false " +
-                    "(adapterState=${a.state}, discovering=${a.isDiscovering})",
+                "discovery start returned false; retry ${index + 1}/${retryDelaysMs.size} in ${waitMs}ms " +
+                    "(adapterState=${retrySnapshot.first}, discovering=${retrySnapshot.second})",
             )
-            _error.value = TransportError.ConnectFailed("bluetooth discovery failed to start")
+            delay(waitMs)
+            if (!isCurrentDiscovery(attempt)) {
+                AppLog.log(TAG, "discovery retry cancelled because the request is no longer current")
+                return
+            }
+            val retryState = try {
+                a.state
+            } catch (e: SecurityException) {
+                failDiscoveryAfterSecurityException(attempt, "read adapter state during retry", e)
+                return
+            }
+            if (retryState != BluetoothAdapter.STATE_ON) {
+                AppLog.log(TAG, "discovery retry stopped: adapter no longer STATE_ON (state=$retryState)")
+                updateDiscoveryOutcome(
+                    attempt,
+                    state = TransportState.UNAVAILABLE,
+                    error = TransportError.RadioDisabled(TransportType.BLUETOOTH),
+                )
+                return
+            }
+            when (tryStartDiscovery(a, attempt)) {
+                DiscoveryStartResult.STARTED -> {
+                    AppLog.log(TAG, "discovery started on retry ${index + 1}")
+                    return
+                }
+                DiscoveryStartResult.ALREADY_ACTIVE -> {
+                    AppLog.log(TAG, "discovery became active during retry wait")
+                    return
+                }
+                DiscoveryStartResult.CANCELLED,
+                DiscoveryStartResult.PERMISSION_ERROR -> return
+                DiscoveryStartResult.FAILED -> Unit
+            }
+        }
+        if (!isCurrentDiscovery(attempt)) return
+        val scanPermissionGranted = if (Build.VERSION.SDK_INT >= 31) {
+            PermissionHelper.isGranted(context, android.Manifest.permission.BLUETOOTH_SCAN)
+        } else null
+        val fineLocationGranted = if (Build.VERSION.SDK_INT in 29..30) {
+            PermissionHelper.isGranted(context, android.Manifest.permission.ACCESS_FINE_LOCATION)
+        } else null
+        val coarseLocationGranted = if (Build.VERSION.SDK_INT < 29) {
+            PermissionHelper.isGranted(context, android.Manifest.permission.ACCESS_COARSE_LOCATION)
+        } else null
+        val finalSnapshot = try {
+            Triple(a.state, a.isDiscovering, runCatching { a.scanMode }.getOrNull())
+        } catch (e: SecurityException) {
+            failDiscoveryAfterSecurityException(attempt, "collect final scan diagnostics", e)
+            return
+        }
+        AppLog.log(
+            TAG,
+            "discovery failed after bounded retries: startDiscovery() returned false " +
+                "(sdk=${Build.VERSION.SDK_INT}, adapterState=${finalSnapshot.first}, discovering=${finalSnapshot.second}, " +
+                "scanPermissionGranted=$scanPermissionGranted, fineLocationGranted=$fineLocationGranted, " +
+                "coarseLocationGranted=$coarseLocationGranted, scanMode=${finalSnapshot.third}, " +
+                "bondedCandidates=${synchronized(peerLock) { bondedCache.size }})",
+        )
+        updateDiscoveryOutcome(
+            attempt,
+            state = TransportState.FAILED,
+            error = TransportError.ConnectFailed(
+                "bluetooth discovery failed to start; retry or restart Bluetooth",
+            ),
+        )
+    }
+
+    private enum class DiscoveryStartResult {
+        STARTED,
+        ALREADY_ACTIVE,
+        FAILED,
+        PERMISSION_ERROR,
+        CANCELLED,
+    }
+
+    /**
+     * Android permissions can be revoked between our preflight check and the
+     * Bluetooth binder call. Convert that race into an observable transport
+     * error instead of letting the discovery coroutine crash.
+     */
+    private fun failDiscoveryAfterSecurityException(
+        attempt: Long,
+        operation: String,
+        error: SecurityException,
+    ) {
+        AppLog.log(TAG, "Bluetooth discovery denied during $operation: ${error.message}")
+        val missing = PermissionHelper.missingBluetoothPermissions(context, forDiscovery = true)
+        if (missing.isNotEmpty()) {
+            updateDiscoveryOutcome(
+                attempt,
+                state = TransportState.UNAVAILABLE,
+                error = TransportError.PermissionDenied(missing),
+            )
+        } else {
+            updateDiscoveryOutcome(
+                attempt,
+                state = TransportState.FAILED,
+                error = TransportError.ConnectFailed(
+                    "Android denied Bluetooth discovery access; re-check Bluetooth and nearby-device permissions",
+                ),
+            )
         }
     }
 
+    /** Start scan + commit the state atomically with Stop/disconnect. */
     @SuppressLint("MissingPermission")
-    override suspend fun stopDiscovery() {
+    private fun tryStartDiscovery(
+        adapter: BluetoothAdapter,
+        attempt: Long,
+    ): DiscoveryStartResult = synchronized(discoveryLock) {
+        if (attempt != discoveryGeneration) return@synchronized DiscoveryStartResult.CANCELLED
         try {
-            adapter?.cancelDiscovery()
-        } catch (_: SecurityException) {}
-        if (_state.value == TransportState.DISCOVERING) _state.value = TransportState.IDLE
+            val alreadyActive = adapter.isDiscovering
+            if (!alreadyActive && !adapter.startDiscovery()) {
+                return@synchronized DiscoveryStartResult.FAILED
+            }
+            _state.value = TransportState.DISCOVERING
+            _error.value = null
+            if (alreadyActive) DiscoveryStartResult.ALREADY_ACTIVE else DiscoveryStartResult.STARTED
+        } catch (e: SecurityException) {
+            AppLog.log(TAG, "Bluetooth discovery start denied by Android: ${e.message}")
+            val missing = PermissionHelper.missingBluetoothPermissions(context, forDiscovery = true)
+            if (missing.isNotEmpty()) {
+                _state.value = TransportState.UNAVAILABLE
+                _error.value = TransportError.PermissionDenied(missing)
+            } else {
+                _state.value = TransportState.FAILED
+                _error.value = TransportError.ConnectFailed(
+                    "Android denied Bluetooth discovery access; re-check Bluetooth and nearby-device permissions",
+                )
+            }
+            DiscoveryStartResult.PERMISSION_ERROR
+        }
+    }
+
+    private fun isCurrentDiscovery(attempt: Long): Boolean =
+        synchronized(discoveryLock) { attempt == discoveryGeneration }
+
+    private fun updateDiscoveryOutcome(
+        attempt: Long,
+        state: TransportState? = null,
+        error: TransportError? = null,
+    ): Boolean = synchronized(discoveryLock) {
+        if (attempt != discoveryGeneration) return@synchronized false
+        state?.let { _state.value = it }
+        _error.value = error
+        true
+    }
+
+    override suspend fun stopDiscovery() {
+        // Clear an old terminal error only when the user explicitly stops
+        // discovery or starts a new role, not during failure teardown.
+        invalidateDiscovery(clearError = true)
+    }
+
+    /** Invalidates pending retries before cancelling the platform scan. */
+    @SuppressLint("MissingPermission")
+    private fun invalidateDiscovery(clearError: Boolean = false) {
+        synchronized(discoveryLock) {
+            discoveryGeneration++
+            try {
+                adapter?.cancelDiscovery()
+            } catch (_: Exception) {}
+            if (_state.value == TransportState.DISCOVERING ||
+                _state.value == TransportState.FAILED ||
+                _state.value == TransportState.UNAVAILABLE
+            ) {
+                _state.value = TransportState.IDLE
+            }
+            if (clearError) _error.value = null
+        }
     }
 
     // ------------------------------------------------------------- connect
@@ -237,6 +486,7 @@ class BluetoothTransport(private val context: Context) : Transport {
         if (missing.isNotEmpty()) {
             AppLog.log(TAG, "connect blocked: missing permissions $missing")
             _error.value = TransportError.PermissionDenied(missing)
+            _state.value = TransportState.FAILED
             return
         }
         mutex.withLock {
@@ -248,15 +498,34 @@ class BluetoothTransport(private val context: Context) : Transport {
             }
             val a = adapter ?: run {
                 _error.value = TransportError.Unsupported("bluetooth_unsupported")
+                _state.value = TransportState.FAILED
                 return
             }
-            if (!a.isEnabled) {
+            val radioEnabled = try {
+                a.isEnabled
+            } catch (e: SecurityException) {
+                AppLog.log(TAG, "connect denied while checking Bluetooth state: ${e.message}")
+                val stillMissing = PermissionHelper.missingBluetoothPermissions(context, forDiscovery = false)
+                _error.value = if (stillMissing.isNotEmpty()) {
+                    TransportError.PermissionDenied(stillMissing)
+                } else {
+                    TransportError.ConnectFailed("Android denied Bluetooth access; re-check Nearby devices permission")
+                }
+                _state.value = if (stillMissing.isNotEmpty()) TransportState.UNAVAILABLE else TransportState.FAILED
+                return
+            }
+            if (!radioEnabled) {
                 _error.value = TransportError.RadioDisabled(TransportType.BLUETOOTH)
+                _state.value = TransportState.FAILED
                 return
             }
+            cancelPendingConnectLocked()
+            val attempt = connectionGeneration.incrementAndGet()
+            val socketRef = AtomicReference<BluetoothSocket?>()
+            pendingConnectSocket = socketRef
             _state.value = TransportState.CONNECTING
             _error.value = null
-            AppLog.log(TAG, "connecting to ${peer.displayName} (${peer.id})")
+            AppLog.log(TAG, "connecting to selected Bluetooth peer")
             try {
                 a.cancelDiscovery()
             } catch (_: SecurityException) {}
@@ -266,9 +535,8 @@ class BluetoothTransport(private val context: Context) : Transport {
             // closing unblocks the pending connect(), which withTimeout
             // alone cannot interrupt. The AtomicReference guarantees the
             // watchdog never closes a newer socket.
-            scope.launch(Dispatchers.IO) {
+            connectJob = scope.launch(Dispatchers.IO) {
                 var socket: BluetoothSocket? = null
-                val socketRef = AtomicReference<BluetoothSocket?>()
                 val watchdog = launch {
                     delay(Protocol.CONNECT_TIMEOUT_MS.toLong())
                     socketRef.getAndSet(null)?.let { s ->
@@ -286,15 +554,60 @@ class BluetoothTransport(private val context: Context) : Transport {
                         Protocol.BLUETOOTH_SERVICE_UUID,
                     )
                     socketRef.set(socket)
-                    socket.connect() // blocking; watchdog close unblocks it
+                    // disconnect() invalidates the generation and closes this
+                    // reference. Check before entering the blocking call so a
+                    // cancellation during device/socket creation cannot start
+                    // a fresh RFComm connection after the user stopped it.
+                    if (connectionGeneration.get() != attempt) {
+                        socketRef.getAndSet(null)?.let { try { it.close() } catch (_: IOException) {} }
+                        return@launch
+                    }
+                    socket.connect() // blocking; disconnect/watchdog close unblocks it
                     watchdog.cancel()
                     socketRef.set(null)
                     if (!socket.isConnected) {
                         throw SocketTimeoutException("bluetooth connect timed out")
                     }
-                    AppLog.log(TAG, "rfcomm connected to ${peer.id}")
-                    onSocketReady(socket)
-                    socket = null // owned by the transport now
+                    if (connectionGeneration.get() != attempt) {
+                        try { socket.close() } catch (_: IOException) {}
+                        socket = null
+                        return@launch
+                    }
+                    AppLog.log(TAG, "RFCOMM connection established")
+                    onSocketReady(socket, expectedGeneration = attempt)
+                    socket = null // onSocketReady accepted or closed the socket
+                } catch (e: CancellationException) {
+                    watchdog.cancel()
+                    socketRef.getAndSet(null)?.let { try { it.close() } catch (_: IOException) {} }
+                    try { socket?.close() } catch (_: IOException) {}
+                    throw e
+                } catch (e: SecurityException) {
+                    watchdog.cancel()
+                    socketRef.getAndSet(null)?.let { try { it.close() } catch (_: IOException) {} }
+                    try { socket?.close() } catch (_: IOException) {}
+                    AppLog.log(TAG, "RFCOMM connect denied by Android: ${e.message}")
+                    val stillMissing = PermissionHelper.missingBluetoothPermissions(
+                        context,
+                        forDiscovery = false,
+                    )
+                    mutex.withLock {
+                        if (connectionGeneration.get() == attempt &&
+                            _state.value == TransportState.CONNECTING
+                        ) {
+                            _error.value = if (stillMissing.isNotEmpty()) {
+                                TransportError.PermissionDenied(stillMissing)
+                            } else {
+                                TransportError.ConnectFailed(
+                                    "Android denied Bluetooth RFCOMM access; check Nearby devices permission",
+                                )
+                            }
+                            _state.value = if (stillMissing.isNotEmpty()) {
+                                TransportState.UNAVAILABLE
+                            } else {
+                                TransportState.FAILED
+                            }
+                        }
+                    }
                 } catch (e: Exception) {
                     watchdog.cancel()
                     socketRef.set(null)
@@ -303,10 +616,17 @@ class BluetoothTransport(private val context: Context) : Transport {
                         socket?.close()
                     } catch (_: IOException) {}
                     mutex.withLock {
-                        _error.value = TransportError.ConnectFailed(
-                            "bluetooth connect failed: ${e.message}",
-                        )
-                        _state.value = TransportState.FAILED
+                        // An old attempt that was cancelled by disconnect() or
+                        // superseded by a retry must not overwrite the newer
+                        // transport state with FAILED.
+                        if (connectionGeneration.get() == attempt &&
+                            _state.value == TransportState.CONNECTING
+                        ) {
+                            _error.value = TransportError.ConnectFailed(
+                                "bluetooth connect failed: ${e.message}",
+                            )
+                            _state.value = TransportState.FAILED
+                        }
                     }
                 }
             }
@@ -318,15 +638,30 @@ class BluetoothTransport(private val context: Context) : Transport {
         val missing = PermissionHelper.missingBluetoothPermissions(context, forDiscovery = false)
         if (missing.isNotEmpty()) {
             _error.value = TransportError.PermissionDenied(missing)
+            _state.value = TransportState.FAILED
             return
         }
         mutex.withLock {
             val a = adapter ?: run {
-                _state.value = TransportState.UNAVAILABLE
+                _error.value = TransportError.Unsupported("bluetooth_unsupported")
+                _state.value = TransportState.FAILED
                 return
             }
-            if (!a.isEnabled) {
-                _state.value = TransportState.UNAVAILABLE
+            val radioEnabled = try {
+                a.isEnabled
+            } catch (e: SecurityException) {
+                AppLog.log(TAG, "listen denied while checking Bluetooth state: ${e.message}")
+                val stillMissing = PermissionHelper.missingBluetoothPermissions(context, forDiscovery = false)
+                _error.value = if (stillMissing.isNotEmpty()) {
+                    TransportError.PermissionDenied(stillMissing)
+                } else {
+                    TransportError.ConnectFailed("Android denied Bluetooth access; re-check Nearby devices permission")
+                }
+                _state.value = if (stillMissing.isNotEmpty()) TransportState.UNAVAILABLE else TransportState.FAILED
+                return
+            }
+            if (!radioEnabled) {
+                _state.value = TransportState.FAILED
                 _error.value = TransportError.RadioDisabled(TransportType.BLUETOOTH)
                 return
             }
@@ -349,10 +684,12 @@ class BluetoothTransport(private val context: Context) : Transport {
         } catch (e: IOException) {
             AppLog.log(TAG, "rfcomm listen failed: ${e.message}")
             _error.value = TransportError.ConnectFailed("rfcomm listen failed: ${e.message}")
+            _state.value = TransportState.FAILED
             return
         } catch (e: SecurityException) {
             AppLog.log(TAG, "rfcomm listen denied: ${e.message}")
             _error.value = TransportError.PermissionDenied(listOf("bluetooth_connect"))
+            _state.value = TransportState.FAILED
             return
         }
         val server = serverSocket ?: return
@@ -397,54 +734,76 @@ class BluetoothTransport(private val context: Context) : Transport {
 
     // --------------------------------------------------------------- socket
 
-    private suspend fun onSocketReady(socket: BluetoothSocket) {
+    private suspend fun onSocketReady(
+        socket: BluetoothSocket,
+        expectedGeneration: Long? = null,
+    ) {
         mutex.withLock {
+            // A socket may finish connecting at the same moment as Stop or
+            // disconnect. Only the active outgoing attempt may publish it.
+            if (expectedGeneration != null &&
+                (connectionGeneration.get() != expectedGeneration ||
+                    _state.value != TransportState.CONNECTING)
+            ) {
+                try { socket.close() } catch (_: IOException) {}
+                AppLog.log(TAG, "discarding stale RFCOMM socket after disconnect/retry")
+                return@withLock
+            }
             closeSocketLocked()
             btSocket = socket
-            val remote = try {
-                socket.remoteDevice?.address ?: "unknown"
-            } catch (_: SecurityException) {
-                "unknown"
+            AppLog.log(TAG, "RFCOMM socket ready")
+            val sourceRef = AtomicReference<FramedSocket?>()
+            val newFramed = FramedSocket.fromStreams(socket.inputStream, socket.outputStream) {
+                sourceRef.get()?.let { source ->
+                    scope.launch { handleLost("peer closed the connection", source) }
+                }
             }
-            AppLog.log(TAG, "socket ready (peer=$remote)")
-            framed = FramedSocket.fromStreams(socket.inputStream, socket.outputStream) {
-                scope.launch { handleLost("peer closed the connection") }
-            }
+            sourceRef.set(newFramed)
+            synchronized(readerGate) { framed = newFramed }
             _state.value = TransportState.CONNECTED
             _error.value = null
-            startReaderLocked()
+            startReaderLocked(newFramed)
         }
     }
 
-    private fun startReaderLocked() {
+    private fun startReaderLocked(source: FramedSocket) {
         readerJob?.cancel()
-        val f = framed ?: return
         readerJob = scope.launch {
-            while (_state.value == TransportState.CONNECTED) {
-                // HS-04: readFrame() throws FrameException on protocol
-                // violation — route it through the common disconnect path
-                // instead of stranding the transport in CONNECTED.
+            while (isCurrentSocketConnected(source)) {
+                // HS-04: malformed frames and I/O failures use the common
+                // cleanup path. Always carry the source socket identity so a
+                // cancelled old reader cannot tear down a newer connection.
                 val r = try {
-                    f.readFrame()
+                    source.readFrame()
                 } catch (e: FrameException) {
                     AppLog.log(TAG, "framing error: ${e.message}")
-                    handleLost("framing error: ${e.message}")
+                    handleLost("framing error: ${e.message}", source)
                     return@launch
                 } catch (e: CancellationException) {
                     throw e // normal shutdown; not an error
                 } catch (e: Exception) {
                     AppLog.log(TAG, "reader failed: ${e.javaClass.simpleName}")
-                    handleLost("read error: ${e.message}")
+                    handleLost("read error: ${e.message}", source)
                     return@launch
                 }
                 when (r) {
-                    is FramedSocket.ReadResult.Frame -> _incomingFrames.emit(r.frame)
+                    is FramedSocket.ReadResult.Frame -> {
+                        when (publishIncomingFrame(source, r.frame)) {
+                            0 -> return@launch // socket was replaced or closed
+                            1 -> Unit
+                            else -> {
+                                AppLog.log(TAG, "incoming frame queue overflow; closing RFCOMM connection")
+                                handleLost("incoming frame queue overflow", source)
+                                return@launch
+                            }
+                        }
+                    }
                     is FramedSocket.ReadResult.Closed -> {
-                        handleLost("peer closed the connection")
+                        handleLost("peer closed the connection", source)
                         return@launch
                     }
                     is FramedSocket.ReadResult.Error -> {
-                        handleLost(r.cause.message ?: "read error")
+                        handleLost(r.cause.message ?: "read error", source)
                         return@launch
                     }
                 }
@@ -452,20 +811,62 @@ class BluetoothTransport(private val context: Context) : Transport {
         }
     }
 
-    private suspend fun handleLost(reason: String) {
-        mutex.withLock {
-            AppLog.log(TAG, "connection lost: $reason (was ${_state.value})")
-            if (_state.value == TransportState.CONNECTED) {
-                _error.value = TransportError.ConnectionLost(reason)
+    /**
+     * Returns 0 for a stale socket, 1 for a published frame, and 2 if the
+     * bounded SharedFlow buffer is saturated. tryEmit inside the gate makes
+     * the current-socket check and publication atomic with respect to cleanup.
+     */
+    private fun publishIncomingFrame(source: FramedSocket, frame: ByteArray): Int =
+        synchronized(readerGate) {
+            if (framed !== source || _state.value != TransportState.CONNECTED) {
+                0
+            } else if (_incomingFrames.tryEmit(frame)) {
+                1
+            } else {
+                2
             }
+        }
+
+    private fun isCurrentSocketConnected(source: FramedSocket): Boolean =
+        synchronized(readerGate) {
+            framed === source && _state.value == TransportState.CONNECTED
+        }
+
+    private suspend fun handleLost(reason: String, source: FramedSocket) {
+        mutex.withLock {
+            if (framed !== source || _state.value != TransportState.CONNECTED) {
+                AppLog.log(
+                    TAG,
+                    "ignoring stale RFCOMM close/error (reason=$reason, state=${_state.value})",
+                )
+                return@withLock
+            }
+            AppLog.log(TAG, "connection lost: $reason (was ${_state.value})")
+            _error.value = TransportError.ConnectionLost(reason)
             closeSocketLocked()
             _state.value = TransportState.IDLE
         }
     }
 
+    /** Must be called under [mutex]. Invalidates and actively closes a pending connect. */
+    private fun cancelPendingConnectLocked() {
+        connectionGeneration.incrementAndGet()
+        pendingConnectSocket?.getAndSet(null)?.let { socket ->
+            try { socket.close() } catch (_: IOException) {}
+        }
+        pendingConnectSocket = null
+        connectJob?.cancel()
+        connectJob = null
+    }
+
     private fun closeSocketLocked() {
+        // Invalidate this reader before closing the stream. Closing an old
+        // RFCOMM socket can unblock its read concurrently with a new connect.
+        val oldFramed = synchronized(readerGate) {
+            framed.also { framed = null }
+        }
         readerJob?.cancel(); readerJob = null
-        framed?.close(); framed = null
+        oldFramed?.close()
         try { btSocket?.close() } catch (_: IOException) {}
         btSocket = null
     }
@@ -476,25 +877,33 @@ class BluetoothTransport(private val context: Context) : Transport {
         val f = mutex.withLock { framed }
             ?: throw IOException("not connected")
         try {
-            f.writeFrame(frameBytes)
+            // RFCOMM output can block during radio retransmission/backpressure;
+            // keep that wait off the session's CPU dispatcher.
+            withContext(Dispatchers.IO) {
+                f.writeFrame(frameBytes)
+            }
         } catch (e: IOException) {
-            scope.launch { handleLost(e.message ?: "write error") }
+            scope.launch { handleLost(e.message ?: "write error", f) }
             throw e
         }
     }
 
     override suspend fun disconnect() {
+        invalidateDiscovery()
         mutex.withLock {
+            cancelPendingConnectLocked()
             closeSocketLocked()
             stopAcceptLocked()
             _state.value = TransportState.IDLE
-            _error.value = null
+            // Preserve the terminal transport error for the UI diagnostics
+            // banner; a subsequent stopDiscovery/new attempt clears it.
             _peers.value = emptyList()
-            found.clear()
+            synchronized(peerLock) { found.clear() }
         }
     }
 
     override fun close() {
+        invalidateDiscovery()
         scope.launch { disconnect() }.invokeOnCompletion {
             unregisterReceiver()
             scope.cancel()
@@ -528,18 +937,52 @@ class BluetoothTransport(private val context: Context) : Transport {
                     } catch (_: SecurityException) {
                         null
                     }
+                    if (isLikelyAudioAccessory(device)) {
+                        AppLog.log(TAG, "ignoring non-phone Audio/Video Bluetooth device during discovery")
+                        return
+                    }
+                    if (!isUsableBluetoothAddress(address)) return
+                    val displayName = name
+                        ?.filterNot { it.isISOControl() }
+                        ?.take(MAX_PEER_NAME_CHARS)
+                        ?.takeIf { it.isNotBlank() }
+                        ?: address
                     val peer = PeerDevice(
                         id = address,
-                        displayName = name?.takeIf { it.isNotBlank() } ?: address,
+                        displayName = displayName,
                         transport = TransportType.BLUETOOTH,
                     )
-                    found[address] = peer
+                    synchronized(peerLock) {
+                        if (address in found || found.size < MAX_DISCOVERED_PEERS) {
+                            found[address] = peer
+                        }
+                    }
                     // Keep paired-but-not-discovered phones in the list too.
                     publishPeers()
                 }
+                BluetoothAdapter.ACTION_DISCOVERY_STARTED -> {
+                    // This is a system-wide inquiry broadcast and may be
+                    // triggered by another app; our own startDiscovery()
+                    // call is responsible for setting our requested state.
+                    AppLog.log(TAG, "system Bluetooth discovery started (appState=${_state.value})")
+                }
                 BluetoothAdapter.ACTION_DISCOVERY_FINISHED -> {
-                    if (_state.value == TransportState.DISCOVERING) {
-                        _state.value = TransportState.IDLE
+                    val stillDiscovering = try {
+                        adapter?.isDiscovering == true
+                    } catch (_: SecurityException) {
+                        false
+                    }
+                    AppLog.log(
+                        TAG,
+                        "system Bluetooth discovery finished (visiblePeers=${_peers.value.size}, " +
+                            "stillDiscovering=$stillDiscovering)",
+                    )
+                    synchronized(discoveryLock) {
+                        // An older finish broadcast must not clear state if a
+                        // newer inquiry is already running.
+                        if (!stillDiscovering && _state.value == TransportState.DISCOVERING) {
+                            _state.value = TransportState.IDLE
+                        }
                     }
                 }
                 BluetoothAdapter.ACTION_SCAN_MODE_CHANGED -> {
@@ -553,16 +996,24 @@ class BluetoothTransport(private val context: Context) : Transport {
         if (receiverRegistered) return
         val filter = IntentFilter().apply {
             addAction(BluetoothDevice.ACTION_FOUND)
+            addAction(BluetoothAdapter.ACTION_DISCOVERY_STARTED)
             addAction(BluetoothAdapter.ACTION_DISCOVERY_FINISHED)
             addAction(BluetoothAdapter.ACTION_SCAN_MODE_CHANGED)
         }
         try {
             if (Build.VERSION.SDK_INT >= 33) {
-                context.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
+                // ACTION_FOUND/DISCOVERY_FINISHED can originate from the
+                // privileged Bluetooth app UID rather than android's system
+                // UID. NOT_EXPORTED can silently block those broadcasts.
+                // The filter is restricted to platform Bluetooth actions;
+                // discovered peer identity is still established only by the
+                // authenticated HamSeda protocol handshake.
+                context.registerReceiver(receiver, filter, Context.RECEIVER_EXPORTED)
             } else {
                 context.registerReceiver(receiver, filter)
             }
             receiverRegistered = true
+            AppLog.log(TAG, "Bluetooth system receiver registered")
         } catch (e: Exception) {
             Log.w(TAG, "receiver register failed", e)
         }
@@ -578,5 +1029,8 @@ class BluetoothTransport(private val context: Context) : Transport {
 
     companion object {
         private const val TAG = "HamSedaBluetooth"
+        private const val MAX_DISCOVERED_PEERS = 128
+        private const val MAX_VISIBLE_PEERS = 192
+        private const val MAX_PEER_NAME_CHARS = 64
     }
 }

@@ -11,13 +11,16 @@
 | Replay protection | `CryptoTest` (ReplayProtectionTest) | in-order, duplicates, too-old, in-window reorder, far jump, reset |
 | Floor control | `FloorControlTest` | request→grant→release, busy deny, pending-vs-peer race, peer lease extension by audio, silent-peer timeout, self-TX cap, late grant ignored |
 | Jitter buffer | `JitterBufferTest` | priming, in-order playout, gap→Lost after wait, in-time gap fill, stale drop, queue cap, stats; **HS-10: stale/duplicate at full buffer does not evict useful frames** |
-| Codecs | `CodecTest` | PCM bit-exact roundtrip, Opus compression ratio, Opus energy preservation + correlation, silence, stream consistency, bad-input rejection |
+| Codecs (JVM) | `CodecTest` | PCM bit-exact roundtrip, Opus profile defaults, codec factory and bad-input checks that do not require native audio I/O |
+| Native Opus | `OpusCodecInstrumentedTest` | Actual Android JNI load, runtime libopus version, 20 ms encode/decode, signal correlation/energy, silence, reset and bad-input rejection |
 | Framed socket | `FramedSocketTest` | delimiting, clean EOF → Closed, oversized envelope rejected, truncated frame → Error, oversized write rejected |
 | Full session | `SessionHandshakeTest` | handshake→SAS→IN_SESSION over loopback transport, matching SAS, PTT→grant→audio frames→release, SAS-mismatch abort, **MITM tamper → AUTH_MISMATCH**, abrupt transport loss → clean teardown |
 | Security (HS-01/02/05/07) | `SessionSecurityTest` | **bad-tag + huge seq does not poison replay window**; wrong session id dropped; duplicate rejected; concurrent malicious inputs don't race; **concurrent audio has unique monotonic wire seqs**; queue stays bounded; **playback failure → clean rollback (no fake IN_SESSION)**; **handshake/SAS timeouts fire (virtual time)** |
 
 `./gradlew :app:lintDebug` must be clean; `./gradlew :app:assembleAndroidTest`
-verifies instrumented sources compile (execution needs hardware — see below).
+verifies instrumented sources compile. Run `OpusCodecInstrumentedTest` on an Android
+emulator or physical device to verify the packaged native library and codec I/O; host-JVM
+tests intentionally do not load Android ABI-specific shared libraries.
 
 ## 2. Manual two-device tests (cannot run on GitHub-hosted CI)
 
@@ -26,13 +29,15 @@ mobile data OFF, no internet (see README "تضمین آفلاین بودن" for 
 procedure and its device variations).
 
 ### 2.1 Wi-Fi Direct voice (primary path)
-1. Both phones: Discovery → Automatic → Scan → each sees the other.
-2. Phone A taps "اتصال امن" on B. Both show the 6-digit SAS.
-3. Read the codes aloud; confirm they match on both → session starts.
-4. A holds PTT 10 s and speaks; B hears. Release is immediate (< 300 ms
-   perceived). B holds PTT; A hears.
-5. While A transmits, B presses PTT → B sees "peer busy", A keeps the floor.
-6. A walks out of range / disables Wi-Fi → both show "connection lost",
+1. Choose **Wi-Fi Direct** explicitly on both phones for this test; avoid Automatic initially because each phone can select a different transport.
+2. Phone B: Discovery → select Wi-Fi Direct → tap "Start waiting" and keep the screen open. On Android 13+, the app must log that Wi-Fi Direct incoming-listen mode started.
+3. Phone A: Discovery → select Wi-Fi Direct → tap "Scan"; verify B appears, then tap "اتصال امن" on B's peer card. Only A initiates the connection.
+4. Do not use two independent outgoing attempts. One phone must remain in Wait for connection so it has an active SessionManager listener ready to accept the socket and secure handshake.
+5. Both show the 6-digit SAS. Read the codes aloud; confirm they match on both → session starts.
+6. A holds PTT for 10 s and speaks; B hears. Release is immediate (< 300 ms
+   perceived). B then holds PTT; A hears.
+7. While A transmits, B presses PTT → B sees "peer busy", A keeps the floor.
+8. A walks out of range / disables Wi-Fi → both show "connection lost",
    session ends, keys wiped (no crash, no stuck mic icon).
 
 ### 2.2 SAS mismatch (MITM simulation)
@@ -40,11 +45,13 @@ procedure and its device variations).
 2. Session aborts on both; no audio path ever opens.
 
 ### 2.3 Bluetooth Classic voice
-1. Both phones: Settings → connection mode → Bluetooth (or Automatic with
-   Wi-Fi off). Enable Bluetooth via the system prompt (the app never toggles
-   radios itself).
-2. Scan → pair → SAS → PTT both directions. Note any audio artifacts vs
-   Wi-Fi Direct.
+1. Both phones: Settings → connection mode → Bluetooth. Enable Bluetooth via
+   the system prompt (the app never toggles radios itself).
+2. Phone B: Discovery → "Start waiting" → accept Android's discoverability
+   prompt and leave the screen open. Phone A scans and connects to B.
+3. Verify the 6-digit SAS, then test PTT in both directions. Note any audio
+   artifacts vs Wi-Fi Direct; ordinary audio accessories (e.g., headphones)
+   must not appear as phone candidates.
 
 ### 2.4 Interruptions & lifecycle
 - Incoming phone call during transmission → TX stops instantly (audio focus).
@@ -70,8 +77,20 @@ procedure and its device variations).
 
 ### 2.6 Performance (before any numeric claim)
 - Measure end-to-end latency (mouth-to-ear) on real devices before quoting it.
+- Confirm diagnostics report a playback buffer close to the platform minimum
+  and a 3-frame initial jitter target. Compare clarity and underruns against
+  the prior APK on both Wi-Fi Direct and Bluetooth Classic.
+- Repeat with the screen locked for 5 minutes and verify voice remains smooth;
+  the active-session partial CPU wake lock should be acquired and released on
+  teardown. Record the battery cost.
+- Force sender backpressure in a test build and verify the outbound queue stays
+  freshness-first: old pending audio is evicted, recent audio survives, and
+  control frames remain queued in order.
 - 10-minute continuous session: watch CPU/battery/thermal in Android Studio
   profiler; note anomalies per device model.
+- RF range and transmit power are hardware / Android-framework controlled.
+  Do not claim that the APK boosts antenna power; measure range, drop rate and
+  reconnect behavior on physical devices at increasing distances.
 
 ## 3. Version matrix
 

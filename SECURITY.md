@@ -32,15 +32,15 @@ completed the in-app pairing flow, against:
    `ECGenParameterSpec("secp256r1")`, `KeyAgreement("ECDH")`). Keys are
    generated per session and never persisted.
 2. **Key derivation:** HKDF-SHA-256 (RFC 5869, over platform HMAC-SHA-256)
-   with salt = SHA-256(ordered nonces), info = `"HamSeda-v1/session-keys"`,
+   with salt = SHA-256(ordered nonces), info = `"HamSeda-v2/session-keys"`,
    output = 32-byte audio key + 32-byte control key + 8-byte session id +
    32-byte SAS seed. Key separation is structural, not by convention.
 3. **Encryption:** AES-256-GCM (`AES/GCM/NoPadding`, 128-bit tag), random
    96-bit nonce per frame, header+role as AAD.
 4. **Authentication of the exchange:** each side seals
    `SHA-256(ordered pubkeys || ordered nonces)` with the control key. A peer
-   that substituted a key or nonce cannot produce a matching transcript.
-5. **SAS:** 6 digits = `HMAC-SHA256(sasSeed, "HamSeda-v1/sas") mod 1_000_000`,
+   that substituted a key, nonce, protocol version, or codec preference cannot produce a matching transcript. The transcript is length-prefixed and canonicalized by public-key role; it includes each peer's exact HELLO payload and associated nonce/public key.
+5. **SAS:** 6 digits = `HMAC-SHA256(sasSeed, "HamSeda-v2/sas") mod 1_000_000`,
    displayed on both phones. The SAS is *detection*, not key material: users
    compare it out-of-band and each confirm. A six-digit code carries ~20 bits;
    it is safe here because it authenticates an already-strong ECDH exchange
@@ -80,6 +80,15 @@ is no TLS network to pin to — by design).
   (theme, transport preference, codec choice). No identities, no contact lists.
 - The `INTERNET` manifest permission exists solely because Android requires
   it to open local TCP sockets; the app never opens a socket to a public IP.
+
+## Additional hardening (2026-10-12)
+
+- Peer ECDH public keys are rejected unless their parameters match secp256r1/P-256; provider-supported alternate curves are not silently accepted.
+- HKDF clears its PRK, per-round intermediate blocks, a single temporary input block (avoiding an extra chained-concatenation copy), and any substitute salt it allocates. Session key derivation clears its combined output and salt after extracting the individual keys, and the temporary SAS HMAC digest is cleared. This is best-effort JVM memory hygiene, not a guarantee against crypto-provider or garbage-collector copies.
+- Opus packets are bounded to the local encoder's maximum at both the authenticated session-validation and decoder boundaries.
+- The SAS screen blocks screenshots/recent-task snapshots while visible and disables confirmation until a code has actually been generated. BLUETOOTH_ADVERTISE is not requested at startup; it is requested only for the explicit Bluetooth-listen role. Outbound queue payloads, decrypted session buffers, jitter-queue entries, decoded playback scratch, AES-GCM nonce/ciphertext scratch buffers, and ECDH/HKDF temporary material are cleared on their applicable consume/drop/teardown paths.
+- Diagnostic text is capped before normalization and address-redaction regexes run.
+- The checked-in Gradle wrapper JAR is matched against its official published checksum (the repo currently carries the 8.12.1 wrapper binary); the Gradle distribution ZIP is separately checksum-pinned to 8.14.6. Dependabot monitors Gradle and GitHub Actions updates.
 
 ## Reporting
 

@@ -51,11 +51,16 @@ jobs:
           export PATH="$CT/bin:$PATH"
           yes | sdkmanager --licenses > /dev/null || true
           # API 37 platform: try the canonical path, fall back to the .0 variant.
-          sdkmanager "platforms;android-37" "build-tools;36.0.0" "platform-tools" \
-            || sdkmanager "platforms;android-37.0" "build-tools;36.0.0" "platform-tools"
+          sdkmanager "platforms;android-37" "build-tools;36.0.0" "platform-tools" "ndk;28.2.13676358" "cmake;3.22.1" \
+            || sdkmanager "platforms;android-37.0" "build-tools;36.0.0" "platform-tools" "ndk;28.2.13676358" "cmake;3.22.1"
 
       - name: Verify Gradle wrapper
-        run: ./gradlew --version
+        # This checked-in wrapper JAR matches Gradle's published official 8.12.1 checksum.
+        # The wrapper distribution itself is separately pinned to 8.14.6 below.
+        run: |
+          set -e
+          echo "2db75c40782f5e8ba1fc278a5574bab070adccb2d21ca5a6e5ed840888448046  gradle/wrapper/gradle-wrapper.jar" | sha256sum --check --strict
+          ./gradlew --version
 
       - name: Run unit tests
         run: ./gradlew :app:testDebugUnitTest --no-daemon --stacktrace

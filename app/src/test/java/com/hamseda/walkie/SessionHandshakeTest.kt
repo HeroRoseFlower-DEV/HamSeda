@@ -1,6 +1,5 @@
 package com.hamseda.walkie
 
-import com.hamseda.walkie.audio.OpusCodec
 import com.hamseda.walkie.proto.Frame
 import com.hamseda.walkie.proto.MessageType
 import com.hamseda.walkie.proto.Protocol
@@ -52,8 +51,10 @@ class SessionHandshakeTest {
     }
 
     private fun Rig.start() {
-        a.startOutgoing(ta, PeerDevice("b", "B", TransportType.WIFI_DIRECT))
+        // Mirror real usage: the waiting phone attaches its inbound frame
+        // collector before the initiator can send HELLO on the new socket.
         b.acceptIncoming(tb)
+        a.startOutgoing(ta, PeerDevice("b", "B", TransportType.WIFI_DIRECT))
     }
 
     private fun Rig.close() {
@@ -67,6 +68,57 @@ class SessionHandshakeTest {
             if (System.currentTimeMillis() > end) throw AssertionError("timeout: $what")
             Thread.sleep(10)
         }
+    }
+
+    @Test
+    fun `key exchange before HELLO is rejected`() {
+        val wrongOrder = newRig(interceptB = { bytes ->
+            val frame = Frame.decode(bytes)
+            if (frame.type == MessageType.HELLO) {
+                frame.copy(type = MessageType.KEY_EXCHANGE).encode()
+            } else {
+                bytes
+            }
+        })
+        wrongOrder.start()
+        wrongOrder.await("KEY_EXCHANGE before HELLO rejected") {
+            wrongOrder.a.phase.value == SessionManager.Phase.IDLE &&
+                wrongOrder.a.error.value == SessionManager.SessionError.PROTOCOL_ERROR
+        }
+        wrongOrder.close()
+    }
+
+    @Test
+    fun `first HELLO is handled before transport reports CONNECTED`() {
+        val rig = newRig()
+        // Model the socket-reader race: the initiator can send a valid HELLO
+        // while the waiting transport still reports AUTHENTICATING.
+        rig.tb.deferConnectedStateUntilFirstInbound = true
+        rig.start()
+        rig.await("both peers complete HELLO/key exchange despite delayed CONNECTED") {
+            rig.a.phase.value == SessionManager.Phase.AWAITING_SAS_CONFIRM &&
+                rig.b.phase.value == SessionManager.Phase.AWAITING_SAS_CONFIRM
+        }
+        assertEquals(rig.a.sasCode.value, rig.b.sasCode.value)
+        rig.close()
+    }
+
+    @Test
+    fun `unsupported HELLO codec is rejected`() {
+        val badCodec = newRig(interceptB = { bytes ->
+            val frame = Frame.decode(bytes)
+            if (frame.type == MessageType.HELLO && frame.payload.size == 2) {
+                frame.copy(payload = frame.payload.copyOf().apply { this[1] = 0x7F.toByte() }).encode()
+            } else {
+                bytes
+            }
+        })
+        badCodec.start()
+        badCodec.await("unsupported HELLO codec rejected") {
+            badCodec.a.phase.value == SessionManager.Phase.IDLE &&
+                badCodec.a.error.value == SessionManager.SessionError.PROTOCOL_ERROR
+        }
+        badCodec.close()
     }
 
     @Test
@@ -116,9 +168,9 @@ class SessionHandshakeTest {
         }
 
         // Drive three encoded frames through A's capture callback.
-        val opus = OpusCodec()
-        val pcm = ShortArray(320) { (it % 100).toShort() }
-        val encoded = opus.encode(pcm)
+        // Session/framing tests treat encoded audio as opaque bytes. Native Opus
+        // encode/decode behavior is tested on Android in OpusCodecInstrumentedTest.
+        val encoded = ByteArray(48) { (it * 17 + 3).toByte() }
         repeat(3) { rig.audioA.onFrame?.invoke(encoded, 0.5f) }
         rig.await("audio arrived") {
             (rig.audioB.playbackBuffer?.bufferedFrames() ?: 0) >= 1
@@ -129,7 +181,6 @@ class SessionHandshakeTest {
         rig.await("floor free") {
             rig.b.floorHolder.value == FloorController.Holder.NONE
         }
-        opus.close()
         rig.close()
     }
 
@@ -201,7 +252,7 @@ class SessionHandshakeTest {
     fun `replayed wire frames are rejected end-to-end`() {
         var lastAudioWire: ByteArray? = null
         val rig = newRig(interceptA = { bytes ->
-            if (decodeType(bytes) == MessageType.AUDIO) lastAudioWire = bytes
+            if (decodeType(bytes) == MessageType.AUDIO) lastAudioWire = bytes.copyOf()
             bytes
         })
         rig.start()
@@ -216,8 +267,9 @@ class SessionHandshakeTest {
         }
         rig.a.setPttPressed(true)
         rig.await("transmitting") { rig.audioA.isCapturing }
-        val opus = OpusCodec()
-        rig.audioA.onFrame?.invoke(opus.encode(ShortArray(320) { 7 }), 0.5f)
+        // The session security test does not exercise audio compression itself.
+        val encoded = ByteArray(48) { (it * 17 + 3).toByte() }
+        rig.audioA.onFrame?.invoke(encoded, 0.5f)
         rig.await("wire frame captured") { lastAudioWire != null }
 
         val failuresBefore = rig.b.authFailures.value
@@ -226,7 +278,6 @@ class SessionHandshakeTest {
         rig.await("replay rejected") { rig.b.authFailures.value > failuresBefore }
         // ...and the session is unaffected.
         assertEquals(SessionManager.Phase.IN_SESSION, rig.b.phase.value)
-        opus.close()
         rig.close()
     }
 }

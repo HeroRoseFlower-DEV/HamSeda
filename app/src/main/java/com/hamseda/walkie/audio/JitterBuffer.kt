@@ -5,23 +5,21 @@ import java.util.TreeMap
 /**
  * Adaptive jitter buffer for 20 ms voice frames.
  *
- * - Buffers [targetFrames] (~80 ms) before first playout to absorb wireless
- *   jitter, then plays in sequence order.
- * - Drops frames older than [maxLateMs] (stale) and caps the queue at
- *   [maxFrames] so a stalled consumer can never grow memory unboundedly.
- * - [takeNext] returns the next in-order frame when available; when the
- *   expected sequence is missing it waits up to [maxWaitMs], then reports
- *   the gap as lost so the player can conceal it and move on. This keeps
- *   one lost packet from stalling the whole stream.
+ * - Buffers [targetFrames] (default ~60 ms) before first playout to improve
+ *   resilience to short wireless scheduling jitter.
+ * - Drops stale frames and caps the queue; old speech is discarded rather
+ *   than replayed long after it was spoken.
+ * - When a packet is missing, waits only [maxWaitMs] before concealment so
+ *   one gap cannot stall playout for a long interval.
  *
  * [nowMs] is injectable for deterministic unit tests.
  */
 class JitterBuffer(
-    private val targetFrames: Int = 4,
-    private val maxFrames: Int = 25,
-    private val maxLateMs: Long = 400,
-    private val maxWaitMs: Long = 120,
-    private val nowMs: () -> Long = System::currentTimeMillis,
+    private val targetFrames: Int = 3,
+    private val maxFrames: Int = 8,
+    private val maxLateMs: Long = 180,
+    private val maxWaitMs: Long = 40,
+    private val nowMs: () -> Long = { System.nanoTime() / 1_000_000L },
 ) {
     data class Packet(val seq: Long, val receivedAt: Long, val payload: ByteArray)
 
@@ -60,11 +58,21 @@ class JitterBuffer(
             return
         }
         if (queue.size >= maxFrames) {
-            // Runaway protection: drop the oldest queued frame.
-            queue.pollFirstEntry()
-            droppedStale++
+            // Runaway protection: drop the oldest queued frame. If it was the
+            // expected frame, advance the playhead now; otherwise one evicted
+            // packet can make playback wait one maxWaitMs interval per stale seq.
+            val evicted = queue.pollFirstEntry()
+            if (evicted != null) {
+                if (nextSeq != -1L && evicted.key >= nextSeq) {
+                    nextSeq = evicted.key + 1
+                    waitStartedAt = now
+                }
+                evicted.value.payload.fill(0)
+                droppedStale++
+            }
         }
-        queue[seq] = Packet(seq, now, payload)
+        // The caller can clear its decrypted input after this queue-owned copy is made.
+        queue[seq] = Packet(seq, now, payload.copyOf())
     }
 
     @Synchronized
@@ -75,6 +83,7 @@ class JitterBuffer(
             val head = queue.firstEntry() ?: break
             if (now - head.value.receivedAt > maxLateMs) {
                 queue.pollFirstEntry()
+                head.value.payload.fill(0)
                 droppedStale++
                 if (nextSeq != -1L && head.key >= nextSeq) nextSeq = head.key + 1
             } else break
@@ -113,12 +122,14 @@ class JitterBuffer(
         }
         // head.key < nextSeq: stale duplicate, drop.
         queue.pollFirstEntry()
+        head.value.payload.fill(0)
         droppedStale++
         return takeNext()
     }
 
     @Synchronized
     fun reset() {
+        queue.values.forEach { it.payload.fill(0) }
         queue.clear()
         nextSeq = -1
         primed = false

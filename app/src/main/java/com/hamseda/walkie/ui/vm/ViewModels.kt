@@ -14,6 +14,7 @@ import com.hamseda.walkie.transport.TransportManager
 import com.hamseda.walkie.transport.TransportPreference
 import com.hamseda.walkie.transport.TransportState
 import com.hamseda.walkie.transport.TransportType
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -90,15 +91,21 @@ class DiscoveryViewModel(private val deps: VmDeps) : ViewModel() {
      * SessionManager's `if (phase != IDLE) return` guard and *silently does
      * nothing* — the button looks dead.
      */
-    private suspend fun restartIdle() {
-        if (deps.manager.phase.value == SessionManager.Phase.IDLE) return
+    private suspend fun restartIdle(): Boolean {
+        if (deps.manager.phase.value == SessionManager.Phase.IDLE) return true
         deps.manager.endSession()
-        try {
+        return try {
             withTimeout(5_000) {
                 deps.manager.phase.first { it == SessionManager.Phase.IDLE }
             }
+            true
         } catch (_: TimeoutCancellationException) {
-            // Proceed anyway; startOutgoing/acceptIncoming re-check IDLE.
+            android.widget.Toast.makeText(
+                deps.appContext,
+                deps.appContext.getString(com.hamseda.walkie.R.string.err_restart_timeout),
+                android.widget.Toast.LENGTH_LONG,
+            ).show()
+            false
         }
     }
 
@@ -114,8 +121,11 @@ class DiscoveryViewModel(private val deps: VmDeps) : ViewModel() {
 
     fun setPreference(p: TransportPreference) {
         viewModelScope.launch {
-            deps.settings.setTransportPreference(p)
+            if (deps.manager.phase.value != SessionManager.Phase.IDLE) return@launch
+            // Switch synchronously before the first suspension so a session
+            // started concurrently always captures the selected transport.
             deps.transports.setPreference(p)
+            deps.settings.setTransportPreference(p)
         }
     }
 
@@ -130,20 +140,39 @@ class DiscoveryViewModel(private val deps: VmDeps) : ViewModel() {
     /** Outgoing secure session to [peer]. Starts the foreground service first. */
     fun connectPeer(peer: PeerDevice) {
         viewModelScope.launch {
-            restartIdle()
+            if (!restartIdle()) return@launch
+            val transport = activeTransport()
+            // Reset transport state before the session collector attaches.
+            // Wi-Fi Direct overrides this without sending asynchronous
+            // stopPeerDiscovery(), which can race connect() and yield ERROR(0).
+            transport.prepareForConnect()
             VoiceService.start(deps.appContext)
             val codec = deps.settings.codecPref()
-            deps.manager.startOutgoing(activeTransport(), peer, codec)
+            deps.manager.startOutgoing(transport, peer, codec)
         }
     }
 
     /** Listen for an incoming connection on the active transport. */
-    fun listenForIncoming() {
+    fun listenForIncoming(onListeningReady: (() -> Unit)? = null) {
         viewModelScope.launch {
-            restartIdle()
+            // Do not present a new listening attempt as active if the prior
+            // session failed to finish teardown and the manager is not IDLE.
+            if (!restartIdle()) return@launch
+
+            val transport = activeTransport()
+            // Switch roles before starting the receiver. Wi-Fi Direct overrides
+            // this so modern startListening() cannot race stopPeerDiscovery().
+            transport.prepareForListen()
             VoiceService.start(deps.appContext)
             val codec = deps.settings.codecPref()
-            deps.manager.acceptIncoming(activeTransport(), codec)
+            deps.manager.acceptIncoming(transport, codec) {
+                onListeningReady?.let { ready ->
+                    // Activity-result launchers must be invoked on the UI thread.
+                    viewModelScope.launch(Dispatchers.Main.immediate) {
+                        ready()
+                    }
+                }
+            }
         }
     }
 
@@ -154,7 +183,11 @@ class DiscoveryViewModel(private val deps: VmDeps) : ViewModel() {
     }
 
     fun refreshAvailability() {
-        deps.transports.refreshRecommendation()
+        // Retrying availability must not change the selected radio beneath an
+        // active session; only recompute AUTO_RECOMMEND while idle.
+        if (deps.manager.phase.value == SessionManager.Phase.IDLE) {
+            deps.transports.refreshRecommendation()
+        }
         availabilityRefresh.value += 1
     }
 
@@ -187,10 +220,15 @@ class SettingsViewModel(private val deps: VmDeps) : ViewModel() {
     val language = deps.settings.languageFlow
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), "")
 
+    val phase = deps.manager.phase
+
     fun setTransportPreference(p: TransportPreference) {
         viewModelScope.launch {
-            deps.settings.setTransportPreference(p)
+            if (deps.manager.phase.value != SessionManager.Phase.IDLE) return@launch
+            // Transport changes are immediate; persist after selection so the
+            // currently active session cannot be silently moved to another radio.
             deps.transports.setPreference(p)
+            deps.settings.setTransportPreference(p)
         }
     }
 

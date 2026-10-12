@@ -3,6 +3,7 @@ package com.hamseda.walkie
 import com.hamseda.walkie.crypto.Hkdf
 import com.hamseda.walkie.crypto.ReplayProtection
 import com.hamseda.walkie.crypto.SessionCrypto
+import com.hamseda.walkie.proto.Protocol
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -11,6 +12,7 @@ import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import javax.crypto.AEADBadTagException
+import java.util.Locale
 
 class CryptoTest {
 
@@ -63,6 +65,22 @@ class CryptoTest {
             Hkdf.derive(ikm, salt, info, 64),
         )
     }
+
+    @Test
+    fun `hkdf matches RFC 5869 test case 1`() {
+        val ikm = ByteArray(22) { 0x0b }
+        val salt = hexBytes("000102030405060708090a0b0c")
+        val info = hexBytes("f0f1f2f3f4f5f6f7f8f9")
+        val expected = hexBytes(
+            "3cb25f25faacd57a90434f64d0362f2a" +
+                "2d2d0a90cf1a5a4c5db02d56ecc4c5bf" +
+                "34007208d5b887185865",
+        )
+        assertArrayEquals(expected, Hkdf.derive(ikm, salt, info, 42))
+    }
+
+    private fun hexBytes(value: String): ByteArray =
+        value.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
 
     @Test
     fun `aes-gcm seal open roundtrip`() {
@@ -129,6 +147,22 @@ class CryptoTest {
     }
 
     @Test
+    fun `SAS digits are stable across device locales`() {
+        val oldLocale = Locale.getDefault()
+        val seed = ByteArray(32) { (it * 7).toByte() }
+        try {
+            Locale.setDefault(Locale.forLanguageTag("fa-IR"))
+            val fa = SessionCrypto.shortAuthString(seed)
+            Locale.setDefault(Locale.US)
+            val en = SessionCrypto.shortAuthString(seed)
+            assertEquals(fa, en)
+            assertTrue(fa.matches(Regex("[0-9]{6}")))
+        } finally {
+            Locale.setDefault(oldLocale)
+        }
+    }
+
+    @Test
     fun `different transcripts give different SAS with overwhelming probability`() {
         val (a, _, _) = ecdhPair()
         val (_, b2, _) = ecdhPair()
@@ -139,13 +173,27 @@ class CryptoTest {
     }
 
     @Test
-    fun `transcript hash binds both public keys and nonces`() {
+    fun `transcript binds key nonce association and HELLO negotiation`() {
         val (a, b, _) = ecdhPair()
-        val t1 = SessionCrypto.transcriptHash(a.pub, b.pub, a.nonce, b.nonce)
-        val t2 = SessionCrypto.transcriptHash(b.pub, a.pub, b.nonce, a.nonce)
-        assertArrayEquals(t1, t2) // order-independent
+        val helloA = byteArrayOf(Protocol.VERSION, 0)
+        val helloB = byteArrayOf(Protocol.VERSION, 1)
+        val t1 = SessionCrypto.transcriptHash(a.pub, b.pub, a.nonce, b.nonce, helloA, helloB)
+        val t2 = SessionCrypto.transcriptHash(b.pub, a.pub, b.nonce, a.nonce, helloB, helloA)
+        assertArrayEquals(t1, t2)
+
+        assertFalse(t1.contentEquals(SessionCrypto.transcriptHash(
+            a.pub, b.pub, b.nonce, a.nonce, helloA, helloB,
+        )))
+        val changedHelloB = byteArrayOf(Protocol.VERSION, 0)
+        assertFalse(t1.contentEquals(SessionCrypto.transcriptHash(
+            a.pub, b.pub, a.nonce, b.nonce, helloA, changedHelloB,
+        )))
         val tamperedPub = b.pub.copyOf().also { it[0] = (it[0].toInt() xor 1).toByte() }
-        assertFalse(t1.contentEquals(SessionCrypto.transcriptHash(a.pub, tamperedPub, a.nonce, b.nonce)))
+        assertFalse(t1.contentEquals(SessionCrypto.transcriptHash(
+            a.pub, tamperedPub, a.nonce, b.nonce, helloA, helloB,
+        )))
+        t1.fill(0)
+        t2.fill(0)
     }
 
     @Test
@@ -164,6 +212,16 @@ class CryptoTest {
         }
         assertThrows(IllegalArgumentException::class.java) {
             SessionCrypto.decodePublicKey(ByteArray(300))
+        }
+    }
+
+    @Test
+    fun `public keys on a different EC curve are rejected`() {
+        val otherCurve = java.security.KeyPairGenerator.getInstance("EC").apply {
+            initialize(java.security.spec.ECGenParameterSpec("secp521r1"))
+        }.generateKeyPair()
+        assertThrows(java.security.InvalidKeyException::class.java) {
+            SessionCrypto.decodePublicKey(otherCurve.public.encoded)
         }
     }
 
@@ -219,6 +277,38 @@ class ReplayProtectionTest {
         assertTrue(r.accept(1000))
         assertTrue(r.accept(1001))
         assertFalse(r.accept(3)) // ancient history
+    }
+
+    @Test
+    fun `uint32 rollover accepts new frames and rejects duplicates`() {
+        val r = ReplayProtection(windowSize = 8)
+        assertTrue(r.accept(0xFFFFFFFEL))
+        assertTrue(r.accept(0xFFFFFFFFL))
+        assertTrue(r.accept(0L))
+        assertTrue(r.accept(1L))
+        assertFalse(r.accept(0xFFFFFFFFL))
+        assertFalse(r.accept(0L))
+        assertFalse(r.accept(0xFFFFFFF0L)) // more than one window behind
+    }
+
+    @Test
+    fun `uint32 rollover still allows unseen in-window reordering once`() {
+        val r = ReplayProtection(windowSize = 8)
+        assertTrue(r.accept(0xFFFFFFFEL))
+        assertTrue(r.accept(1L))
+        assertTrue(r.accept(0L))
+        assertTrue(r.accept(0xFFFFFFFFL))
+        assertFalse(r.accept(0L))
+        assertFalse(r.accept(0xFFFFFFFFL))
+    }
+
+    @Test
+    fun `large forward jump across rollover clears the old replay window`() {
+        val r = ReplayProtection(windowSize = 8)
+        assertTrue(r.accept(0xFFFFFFFEL))
+        assertTrue(r.accept(20L)) // forward distance is 22 across rollover
+        assertFalse(r.accept(0xFFFFFFFEL))
+        assertTrue(r.accept(21L))
     }
 
     @Test

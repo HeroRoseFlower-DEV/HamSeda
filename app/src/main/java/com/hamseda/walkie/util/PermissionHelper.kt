@@ -16,13 +16,13 @@ import androidx.core.content.ContextCompat
  *
  * Bluetooth Classic:
  * - API 31+: BLUETOOTH_SCAN (discovery), BLUETOOTH_CONNECT (connect + device
- *   info), BLUETOOTH_ADVERTISE (RFCOMM listen/advertise)
+ *   info), BLUETOOTH_ADVERTISE only when this phone is made discoverable.
  * - API ≤30: BLUETOOTH + BLUETOOTH_ADMIN (install-time) and location only
  *   where the platform required it for discovery (API 23–30)
  *
- * Microphone: RECORD_AUDIO, requested contextually when a voice session
- * starts. Notifications: POST_NOTIFICATIONS on API 33+ for the foreground
- * service notification.
+ * Microphone: RECORD_AUDIO, requested during first-run setup before entering
+ * the app. Audio capture itself still starts only during push-to-talk.
+ * Notifications: POST_NOTIFICATIONS on API 33+ for the foreground service notification.
  *
  * Local network (API 37+): Android 17 blocks local-network access by
  * default for apps targeting API 37 — including TCP connections to Wi-Fi
@@ -34,6 +34,25 @@ object PermissionHelper {
 
     /** API level where ACCESS_LOCAL_NETWORK enforcement begins. */
     const val LOCAL_NETWORK_SDK = 37
+
+    /**
+     * Core runtime permissions used by the first-run gate. The separate
+     * BLUETOOTH_ADVERTISE permission is requested only when the user explicitly
+     * chooses to make this phone discoverable while waiting for an incoming
+     * Bluetooth connection.
+     *
+     * Android groups nearby-device permissions in the system UI where
+     * applicable, but microphone access is a separate user decision. Legacy
+     * Android versions need location for radio discovery; Android 13+ uses
+     * NEARBY_WIFI_DEVICES for Wi-Fi Direct. Android 17+ additionally requires
+     * local-network access for the Wi-Fi Direct TCP socket.
+     */
+    fun missingStartupRuntimePermissions(context: Context): List<String> =
+        (
+            missingBluetoothPermissions(context, forDiscovery = true) +
+                missingWifiDirectConnectPermissions(context) +
+                missingMicrophonePermission(context)
+            ).distinct()
 
     fun missingWifiDirectPermissions(context: Context): List<String> {
         val needed = when {
@@ -48,14 +67,28 @@ object PermissionHelper {
         val needed = mutableListOf<String>()
         if (Build.VERSION.SDK_INT >= 31) {
             if (forDiscovery) needed += Manifest.permission.BLUETOOTH_SCAN
+            // Connecting to/listening for RFCOMM peers and reading their
+            // device metadata needs CONNECT. ADVERTISE is separate and is
+            // requested only immediately before this phone is made visible.
             needed += Manifest.permission.BLUETOOTH_CONNECT
-            needed += Manifest.permission.BLUETOOTH_ADVERTISE
         } else if (forDiscovery && Build.VERSION.SDK_INT >= 23) {
-            // API 23–30 required location for classic discovery.
-            needed += Manifest.permission.ACCESS_COARSE_LOCATION
+            // Apps targeting API 29+ must hold FINE location to call
+            // BluetoothAdapter.startDiscovery() on Android 10/11 (API 29–30).
+            // COARSE remains sufficient only for the legacy API 23–28 path.
+            needed += if (Build.VERSION.SDK_INT >= 29) {
+                Manifest.permission.ACCESS_FINE_LOCATION
+            } else {
+                Manifest.permission.ACCESS_COARSE_LOCATION
+            }
         }
         return needed.filter { !isGranted(context, it) }
     }
+
+    /** Runtime permission needed only when asking Android to make this phone discoverable. */
+    fun missingBluetoothAdvertisePermission(context: Context): List<String> =
+        if (Build.VERSION.SDK_INT >= 31) {
+            listOf(Manifest.permission.BLUETOOTH_ADVERTISE).filter { !isGranted(context, it) }
+        } else emptyList()
 
     fun missingMicrophonePermission(context: Context): List<String> =
         listOf(Manifest.permission.RECORD_AUDIO).filter { !isGranted(context, it) }

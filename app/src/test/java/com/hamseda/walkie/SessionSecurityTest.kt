@@ -1,8 +1,11 @@
 package com.hamseda.walkie
 
-import com.hamseda.walkie.audio.OpusCodec
+import com.hamseda.walkie.audio.JitterBuffer
+import com.hamseda.walkie.proto.DisconnectReason
+import com.hamseda.walkie.proto.CodecId
 import com.hamseda.walkie.proto.Frame
 import com.hamseda.walkie.proto.MessageType
+import com.hamseda.walkie.proto.Protocol
 import com.hamseda.walkie.session.FloorController
 import com.hamseda.walkie.session.SessionManager
 import com.hamseda.walkie.transport.PeerDevice
@@ -124,8 +127,11 @@ class SessionSecurityTest {
     }
 
     private fun Rig.start() {
-        a.startOutgoing(ta, PeerDevice("b", "B", TransportType.WIFI_DIRECT))
+        // Subscribe the waiting endpoint before the initiating endpoint can
+        // send HELLO. This mirrors the real transport lifecycle and avoids
+        // dropping the first frame in the in-memory SharedFlow test harness.
         b.acceptIncoming(tb)
+        a.startOutgoing(ta, PeerDevice("b", "B", TransportType.WIFI_DIRECT))
     }
 
     private fun Rig.close() {
@@ -139,6 +145,237 @@ class SessionSecurityTest {
             if (System.currentTimeMillis() > end) throw AssertionError("timeout: $what")
             Thread.sleep(10)
         }
+    }
+
+    @Test
+    fun `malformed SAS confirmation does not terminate inbound collector`() {
+        val rig = newRig()
+        rig.start()
+        rig.await("both endpoints waiting for SAS") {
+            rig.a.phase.value == SessionManager.Phase.AWAITING_SAS_CONFIRM &&
+                rig.b.phase.value == SessionManager.Phase.AWAITING_SAS_CONFIRM
+        }
+
+        val failuresBefore = rig.b.authFailures.value
+        val malformed = Frame(
+            type = MessageType.SAS_CONFIRM,
+            sessionId = ByteArray(8),
+            seq = 1L,
+            timestamp = System.currentTimeMillis(),
+            codecId = 0xFF.toByte(),
+            payload = ByteArray(0), // Missing nonce/tag; authentication must fail safely.
+        ).encode()
+        assertTrue(rig.tb.inject(malformed))
+        rig.await("malformed SAS frame counted") {
+            rig.b.authFailures.value > failuresBefore
+        }
+        assertEquals(SessionManager.Phase.AWAITING_SAS_CONFIRM, rig.b.phase.value)
+
+        // Bad data must not kill the collector; valid confirmations still work.
+        rig.a.confirmSas(true)
+        rig.b.confirmSas(true)
+        rig.await("session recovered after malformed SAS frame") {
+            rig.a.phase.value == SessionManager.Phase.IN_SESSION &&
+                rig.b.phase.value == SessionManager.Phase.IN_SESSION
+        }
+        rig.close()
+    }
+
+    @Test
+    fun `first inbound frame starts handshake if connected state observer is late`() = runTest {
+        val (transport, _) = LoopbackTransport.pair()
+        val sm = SessionManager(this, FakeAudioPipeline())
+        sm.startOutgoing(
+            transport,
+            PeerDevice("b", "B", TransportType.WIFI_DIRECT),
+        )
+        assertEquals(SessionManager.Phase.CONNECTING_TRANSPORT, sm.phase.value)
+
+        // StateFlow collectors on StandardTestDispatcher are queued until the
+        // scheduler runs. Simulate a real socket delivering HELLO in that gap.
+        transport.setState(com.hamseda.walkie.transport.TransportState.CONNECTED)
+        val hello = Frame(
+            type = MessageType.HELLO,
+            sessionId = ByteArray(8),
+            seq = 0L,
+            timestamp = System.currentTimeMillis(),
+            codecId = 0xFF.toByte(),
+            payload = byteArrayOf(Protocol.VERSION, CodecId.OPUS),
+        ).encode()
+        val onRawFrame = SessionManager::class.java.getDeclaredMethod(
+            "onRawFrame",
+            ByteArray::class.java,
+        )
+        onRawFrame.isAccessible = true
+        onRawFrame.invoke(sm, hello)
+
+        assertEquals(
+            "the HELLO must not be dropped while CONNECTED is awaiting collection",
+            SessionManager.Phase.HANDSHAKE,
+            sm.phase.value,
+        )
+        sm.close()
+    }
+
+    @Test
+    fun `unauthenticated disconnect during SAS phase is ignored`() {
+        val rig = newRig()
+        rig.start()
+        rig.await("both endpoints waiting for SAS") {
+            rig.a.phase.value == SessionManager.Phase.AWAITING_SAS_CONFIRM &&
+                rig.b.phase.value == SessionManager.Phase.AWAITING_SAS_CONFIRM
+        }
+
+        val failuresBefore = rig.b.authFailures.value
+        val forgedDisconnect = Frame(
+            type = MessageType.DISCONNECT,
+            sessionId = ByteArray(8),
+            seq = 1L,
+            timestamp = System.currentTimeMillis(),
+            codecId = 0xFF.toByte(),
+            payload = byteArrayOf(DisconnectReason.USER_HANGUP),
+        ).encode()
+        assertTrue(rig.tb.inject(forgedDisconnect))
+        rig.await("unauthenticated disconnect counted") {
+            rig.b.authFailures.value > failuresBefore
+        }
+        assertEquals(SessionManager.Phase.AWAITING_SAS_CONFIRM, rig.b.phase.value)
+
+        // The rejected frame must not poison the collector or prevent a valid
+        // secure session from completing after both users confirm the SAS.
+        rig.a.confirmSas(true)
+        rig.b.confirmSas(true)
+        rig.await("session completes after forged disconnect") {
+            rig.a.phase.value == SessionManager.Phase.IN_SESSION &&
+                rig.b.phase.value == SessionManager.Phase.IN_SESSION
+        }
+        rig.close()
+    }
+
+    @Test
+    fun `authenticated disconnect preserves peer timeout reason`() {
+        val rig = newRig()
+        rig.start()
+        rig.await("both endpoints in SAS phase") {
+            rig.a.phase.value == SessionManager.Phase.AWAITING_SAS_CONFIRM &&
+                rig.b.phase.value == SessionManager.Phase.AWAITING_SAS_CONFIRM
+        }
+        rig.a.confirmSas(true)
+        rig.b.confirmSas(true)
+        rig.await("both endpoints in session") {
+            rig.a.phase.value == SessionManager.Phase.IN_SESSION &&
+                rig.b.phase.value == SessionManager.Phase.IN_SESSION
+        }
+
+        val enqueueControl = SessionManager::class.java.getDeclaredMethod(
+            "enqueueControl",
+            java.lang.Byte.TYPE,
+            ByteArray::class.java,
+        )
+        enqueueControl.isAccessible = true
+        enqueueControl.invoke(
+            rig.a,
+            MessageType.DISCONNECT,
+            byteArrayOf(DisconnectReason.PEER_TIMEOUT),
+        )
+        rig.await("peer timeout reason propagated") {
+            rig.b.phase.value == SessionManager.Phase.IDLE &&
+                rig.b.error.value == SessionManager.SessionError.PEER_TIMEOUT
+        }
+        rig.close()
+    }
+
+    @Test
+    fun `malformed authenticated control payload fails closed`() {
+        val rig = newRig()
+        rig.start()
+        rig.await("sas phase") {
+            rig.a.phase.value == SessionManager.Phase.AWAITING_SAS_CONFIRM &&
+                rig.b.phase.value == SessionManager.Phase.AWAITING_SAS_CONFIRM
+        }
+        rig.a.confirmSas(true)
+        rig.b.confirmSas(true)
+        rig.await("in session") {
+            rig.a.phase.value == SessionManager.Phase.IN_SESSION &&
+                rig.b.phase.value == SessionManager.Phase.IN_SESSION
+        }
+
+        val enqueueControl = SessionManager::class.java.getDeclaredMethod(
+            "enqueueControl",
+            java.lang.Byte.TYPE,
+            ByteArray::class.java,
+        )
+        enqueueControl.isAccessible = true
+        // PING is defined as an 8-byte timestamp. This frame is authenticated,
+        // but its malformed body must neither refresh liveness nor be echoed.
+        enqueueControl.invoke(rig.a, MessageType.PING, byteArrayOf(1))
+        rig.await("invalid payload rejected") {
+            rig.b.phase.value == SessionManager.Phase.IDLE &&
+                rig.b.error.value == SessionManager.SessionError.PROTOCOL_ERROR
+        }
+        rig.close()
+    }
+
+    @Test
+    fun `audio jitter sequence ignores interleaved control frames`() {
+        val rig = newRig()
+        rig.start()
+        rig.await("sas phase") {
+            rig.a.phase.value == SessionManager.Phase.AWAITING_SAS_CONFIRM &&
+                rig.b.phase.value == SessionManager.Phase.AWAITING_SAS_CONFIRM
+        }
+        rig.a.confirmSas(true)
+        rig.b.confirmSas(true)
+        rig.await("in session") {
+            rig.a.phase.value == SessionManager.Phase.IN_SESSION &&
+                rig.b.phase.value == SessionManager.Phase.IN_SESSION
+        }
+        rig.a.setPttPressed(true)
+        rig.await("transmitting and peer holds floor") {
+            rig.audioA.isCapturing && rig.b.floorHolder.value == FloorController.Holder.PEER
+        }
+
+        // This JVM test covers session framing and replay protection, not codec internals.
+        // Real libopus encode/decode is exercised by OpusCodecInstrumentedTest on Android.
+        val encoded = ByteArray(48) { (it * 17 + 3).toByte() }
+        repeat(2) {
+            rig.audioA.onFrame?.invoke(encoded, 0.5f)
+            val expected = it + 1L
+            rig.await("audio $expected buffered") {
+                (rig.audioB.playbackBuffer?.received ?: 0L) >= expected
+            }
+        }
+
+        // Inject a real, authenticated control frame through the same ordered
+        // sender. It consumes a wire sequence number but is not an audio packet.
+        val enqueueControl = SessionManager::class.java.getDeclaredMethod(
+            "enqueueControl",
+            java.lang.Byte.TYPE,
+            ByteArray::class.java,
+        )
+        enqueueControl.isAccessible = true
+        enqueueControl.invoke(rig.a, MessageType.PING, ByteArray(8))
+
+        repeat(2) {
+            rig.audioA.onFrame?.invoke(encoded, 0.5f)
+        }
+        rig.await("all audio frames buffered") {
+            (rig.audioB.playbackBuffer?.received ?: 0L) >= 4L
+        }
+
+        // The jitter buffer must receive dense audio-only sequence numbers,
+        // otherwise the PING looks like a lost audio frame and stalls playout.
+        val buffer = requireNotNull(rig.audioB.playbackBuffer)
+        val played = (0 until 4).map { buffer.takeNext() }
+        assertTrue(
+            "control-frame sequence gaps must not stall audio playout",
+            played.all { it is JitterBuffer.TakeResult.Frame },
+        )
+        assertEquals(
+            listOf(0L, 1L, 2L, 3L),
+            played.map { (it as JitterBuffer.TakeResult.Frame).packet.seq },
+        )
+        rig.close()
     }
 
     @Test
@@ -188,14 +425,13 @@ class SessionSecurityTest {
         rig.await("peer holds floor") {
             rig.b.floorHolder.value == FloorController.Holder.PEER
         }
-        val opus = OpusCodec()
-        val encoded = opus.encode(ShortArray(320) { 7 })
+        // Keep this security regression test independent of Android native libraries.
+        val encoded = ByteArray(48) { (it * 17 + 3).toByte() }
         rig.audioA.onFrame?.invoke(encoded, 0.5f)
         rig.await("audio arrived despite attack") {
             (rig.audioB.playbackBuffer?.bufferedFrames() ?: 0) >= 1
         }
         assertEquals(SessionManager.Phase.IN_SESSION, rig.b.phase.value)
-        opus.close()
         rig.close()
     }
 
@@ -230,7 +466,7 @@ class SessionSecurityTest {
     fun `hs01 duplicate valid frame is rejected`() {
         var lastPing: ByteArray? = null
         val rig = newRig(interceptA = { bytes ->
-            if (decodeType(bytes) == MessageType.PING) lastPing = bytes
+            if (decodeType(bytes) == MessageType.PING) lastPing = bytes.copyOf()
             bytes
         })
         rig.start()
@@ -329,10 +565,16 @@ class SessionSecurityTest {
         val perThread = 25
         val threads = 8
         val frame = ByteArray(60) { 3 }
-        val workers = (0 until threads).map {
+        val workers = (0 until threads).map { workerIndex ->
             thread {
+                // Stagger producer starts and pace each producer so the aggregate
+                // rate stays below the bounded freshness queue / loopback sender.
+                // The callbacks remain concurrent, but intentional overload drops
+                // cannot invalidate this test's all-frames-delivered assertion.
+                Thread.sleep(workerIndex * 25L)
                 repeat(perThread) {
                     rig.audioA.onFrame?.invoke(frame, 0.5f)
+                    Thread.sleep(100)
                 }
             }
         }
@@ -353,7 +595,7 @@ class SessionSecurityTest {
         // Hammer the outbound pipeline with far more frames than the queue
         // holds: drops must be bounded (no OOM, no hang) and the session
         // must survive. Uses the real loopback (fast drain) — the bound is
-        // structural (Channel capacity + trySend drops).
+        // structural (bounded realtime queue + oldest-audio eviction).
         val rig = newRig()
         rig.start()
         rig.await("sas phase") {
@@ -376,8 +618,8 @@ class SessionSecurityTest {
             }
         }
         threads.forEach { it.join() }
-        // 2000 frames through a 256-slot queue: must complete without
-        // hanging or breaking the session.
+        // Under overload the bounded freshness-first queue evicts old unsent
+        // audio rather than accumulating stale speech. The session must survive.
         Thread.sleep(1000)
         assertEquals(SessionManager.Phase.IN_SESSION, rig.a.phase.value)
         assertEquals(SessionManager.Phase.IN_SESSION, rig.b.phase.value)

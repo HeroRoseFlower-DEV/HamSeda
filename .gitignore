@@ -12,3 +12,7 @@ local.properties
 
 # Local SDK overrides
 local.properties
+
+# Native CMake/NDK intermediates
+.cxx/
+**/.cxx/
