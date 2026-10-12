@@ -1,5 +1,7 @@
 # HamSeda Test Plan
 
+> **Physical-device baseline:** use [`docs/MAIN_BASELINE_AUDIT.md`](MAIN_BASELINE_AUDIT.md) for the reproducible two-phone setup, attempt counts, evidence capture, performance-measurement method, and result sheet. CI compilation is not a substitute for tests on real radios and audio hardware. Do not mark unrun cases as passed.
+
 ## 1. Automated tests (run in CI)
 
 `./gradlew :app:testDebugUnitTest` — pure JVM, no device needed:
