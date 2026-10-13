@@ -1,5 +1,6 @@
 package com.hamseda.walkie.audio
 
+import android.os.Build
 import com.hamseda.walkie.proto.CodecId
 import java.io.Closeable
 
@@ -7,8 +8,9 @@ import java.io.Closeable
  * Real-time speech codec backed by the official native libopus 1.6.1 build.
  *
  * Profile: 48 kHz mono PCM16, 20 ms frames, VOIP application, 40 kbps,
- * complexity 10, voice signal hint, full-band maximum bandwidth and
- * unconstrained VBR. The upstream source archive is hash-pinned in CMake;
+ * voice signal hint, full-band maximum bandwidth and unconstrained VBR.
+ * Android 8/9 use complexity 8 to reduce encoder CPU cost on older hardware;
+ * API 29+ keep complexity 10. The upstream source archive is hash-pinned in CMake;
  * the codec is packaged in the APK and does not download anything at runtime.
  *
  * JVM tests can construct this class for protocol wiring, but real encode /
@@ -28,6 +30,10 @@ class OpusCodec(
     private var decoderHandle: Long = 0L
     private val encodeBuf = ByteArray(MAX_PACKET_BYTES)
     private val lock = Any()
+    private val selectedEncoderComplexity = recommendedEncoderComplexity(Build.VERSION.SDK_INT)
+
+    /** Actual encoder complexity selected for this Android API level (8 on API 26–28, 10 otherwise). */
+    val encoderComplexityInUse: Int get() = selectedEncoderComplexity
 
     /** Reports the actual version string returned by the linked native library. */
     val implementationVersion: String
@@ -88,7 +94,7 @@ class OpusCodec(
                 sampleRate = sampleRate,
                 channels = channels,
                 bitrateBps = bitrateBps,
-                complexity = ENCODER_COMPLEXITY,
+                complexity = selectedEncoderComplexity,
             )
             check(newEncoder != 0L) { "libopus could not create an encoder" }
 
@@ -125,6 +131,11 @@ class OpusCodec(
         const val LIBOPUS_VERSION = "1.6.1"
         const val DEFAULT_BITRATE_BPS = 40_000
         const val ENCODER_COMPLEXITY = 10
+        const val LEGACY_ANDROID_ENCODER_COMPLEXITY = 8
         const val MAX_PACKET_BYTES = 1275
+
+        /** Pure selector for the conservative CPU profile used on Oreo/Pie-era devices. */
+        fun recommendedEncoderComplexity(apiLevel: Int): Int =
+            if (apiLevel in 26..28) LEGACY_ANDROID_ENCODER_COMPLEXITY else ENCODER_COMPLEXITY
     }
 }

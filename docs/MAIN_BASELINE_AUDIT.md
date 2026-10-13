@@ -222,6 +222,22 @@ The absence of the APK identity means these results cannot yet be attributed con
 2. **P2P listener rebinding:** use `SO_REUSEADDR` while remaining bound to the specific P2P group-owner address, check the operation generation around bind, publish the server socket before the blocking bind so teardown can close it, and retry transient `EADDRINUSE` for at most 2.5 seconds.
 3. **Verification pending:** run the latest main-branch CI and repeat the same two-device reconnect scenario. These code changes have not yet been proven to fix the physical-device symptom until the rebuilt APK is tested on the same devices.
 
+### Android 8/9 compatibility pass (source changes, device validation pending)
+
+- minSdk=26 continues to support Android 8.0 and later; no minSdk increase was made.
+- On API 26–28 only, the native Opus encoder now uses complexity 8 instead of
+  10. The 40 kbps target, mono 48 kHz PCM, 20 ms frame duration, and wire
+  protocol remain unchanged. This is a CPU-efficiency tradeoff, not a measured
+  performance result yet.
+- If constructing or initializing an AudioRecord with VOICE_COMMUNICATION fails,
+  the engine makes one bounded attempt with MIC. The primary source remains
+  preferred. The fallback path has not been validated on a real OEM audio HAL
+  and may have different AEC/noise behavior.
+- The API 26–28 test matrix is in docs/TEST_PLAN.md. Legacy Wi-Fi Direct
+  discovery still depends on Android's Location Mode and runtime coarse-location
+  permission; Bluetooth Classic discovery still uses the pre-Android-12
+  permission model.
+
 ### Remaining release gates
 
 - The exact new APK SHA-256 must be recorded on both phones.

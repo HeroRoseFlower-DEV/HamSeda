@@ -123,6 +123,37 @@ procedure and its device variations).
   Do not claim that the APK boosts antenna power; measure range, drop rate and
   reconnect behavior on physical devices at increasing distances.
 
+## Android 8/9 legacy-device validation (API 26–28)
+
+Run the following before calling the compatibility changes verified. Prefer at
+least one API 26/27 phone and one API 28 phone if available; an emulator does
+not validate vendor audio HAL behavior.
+
+- First launch with Location permission denied, then granted; confirm the
+  rationale/retry route is usable and no discovery call crashes.
+- Turn Location Mode off/on while testing Wi-Fi Direct discovery. The app
+  should clearly report a platform blocker, not claim peers are being scanned.
+- Test Bluetooth Classic discovery and incoming RFCOMM listening on a fresh
+  install and with an already-bonded peer. API 26–28 should request the legacy
+  location permission for discovery, not Android 12+ Nearby-device permissions.
+- Test 10-second PTT in each direction over each available transport. Record
+  the capture initialization log and confirm the source is VOICE_COMMUNICATION;
+  if the OEM rejects it during build/initialization, MIC_FALLBACK should be
+  reported and capture should still work. Confirm audible AEC/noise behavior
+  because MIC fallback may sound different.
+- Confirm the selected Opus complexity is 8 on API 26–28 and that the target
+  bitrate remains 40 kbps. Compare CPU usage, encode timing, intelligibility,
+  clipping, and gaps against the earlier build; do not assume the lower
+  complexity automatically improves perceived quality on every chipset.
+- Lock the screen for 5 minutes and test repeated PTT, stop notification,
+  headset insertion/removal, incoming call/audio-focus loss, radio loss, and
+  reconnect. Confirm microphone, wake lock, and foreground notification are
+  released after leaving the session.
+
+The build can verify code paths and JVM tests, but only an actual API 26–28
+phone can validate that device's audio HAL, Bluetooth firmware, Wi-Fi Direct
+implementation, battery manager, and speaker routing.
+
 ## 3. Version matrix
 
 Manual passes should cover: one device on Android 8/9 (minSdk), one on

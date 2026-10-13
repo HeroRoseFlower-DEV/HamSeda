@@ -141,6 +141,51 @@ class AudioEngine(private val context: Context) : AudioPipeline {
 
     // -------------------------------------------------------------- capture
 
+    private data class CaptureRecorder(
+        val recorder: AudioRecord,
+        val sourceName: String,
+    )
+
+    /**
+     * Some older OEM audio HALs reject VOICE_COMMUNICATION during construction
+     * even though microphone capture via MIC works. Keep VOICE_COMMUNICATION as
+     * the preferred source (for voice-processing effects), then make one bounded
+     * compatibility attempt with MIC instead of failing the whole PTT session.
+     */
+    private fun buildCaptureRecorder(format: AudioFormat, bufferBytes: Int): CaptureRecorder? {
+        val sources = listOf(
+            MediaRecorder.AudioSource.VOICE_COMMUNICATION to "VOICE_COMMUNICATION",
+            MediaRecorder.AudioSource.MIC to "MIC_FALLBACK",
+        )
+        for ((source, sourceName) in sources) {
+            val candidate = try {
+                AudioRecord.Builder()
+                    .setAudioSource(source)
+                    .setAudioFormat(format)
+                    .setBufferSizeInBytes(bufferBytes)
+                    .build()
+            } catch (e: Exception) {
+                Log.w(TAG, "AudioRecord build failed for source=$sourceName: ${e.javaClass.simpleName}")
+                null
+            }
+            if (candidate == null) continue
+            val initialized = try {
+                candidate.state == AudioRecord.STATE_INITIALIZED
+            } catch (_: Exception) {
+                false
+            }
+            if (initialized) {
+                if (source != MediaRecorder.AudioSource.VOICE_COMMUNICATION) {
+                    AppLog.log(TAG, "legacy audio-source fallback selected: MIC")
+                }
+                return CaptureRecorder(candidate, sourceName)
+            }
+            try { candidate.release() } catch (_: Exception) {}
+            Log.w(TAG, "AudioRecord source did not initialize: $sourceName")
+        }
+        return null
+    }
+
     /**
      * Starts microphone capture. [onFrame] is invoked on the capture thread
      * for every 20 ms frame with the encoded bytes and a 0..1 voice level
@@ -178,23 +223,14 @@ class AudioEngine(private val context: Context) : AudioPipeline {
             .build()
         // Note: AudioRecord.Builder has no setAudioAttributes — routing and
         // usage are driven by the VOICE_COMMUNICATION audio source.
-        val rec = try {
-            AudioRecord.Builder()
-                .setAudioSource(MediaRecorder.AudioSource.VOICE_COMMUNICATION)
-                .setAudioFormat(format)
-                .setBufferSizeInBytes(maxOf(minBuf, AudioCodec.FRAME_BYTES_PCM * 3))
-                .build()
-        } catch (e: Exception) {
+        val requestedBufferBytes = maxOf(minBuf, AudioCodec.FRAME_BYTES_PCM * 3)
+        val captureRecorder = buildCaptureRecorder(format, requestedBufferBytes)
+        if (captureRecorder == null) {
             abandonFocus()
-            pipelineListener?.onCaptureError("microphone unavailable: ${e.message}")
+            pipelineListener?.onCaptureError("microphone unavailable (all capture sources failed to initialize)")
             return false
         }
-        if (rec.state != AudioRecord.STATE_INITIALIZED) {
-            rec.release()
-            abandonFocus()
-            pipelineListener?.onCaptureError("microphone unavailable (init failed)")
-            return false
-        }
+        val rec = captureRecorder.recorder
         attachEffects(rec.audioSessionId)
         recorder = rec
         captureRunning.set(true)
@@ -202,7 +238,8 @@ class AudioEngine(private val context: Context) : AudioPipeline {
         AppLog.log(
             TAG,
             "capture initialized: sampleRate=${AudioCodec.SAMPLE_RATE}, frameMs=20, " +
-                "bufferBytes=${maxOf(minBuf, AudioCodec.FRAME_BYTES_PCM * 3)}",
+                "bufferBytes=$requestedBufferBytes, source=${captureRecorder.sourceName}, " +
+                "opusComplexity=${(codec as? OpusCodec)?.encoderComplexityInUse ?: -1}",
         )
         captureThread = Thread({
             try {

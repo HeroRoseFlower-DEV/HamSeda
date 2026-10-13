@@ -25,6 +25,16 @@ class OpusCodecInstrumentedTest {
     }
 
     @Test
+    fun encoderComplexityMatchesLegacyApiProfile() {
+        OpusCodec().use { codec ->
+            assertEquals(
+                OpusCodec.recommendedEncoderComplexity(android.os.Build.VERSION.SDK_INT),
+                codec.encoderComplexityInUse,
+            )
+        }
+    }
+
+    @Test
     fun encodesAndDecodesOneTwentyMillisecondVoiceFrame() {
         OpusCodec().use { codec ->
             val pcm = sineFrame()

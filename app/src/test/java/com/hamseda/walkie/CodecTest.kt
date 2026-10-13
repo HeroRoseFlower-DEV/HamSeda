@@ -33,6 +33,16 @@ class CodecTest {
     }
 
     @Test
+    fun `encoder complexity is conservative on Android 8 and 9 but keeps modern defaults`() {
+        assertEquals(8, OpusCodec.recommendedEncoderComplexity(26))
+        assertEquals(8, OpusCodec.recommendedEncoderComplexity(27))
+        assertEquals(8, OpusCodec.recommendedEncoderComplexity(28))
+        assertEquals(10, OpusCodec.recommendedEncoderComplexity(29))
+        assertEquals(10, OpusCodec.recommendedEncoderComplexity(36))
+        assertEquals(40_000, OpusCodec.DEFAULT_BITRATE_BPS)
+    }
+
+    @Test
     fun `pcm roundtrip is bit-exact`() {
         val codec = PcmCodec()
         val pcm = sineFrame()
