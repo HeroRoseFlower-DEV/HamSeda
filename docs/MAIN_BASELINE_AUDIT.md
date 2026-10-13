@@ -1,6 +1,6 @@
 # Main Branch Baseline Audit and Two-Device Validation
 
-**Status:** source review completed; first physical-device run received; reconnect failures found and targeted fixes committed. Formal 10-attempt baseline remains incomplete.  
+**Status:** two physical-device log batches received. The earlier Wi-Fi Direct reconnect failures did not recur in the second batch; Bluetooth outbound-queue drops remain. Audio timing diagnostics have now been added to main; the exact diagnostic build still needs device validation. Formal 10-attempt baseline remains incomplete.  
 **Branch reviewed:** `main`  
 **Source snapshot at review start:** `80463e4e6ec095707d0d9de935b20f5668a6a3b9`  
 **App version in source:** `1.1` (`versionCode=2`)  
@@ -229,3 +229,45 @@ The absence of the APK identity means these results cannot yet be attributed con
 - Re-test repeated PTT and confirm no freshness-drop growth under normal close-range Bluetooth conditions; if drops recur, add or use timing diagnostics around encode, queue wait, and socket write.
 - Measure audio quality and mouth-to-ear latency with a repeatable method, separately for both routes. The values in these logs are not latency results.
 - Do not mark the baseline complete until the post-fix build is physically tested.
+
+
+## 10. Second physical-device run — updated user-supplied logs
+
+**Evidence received:** a second pair of logs from the same apparent device pair (Phone A API 36, Phone B API 27). The exact installed commit and APK SHA-256 were still not supplied, so these logs confirm observed behavior for that run only and cannot prove which source commit was installed.
+
+### Results compared with the first run
+
+| Test | New observation | Assessment |
+|---|---|---|
+| Wi-Fi Direct, Phone A initiates | P2P group and socket established; v3 HELLO/key exchange completed; session established at 22:56:23. | **PASS observed once** |
+| Wi-Fi Direct, Phone B initiates / Phone A waits | Group and socket established; v3 handshake completed; session established at 23:02:05. | **PASS observed once** |
+| Wi-Fi Direct, Phone B initiates / Phone A waits in the first run | The peer API-27 phone also logged socket + handshake success. | **PASS observed in both directions across the supplied runs** |
+| Previous HELLO ordering failure | No `received frame type=2 before HELLO` appeared in the new logs. | **Not reproduced** |
+| Previous owner-side port bind failure | No `EADDRINUSE` appeared in the new logs. | **Not reproduced** |
+| Bluetooth outgoing and incoming sessions | Multiple RFCOMM connections and protocol-v3 sessions established on both devices, including a later session with the roles reversed. | **Connection success observed; not yet a 10-attempt pass rate** |
+| Bluetooth outgoing audio queue | Phone B logged `freshness drops=50` at 23:04:39 and `freshness drops=100` at 23:04:44. | **Performance issue remains.** The counter is frames evicted/rejected by the app's outbound freshness policy, not a direct radio packet-loss counter. At 20 ms/frame, 100 drops represent about 2 seconds of queued source audio removed over that diagnostic window/session. |
+| AudioTrack output buffering | Phone A logged 11,724 effective frames at 48 kHz for the first speaker-route playback, about 244 ms; later earpiece playback logged 3,072 frames (~64 ms). Phone B logged 3,848 frames (~80 ms). | **Needs latency investigation.** Buffer duration is not full mouth-to-ear latency. The speaker-route value is notably high, but don't reduce it without checking actual minimum sizes and underrun behavior. |
+| AudioTrack performance mode | Reported `performanceMode=0` in the runs. | Platform did not report low-latency mode for these tracks; source logs didn't yet expose enough detail to tell whether native output rate, a builder fallback, or the OEM's selected sink affected mode selection. |
+| Capture lifecycle | Repeated `capture initialized` messages align with repeated separate PTT start events in the excerpt. | Not proof of a leak by itself; verify each matching release and check no active capture remains after PTT up/session teardown. |
+
+### Targeted diagnostic instrumentation added on main
+
+The source now emits aggregate-only timing summaries instead of payload-level or per-frame logging:
+
+- `HamSedaAudio capture encode timing`: encode average and maximum over each 50 successfully encoded frames.
+- `HamSedaSession audio sender timing`: queue wait, frame-build/seal time, transport send duration, successful/failed sends, queue depth, and cumulative freshness drops over each 50 processed audio messages.
+- `HamSedaAudio playback initialized`: native output rate, minimum/requested buffer bytes, requested and actual performance mode, effective buffer duration, and initial underrun count.
+- `HamSedaAudio playback health`: periodic underrun count, current/capacity buffer frames, and jitter-buffer loss/drop/occupancy.
+
+The next log must contain these new lines to establish that the instrumented build was installed. The timing summaries allow the bottleneck to be separated:
+- high **queueWait** with low build/send time points to sender scheduling or queue starvation;
+- high **frameBuild** points to local frame construction/cryptographic cost;
+- high **transportSend** points to blocking/backpressure in the selected transport;
+- high **capture encode** points to encoder/CPU cost on the transmitting device;
+- rising **underruns** or jitter losses points to the receiving/playback path.
+
+This is diagnostic instrumentation only. It does not yet change the Opus bitrate, queue cap, playback buffer policy, or negotiated protocol.
+
+### Current conclusion and next gate
+
+The first two reconnect defects are no longer reproduced in this second run, which is encouraging. Priority 1 is still **in progress** because audio congestion persists and the new timing instrumentation has not been confirmed on the same phones. Build/install the latest successful CI artifact, record its SHA-256, repeat Bluetooth in both directions, and include the four new diagnostic log patterns above before selecting a performance fix.
