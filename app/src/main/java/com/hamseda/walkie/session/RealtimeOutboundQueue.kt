@@ -57,6 +57,26 @@ internal class RealtimeOutboundQueue<T>(
         return item
     }
 
+    /**
+     * Removes at most [maxItems] AUDIO items from the queue head. Stops at a
+     * control item instead of reordering it behind later audio. Used to batch
+     * already-queued speech on slow byte-stream transports.
+     */
+    @Synchronized
+    fun pollConsecutiveAudio(maxItems: Int): List<T> {
+        require(maxItems >= 0)
+        if (maxItems == 0) return emptyList()
+        val result = ArrayList<T>(maxItems)
+        while (result.size < maxItems) {
+            val head = queue.peekFirst() ?: break
+            if (!isAudio(head)) break
+            queue.removeFirst()
+            queuedAudio--
+            result.add(head)
+        }
+        return result
+    }
+
     @Synchronized
     fun clear() {
         queue.forEach(onDiscard)

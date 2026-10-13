@@ -52,6 +52,23 @@ class FramedSocketTest {
     }
 
     @Test
+    fun `batched frames retain their individual length prefixes`() {
+        val (a, b, _) = pipe()
+        val frames = listOf(
+            byteArrayOf(1, 2, 3),
+            byteArrayOf(4, 5),
+            byteArrayOf(6, 7, 8, 9),
+        )
+        a.writeFrames(frames)
+        frames.forEach { expected ->
+            val result = b.readFrame()
+            assertTrue(result is FramedSocket.ReadResult.Frame)
+            assertArrayEquals(expected, (result as FramedSocket.ReadResult.Frame).frame)
+        }
+        a.close(); b.close()
+    }
+
+    @Test
     fun `clean EOF is reported as Closed not an exception`() {
         val (a, b, aOut) = pipe()
         aOut.close() // peer closed its end

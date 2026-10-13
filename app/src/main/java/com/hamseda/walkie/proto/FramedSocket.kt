@@ -58,6 +58,44 @@ class FramedSocket(
     }
 
     /**
+     * Sends a bounded group of complete frames in a single stream write.
+     * Each frame retains its own 4-byte length prefix, so the peer's existing
+     * readFrame() loop observes exactly the same protocol frames and ordering.
+     */
+    @Throws(IOException::class)
+    fun writeFrames(frames: List<ByteArray>) {
+        if (frames.isEmpty()) return
+        require(frames.size <= MAX_BATCH_FRAMES) {
+            "too many frames in one write: ${frames.size}"
+        }
+        if (closed.get()) throw IOException("socket closed")
+
+        var totalBytes = 0
+        for (frame in frames) {
+            require(frame.isNotEmpty() && frame.size <= Protocol.MAX_FRAME) {
+                "frame size out of bounds: ${frame.size}"
+            }
+            totalBytes += 4 + frame.size
+        }
+
+        val batch = ByteArray(totalBytes)
+        try {
+            val envelope = ByteBuffer.wrap(batch).order(ByteOrder.BIG_ENDIAN)
+            for (frame in frames) {
+                envelope.putInt(frame.size)
+                envelope.put(frame)
+            }
+            synchronized(writeLock) {
+                if (closed.get()) throw IOException("socket closed")
+                output.write(batch)
+                output.flush()
+            }
+        } finally {
+            batch.fill(0)
+        }
+    }
+
+    /**
      * Reads one length-prefixed frame.
      * Returns [ReadResult.Closed] on clean EOF, [ReadResult.Error] on I/O
      * failure, and throws [FrameException] for malformed/oversized envelopes
@@ -108,6 +146,8 @@ class FramedSocket(
     }
 
     companion object {
+        private const val MAX_BATCH_FRAMES = 8
+
         /** Wraps a connected TCP [Socket] with the configured timeouts. */
         fun fromTcpSocket(socket: Socket, onClosed: (() -> Unit)? = null): FramedSocket {
             socket.soTimeout = Protocol.SOCKET_TIMEOUT_MS

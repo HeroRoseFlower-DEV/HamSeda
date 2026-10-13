@@ -33,6 +33,23 @@ class RealtimeOutboundQueueTest {
     }
 
     @Test
+    fun `audio batches stop at controls and preserve FIFO order`() {
+        val q = queue(maxPending = 10, maxAudio = 8)
+        assertTrue(q.offer("audio-1"))
+        assertTrue(q.offer("audio-2"))
+        assertTrue(q.offer("audio-3"))
+        assertTrue(q.offer("control-ping"))
+        assertTrue(q.offer("audio-4"))
+
+        assertEquals("audio-1", q.poll())
+        assertEquals(listOf("audio-2", "audio-3"), q.pollConsecutiveAudio(5))
+        assertEquals(1, q.pendingAudioFrames())
+        assertEquals("control-ping", q.poll())
+        assertEquals("audio-4", q.poll())
+        assertEquals(0, q.pendingAudioFrames())
+    }
+
+    @Test
     fun `controls can displace queued audio at total capacity`() {
         val q = queue(maxPending = 3, maxAudio = 2)
         assertTrue(q.offer("audio-1"))

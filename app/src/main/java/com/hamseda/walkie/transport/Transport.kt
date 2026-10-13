@@ -125,6 +125,15 @@ interface Transport {
 
     suspend fun sendFrame(frameBytes: ByteArray)
 
+    /**
+     * Sends complete frames in order. Stream transports may combine adjacent
+     * frames into one write while preserving each existing length-prefixed
+     * wire envelope. Other transports keep the default one-frame-at-a-time path.
+     */
+    suspend fun sendFrames(frames: List<ByteArray>) {
+        for (frame in frames) sendFrame(frame)
+    }
+
     /** Tears down the connection and returns to IDLE (or UNAVAILABLE). */
     suspend fun disconnect()
 

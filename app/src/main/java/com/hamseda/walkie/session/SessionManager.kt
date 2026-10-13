@@ -262,54 +262,94 @@ class SessionManager(
         resetAudioTimingWindow()
         senderJob = scope.launch {
             while (isActive) {
-                val msg = nextOutbound()
-                val audioMsg = (msg as? OutboundMsg.Sealed)
-                    ?.takeIf { it.type == MessageType.AUDIO }
-                val queueWaitNanos = audioMsg?.let {
-                    (System.nanoTime() - it.enqueuedAtNanos).coerceAtLeast(0L)
-                } ?: 0L
-                var buildNanos = 0L
-                var transportNanos = 0L
-                var delivered = false
+                val first = nextOutbound()
+                val t = transport
+                if (t == null) {
+                    wipeOutboundMessage(first)
+                    break
+                }
+                val batch = ArrayList<OutboundMsg>(MAX_BLUETOOTH_AUDIO_BATCH_FRAMES)
+                batch.add(first)
+                if (t.type == com.hamseda.walkie.transport.TransportType.BLUETOOTH &&
+                    isAudioMessage(first)
+                ) {
+                    // Batch only speech already queued at the head; add no timer delay
+                    // and never move audio across a control message.
+                    batch.addAll(
+                        outboundQueue.pollConsecutiveAudio(MAX_BLUETOOTH_AUDIO_BATCH_FRAMES - 1),
+                    )
+                }
+                sendOutboundBatch(batch, t)
+            }
+        }
+    }
+
+    private suspend fun sendOutboundBatch(messages: List<OutboundMsg>, t: Transport) {
+        if (messages.isEmpty()) return
+        val queuedAtWaitNanos = LongArray(messages.size) { index ->
+            val message = messages[index]
+            if (isAudioMessage(message)) {
+                val audio = message as OutboundMsg.Sealed
+                (System.nanoTime() - audio.enqueuedAtNanos).coerceAtLeast(0L)
+            } else 0L
+        }
+        val buildNanos = LongArray(messages.size)
+        val built = BooleanArray(messages.size)
+        val frames = ArrayList<ByteArray>(messages.size)
+        var transportNanos = 0L
+        var delivered = false
+        try {
+            for ((index, message) in messages.withIndex()) {
+                val buildStartedAt = System.nanoTime()
                 try {
-                    val buildStartedAt = System.nanoTime()
-                    val bytes = try {
-                        when (msg) {
-                            is OutboundMsg.Plain -> buildPlainFrame(msg.type, msg.payload)
-                            is OutboundMsg.Sealed -> buildSealedFrame(msg)
-                        }
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (e: Exception) {
-                        buildNanos = System.nanoTime() - buildStartedAt
-                        Log.w(TAG, "outbound build failed: " + e.javaClass.simpleName)
-                        continue
+                    val bytes = when (message) {
+                        is OutboundMsg.Plain -> buildPlainFrame(message.type, message.payload)
+                        is OutboundMsg.Sealed -> buildSealedFrame(message)
                     }
-                    buildNanos = System.nanoTime() - buildStartedAt
-                    try {
-                        val t = transport ?: break
-                        val transportStartedAt = System.nanoTime()
-                        try {
-                            t.sendFrame(bytes)
-                            delivered = true
-                        } finally {
-                            transportNanos = System.nanoTime() - transportStartedAt
-                        }
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (e: Exception) {
-                        Log.w(TAG, "outbound send failed: " + e.javaClass.simpleName)
-                        // Keep the sender alive for possible teardown messages.
-                    } finally {
-                        bytes.fill(0)
-                    }
-                } finally {
-                    if (audioMsg != null) {
-                        recordAudioTiming(queueWaitNanos, buildNanos, transportNanos, delivered)
-                    }
-                    wipeOutboundMessage(msg)
+                    buildNanos[index] = System.nanoTime() - buildStartedAt
+                    built[index] = true
+                    frames.add(bytes)
+                } catch (e: CancellationException) {
+                    buildNanos[index] = System.nanoTime() - buildStartedAt
+                    throw e
+                } catch (e: Exception) {
+                    buildNanos[index] = System.nanoTime() - buildStartedAt
+                    Log.w(TAG, "outbound build failed: " + e.javaClass.simpleName)
                 }
             }
+            if (frames.isNotEmpty()) {
+                val transportStartedAt = System.nanoTime()
+                try {
+                    t.sendFrames(frames)
+                    delivered = true
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.w(TAG, "outbound send failed: " + e.javaClass.simpleName)
+                    // Keep the sender alive for possible teardown messages.
+                } finally {
+                    transportNanos = System.nanoTime() - transportStartedAt
+                }
+            }
+        } finally {
+            val builtFrameCount = frames.size
+            val perFrameTransportNanos = if (builtFrameCount > 1) {
+                transportNanos / builtFrameCount
+            } else {
+                transportNanos
+            }
+            messages.forEachIndexed { index, message ->
+                if (isAudioMessage(message)) {
+                    recordAudioTiming(
+                        queueWaitNanos = queuedAtWaitNanos[index],
+                        buildNanos = buildNanos[index],
+                        transportNanos = if (built[index]) perFrameTransportNanos else 0L,
+                        delivered = delivered && built[index],
+                    )
+                }
+                wipeOutboundMessage(message)
+            }
+            frames.forEach { it.fill(0) }
         }
     }
 
@@ -1514,6 +1554,7 @@ class SessionManager(
 
     companion object {
         private const val MAX_QUEUED_AUDIO_FRAMES = 6
+        private const val MAX_BLUETOOTH_AUDIO_BATCH_FRAMES = 3
         private const val MAX_PENDING_OUTBOUND_MESSAGES = 64
         private const val AUDIO_DROP_LOG_INTERVAL = 50L
         private const val AUDIO_TIMING_LOG_INTERVAL = 50

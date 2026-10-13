@@ -113,6 +113,16 @@ class BluetoothTransport(private val context: Context) : Transport {
     private val found = LinkedHashMap<String, PeerDevice>()
     private val bondedCache = LinkedHashMap<String, PeerDevice>()
 
+    // Windowed write telemetry avoids per-packet logs and never records audio contents.
+    private val rfcommWriteStatsLock = Any()
+    private var rfcommWriteFrames = 0
+    private var rfcommWriteCalls = 0
+    private var rfcommWriteFailedCalls = 0
+    private var rfcommWriteBytes = 0L
+    private var rfcommWriteTotalNanos = 0L
+    private var rfcommWriteMaxNanos = 0L
+    private var rfcommWriteMaxBatchFrames = 0
+
     /** Merge a bounded snapshot without racing receiver and scan callbacks. */
     private fun publishPeers() {
         val snapshot = synchronized(peerLock) {
@@ -874,18 +884,80 @@ class BluetoothTransport(private val context: Context) : Transport {
     // ------------------------------------------------------------------ io
 
     override suspend fun sendFrame(frameBytes: ByteArray) {
+        sendFrames(listOf(frameBytes))
+    }
+
+    /**
+     * RFCOMM is a byte stream, so several complete length-prefixed frames can
+     * share one output write without changing the protocol seen by the reader.
+     * This reduces per-write stack overhead when the sender queue has a backlog.
+     */
+    override suspend fun sendFrames(frames: List<ByteArray>) {
+        if (frames.isEmpty()) return
         val f = mutex.withLock { framed }
             ?: throw IOException("not connected")
+        val byteCount = frames.sumOf { 4L + it.size }.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+        val startedAtNanos = System.nanoTime()
+        var succeeded = false
         try {
             // RFCOMM output can block during radio retransmission/backpressure;
             // keep that wait off the session's CPU dispatcher.
             withContext(Dispatchers.IO) {
-                f.writeFrame(frameBytes)
+                f.writeFrames(frames)
             }
+            succeeded = true
         } catch (e: IOException) {
             scope.launch { handleLost(e.message ?: "write error", f) }
             throw e
+        } finally {
+            recordRfcommWriteTiming(
+                frameCount = frames.size,
+                byteCount = byteCount,
+                elapsedNanos = System.nanoTime() - startedAtNanos,
+                succeeded = succeeded,
+            )
         }
+    }
+
+    private fun recordRfcommWriteTiming(
+        frameCount: Int,
+        byteCount: Int,
+        elapsedNanos: Long,
+        succeeded: Boolean,
+    ) {
+        val report = synchronized(rfcommWriteStatsLock) {
+            rfcommWriteFrames += frameCount
+            rfcommWriteCalls++
+            if (!succeeded) rfcommWriteFailedCalls++
+            rfcommWriteBytes += byteCount.toLong()
+            rfcommWriteTotalNanos += elapsedNanos.coerceAtLeast(0L)
+            rfcommWriteMaxNanos = maxOf(rfcommWriteMaxNanos, elapsedNanos)
+            rfcommWriteMaxBatchFrames = maxOf(rfcommWriteMaxBatchFrames, frameCount)
+            if (rfcommWriteFrames < RFCOMM_WRITE_DIAGNOSTIC_INTERVAL) {
+                null
+            } else {
+                val avgCallMs = rfcommWriteTotalNanos / rfcommWriteCalls / 1_000_000.0
+                val maxCallMs = rfcommWriteMaxNanos / 1_000_000.0
+                val avgFramesPerCall = rfcommWriteFrames.toDouble() / rfcommWriteCalls
+                val avgBytesPerFrame = rfcommWriteBytes.toDouble() / rfcommWriteFrames
+                val summary = "frames=$rfcommWriteFrames, calls=$rfcommWriteCalls, " +
+                    "failedCalls=$rfcommWriteFailedCalls, " +
+                    "avgCallMs=" + String.format(java.util.Locale.ROOT, "%.2f", avgCallMs) + ", " +
+                    "maxCallMs=" + String.format(java.util.Locale.ROOT, "%.2f", maxCallMs) + ", " +
+                    "avgFramesPerCall=" + String.format(java.util.Locale.ROOT, "%.2f", avgFramesPerCall) + ", " +
+                    "avgBytesPerFrame=" + String.format(java.util.Locale.ROOT, "%.1f", avgBytesPerFrame) + ", " +
+                    "maxBatchFrames=$rfcommWriteMaxBatchFrames"
+                rfcommWriteFrames = 0
+                rfcommWriteCalls = 0
+                rfcommWriteFailedCalls = 0
+                rfcommWriteBytes = 0L
+                rfcommWriteTotalNanos = 0L
+                rfcommWriteMaxNanos = 0L
+                rfcommWriteMaxBatchFrames = 0
+                summary
+            }
+        }
+        report?.let { AppLog.log(TAG, "RFCOMM write timing: $it") }
     }
 
     override suspend fun disconnect() {
@@ -1028,6 +1100,7 @@ class BluetoothTransport(private val context: Context) : Transport {
     }
 
     companion object {
+        private const val RFCOMM_WRITE_DIAGNOSTIC_INTERVAL = 50
         private const val TAG = "HamSedaBluetooth"
         private const val MAX_DISCOVERED_PEERS = 128
         private const val MAX_VISIBLE_PEERS = 192
