@@ -79,9 +79,15 @@ procedure and its device variations).
 
 ### 2.6 Performance (before any numeric claim)
 - Measure end-to-end latency (mouth-to-ear) on real devices before quoting it.
-- Confirm diagnostics report a playback buffer close to the platform minimum
-  and a 3-frame initial jitter target. Compare clarity and underruns against
-  the prior APK on both Wi-Fi Direct and Bluetooth Classic.
+- Confirm diagnostics report the selected AudioTrack performance mode, buffer
+  limit, and 3-frame initial jitter target. The playback path also limits
+  application-fed PCM already queued in AudioTrack to three 20 ms frames
+  (2,880 mono frames at 48 kHz); inspect the `AudioTrack queue pacing` log
+  for `waitedFrames`, `maxWaitMs`, `maxObservedQueuedFrames`, and
+  `queueLimitFrames`. The limit should be 2,880 frames; a queue-pacing timeout
+  is a playback failure, not a pass. Compare audibility, perceived gaps,
+  underruns, and pacing waits against the prior APK on both transports. This
+  bounds queued PCM; it is not a measurement of mouth-to-ear latency.
 - Repeat with the screen locked for 5 minutes and verify voice remains smooth;
   the active-session partial CPU wake lock should be acquired and released on
   teardown. Record the battery cost.

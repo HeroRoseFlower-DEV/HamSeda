@@ -76,6 +76,14 @@ class AudioEngine(private val context: Context) : AudioPipeline {
     private var playbackWriteWindowTotalNanos = 0L
     private var playbackWriteWindowMaxNanos = 0L
 
+    // Bounds the application-fed PCM backlog in AudioTrack. Pacing waits are
+    // measured separately from time spent inside the native AudioTrack.write().
+    private var playbackQueueWindowFrames = 0
+    private var playbackQueueWindowWaitedFrames = 0
+    private var playbackQueueWindowTotalWaitNanos = 0L
+    private var playbackQueueWindowMaxWaitNanos = 0L
+    private var playbackQueueWindowMaxObservedFrames = 0L
+
     private var focusRequest: AudioFocusRequest? = null
     /** Audio routing is global to the device; restore the previous state when this app stops audio. */
     private var previousAudioMode: Int? = null
@@ -395,6 +403,11 @@ class AudioEngine(private val context: Context) : AudioPipeline {
         playbackWriteWindowOver20Ms = 0
         playbackWriteWindowTotalNanos = 0L
         playbackWriteWindowMaxNanos = 0L
+        playbackQueueWindowFrames = 0
+        playbackQueueWindowWaitedFrames = 0
+        playbackQueueWindowTotalWaitNanos = 0L
+        playbackQueueWindowMaxWaitNanos = 0L
+        playbackQueueWindowMaxObservedFrames = 0L
         playbackRunning.set(true)
         val initialUnderruns = try { at.underrunCount } catch (_: Exception) { -1 }
         val effectiveBufferMs = at.bufferSizeInFrames * 1000.0 / at.sampleRate
@@ -412,6 +425,11 @@ class AudioEngine(private val context: Context) : AudioPipeline {
                 Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
             } catch (e: Exception) {
                 Log.w(TAG, "could not set playback audio priority: ${e.javaClass.simpleName}")
+            }
+            // Track queued PCM rather than relying on OEM buffer capacity:
+            // a large track buffer can otherwise absorb a burst and replay stale speech.
+            val queueTracker = PlaybackQueueTracker().apply {
+                reset(at.playbackHeadPosition)
             }
             val silence = ShortArray(AudioCodec.FRAME_SAMPLES)
             var last: ShortArray? = null
@@ -442,7 +460,7 @@ class AudioEngine(private val context: Context) : AudioPipeline {
                                 r.packet.payload.fill(0)
                             }
                             if (pcm != null) {
-                                if (!writePcm(at, pcm)) {
+                                if (!writePcm(at, pcm, queueTracker)) {
                                     pcm.fill(0)
                                     reportPlaybackWriteFailure()
                                     break@playback
@@ -451,7 +469,7 @@ class AudioEngine(private val context: Context) : AudioPipeline {
                                 last = pcm
                                 plcCount = 0
                             } else {
-                                val next = conceal(at, last, silence, plcCount)
+                                val next = conceal(at, queueTracker, last, silence, plcCount)
                                 if (next == null) {
                                     reportPlaybackWriteFailure()
                                     break@playback
@@ -460,7 +478,7 @@ class AudioEngine(private val context: Context) : AudioPipeline {
                             }
                         }
                         is JitterBuffer.TakeResult.Lost -> {
-                            val next = conceal(at, last, silence, plcCount)
+                            val next = conceal(at, queueTracker, last, silence, plcCount)
                             if (next == null) {
                                 reportPlaybackWriteFailure()
                                 break@playback
@@ -489,8 +507,57 @@ class AudioEngine(private val context: Context) : AudioPipeline {
         return true
     }
 
-    /** Write an entire PCM frame without silently truncating a partial write. */
-    private fun writePcm(at: AudioTrack, pcm: ShortArray): Boolean {
+    /**
+     * Keep at most three 20 ms PCM frames pending in AudioTrack. The track may
+     * have a larger OEM-selected capacity, but accepting a burst into that
+     * capacity can turn transport jitter into delayed speech. Audio frames
+     * waiting here remain subject to the bounded, freshness-first jitter queue.
+     */
+    private fun writePcm(
+        at: AudioTrack,
+        pcm: ShortArray,
+        queueTracker: PlaybackQueueTracker,
+    ): Boolean {
+        val queueWaitStartedNanos = System.nanoTime()
+        var maxObservedQueuedFrames = 0L
+        var readyForWrite = false
+        var queueWaitTimedOut = false
+        val queueLimitFrames = AudioCodec.FRAME_SAMPLES * MAX_TRACKED_PLAYBACK_QUEUE_FRAMES
+
+        while (playbackRunning.get()) {
+            val queuedFrames = queueTracker.pendingFrames(at.playbackHeadPosition)
+            maxObservedQueuedFrames = maxOf(maxObservedQueuedFrames, queuedFrames)
+            if (queuedFrames + pcm.size <= queueLimitFrames) {
+                readyForWrite = true
+                break
+            }
+            if (System.nanoTime() - queueWaitStartedNanos >= MAX_PLAYBACK_QUEUE_WAIT_MS * 1_000_000L) {
+                queueWaitTimedOut = true
+                break
+            }
+            try {
+                Thread.sleep(2)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                break
+            }
+        }
+
+        val queueWaitNanos = (System.nanoTime() - queueWaitStartedNanos).coerceAtLeast(0L)
+        recordPlaybackQueueTiming(queueWaitNanos, maxObservedQueuedFrames)
+        if (!readyForWrite) {
+            if (queueWaitTimedOut && playbackRunning.get()) {
+                AppLog.log(
+                    TAG,
+                    "AudioTrack queue pacing timed out: queuedFrames=$maxObservedQueuedFrames, " +
+                        "queueLimitFrames=$queueLimitFrames, waitLimitMs=$MAX_PLAYBACK_QUEUE_WAIT_MS",
+                )
+            }
+            return false
+        }
+
+        // Exclude queue-pacing wait from this metric; it measures actual time
+        // spent inside Android AudioTrack.write() calls only.
         val startedAtNanos = System.nanoTime()
         var succeeded = false
         try {
@@ -508,6 +575,7 @@ class AudioEngine(private val context: Context) : AudioPipeline {
                     }
                     return false
                 }
+                queueTracker.recordWrittenFrames(written)
                 offset += written
             }
             succeeded = offset == pcm.size
@@ -515,6 +583,32 @@ class AudioEngine(private val context: Context) : AudioPipeline {
         } finally {
             recordPlaybackWriteTiming(System.nanoTime() - startedAtNanos, succeeded)
         }
+    }
+
+    private fun recordPlaybackQueueTiming(waitNanos: Long, maxObservedQueuedFrames: Long) {
+        playbackQueueWindowFrames++
+        if (waitNanos >= 1_000_000L) playbackQueueWindowWaitedFrames++
+        playbackQueueWindowTotalWaitNanos += waitNanos.coerceAtLeast(0L)
+        playbackQueueWindowMaxWaitNanos = maxOf(playbackQueueWindowMaxWaitNanos, waitNanos)
+        playbackQueueWindowMaxObservedFrames =
+            maxOf(playbackQueueWindowMaxObservedFrames, maxObservedQueuedFrames)
+        if (playbackQueueWindowFrames < PLAYBACK_WRITE_DIAGNOSTIC_INTERVAL) return
+
+        fun ms(nanos: Long) = String.format(Locale.ROOT, "%.2f", nanos / 1_000_000.0)
+        AppLog.log(
+            TAG,
+            "AudioTrack queue pacing: frames=$playbackQueueWindowFrames, " +
+                "waitedFrames=$playbackQueueWindowWaitedFrames, " +
+                "avgWaitMs=" + ms(playbackQueueWindowTotalWaitNanos / playbackQueueWindowFrames) + ", " +
+                "maxWaitMs=" + ms(playbackQueueWindowMaxWaitNanos) + ", " +
+                "maxObservedQueuedFrames=$playbackQueueWindowMaxObservedFrames, " +
+                "queueLimitFrames=${AudioCodec.FRAME_SAMPLES * MAX_TRACKED_PLAYBACK_QUEUE_FRAMES}",
+        )
+        playbackQueueWindowFrames = 0
+        playbackQueueWindowWaitedFrames = 0
+        playbackQueueWindowTotalWaitNanos = 0L
+        playbackQueueWindowMaxWaitNanos = 0L
+        playbackQueueWindowMaxObservedFrames = 0L
     }
 
     private fun recordPlaybackWriteTiming(elapsedNanos: Long, succeeded: Boolean) {
@@ -554,6 +648,7 @@ class AudioEngine(private val context: Context) : AudioPipeline {
 
     private fun conceal(
         at: AudioTrack,
+        queueTracker: PlaybackQueueTracker,
         last: ShortArray?,
         silence: ShortArray,
         plcCount: Int,
@@ -565,7 +660,7 @@ class AudioEngine(private val context: Context) : AudioPipeline {
             silence
         }
         return try {
-            if (writePcm(at, pcm)) plcCount + 1 else null
+            if (writePcm(at, pcm, queueTracker)) plcCount + 1 else null
         } finally {
             if (generated) pcm.fill(0)
         }
@@ -833,6 +928,10 @@ class AudioEngine(private val context: Context) : AudioPipeline {
         private const val ENCODE_DIAGNOSTIC_INTERVAL = 50
         private const val PLAYBACK_DIAGNOSTIC_INTERVAL_MS = 5_000L
         private const val PLAYBACK_WRITE_DIAGNOSTIC_INTERVAL = 50
+        /** At most three 20 ms PCM frames in the application-fed track queue. */
+        private const val MAX_TRACKED_PLAYBACK_QUEUE_FRAMES = 3
+        /** A stuck output head is a playback failure, not an infinite wait. */
+        private const val MAX_PLAYBACK_QUEUE_WAIT_MS = 1_000L
         /** HS-09: bounded retries for transient AudioRecord.read errors. */
         private const val MAX_CONSECUTIVE_READ_ERRORS = 10
         private const val READ_ERROR_BACKOFF_MS = 20L

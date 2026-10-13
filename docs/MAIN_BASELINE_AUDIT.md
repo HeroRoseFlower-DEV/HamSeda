@@ -266,8 +266,8 @@ The next log must contain these new lines to establish that the instrumented bui
 - high **capture encode** points to encoder/CPU cost on the transmitting device;
 - rising **underruns** or jitter losses points to the receiving/playback path.
 
-This is diagnostic instrumentation only. It does not yet change the Opus bitrate, queue cap, playback buffer policy, or negotiated protocol.
+The codec profile, Opus bitrate, negotiated protocol, and AudioTrack capacity/performance-mode selection remain unchanged. A conservative playback experiment now also caps the application-fed PCM backlog at three 20 ms frames (2,880 mono samples / about 60 ms at 48 kHz). The implementation waits for playback-head progress before enqueueing another PCM frame, logs pacing waits separately from time spent inside `AudioTrack.write()`, and fails closed if the playback head remains blocked for 1 second. This bounds PCM delay after incoming bursts; it is not a measured mouth-to-ear latency result and has not yet been validated on physical devices.
 
 ### Current conclusion and next gate
 
-The first two reconnect defects are no longer reproduced in this second run, which is encouraging. Priority 1 is still **in progress** because audio congestion persists and the new timing instrumentation has not been confirmed on the same phones. Build/install the latest successful CI artifact, record its SHA-256, repeat Bluetooth in both directions, and include the four new diagnostic log patterns above before selecting a performance fix.
+The reconnect fixes remain **not reproduced** in the latest supplied logs, but the full physical-device baseline and audio quality are still unverified. Build/install the latest successful CI artifact, record its SHA-256, and test both transports in both directions. Specifically inspect `AudioTrack queue pacing`, `AudioTrack write timing`, `audio receive timing`, playback underruns, and RFCOMM write timing. Compare the same speech passage before/after under the same route and phone pair; do not mark the buffering experiment successful until the logs and audible result support it.
