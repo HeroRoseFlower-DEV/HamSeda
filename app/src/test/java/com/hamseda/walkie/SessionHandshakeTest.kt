@@ -7,6 +7,7 @@ import com.hamseda.walkie.session.FloorController
 import com.hamseda.walkie.session.SessionManager
 import com.hamseda.walkie.transport.PeerDevice
 import com.hamseda.walkie.transport.TransportType
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -15,6 +16,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import java.util.Collections
 import org.junit.Test
 
 /**
@@ -38,10 +40,11 @@ class SessionHandshakeTest {
     private fun newRig(
         interceptA: ((ByteArray) -> ByteArray)? = null,
         interceptB: ((ByteArray) -> ByteArray)? = null,
+        dispatcher: CoroutineDispatcher = Dispatchers.Unconfined,
     ): Rig {
         val (ta, tb) = LoopbackTransport.pair(interceptA, interceptB)
-        val scopeA = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
-        val scopeB = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+        val scopeA = CoroutineScope(SupervisorJob() + dispatcher)
+        val scopeB = CoroutineScope(SupervisorJob() + dispatcher)
         val audioA = FakeAudioPipeline()
         val audioB = FakeAudioPipeline()
         return Rig(
@@ -101,6 +104,41 @@ class SessionHandshakeTest {
         }
         assertEquals(rig.a.sasCode.value, rig.b.sasCode.value)
         rig.close()
+    }
+
+    @Test
+    fun `handshake startup and first HELLO stay ordered under dispatcher races`() {
+        // The real app's state collector and socket reader run on dispatcher
+        // threads concurrently. Stress that boundary and assert the local
+        // HELLO always enters the wire before the resulting KEY_EXCHANGE.
+        repeat(12) { attempt ->
+            val outboundB = Collections.synchronizedList(mutableListOf<Byte>())
+            val rig = newRig(
+                interceptB = { bytes ->
+                    outboundB.add(Frame.decode(bytes).type)
+                    bytes
+                },
+                dispatcher = Dispatchers.Default,
+            )
+            try {
+                rig.start()
+                rig.await("concurrent handshake attempt $attempt", timeoutMs = 5_000) {
+                    rig.a.phase.value == SessionManager.Phase.AWAITING_SAS_CONFIRM &&
+                        rig.b.phase.value == SessionManager.Phase.AWAITING_SAS_CONFIRM
+                }
+                val sent = synchronized(outboundB) { outboundB.toList() }
+                val helloIndex = sent.indexOf(MessageType.HELLO)
+                val exchangeIndex = sent.indexOf(MessageType.KEY_EXCHANGE)
+                assertTrue("attempt $attempt: HELLO must be sent", helloIndex >= 0)
+                assertTrue("attempt $attempt: KEY_EXCHANGE must be sent", exchangeIndex >= 0)
+                assertTrue(
+                    "attempt $attempt: HELLO must precede KEY_EXCHANGE; sent=$sent",
+                    helloIndex < exchangeIndex,
+                )
+            } finally {
+                rig.close()
+            }
+        }
     }
 
     @Test
