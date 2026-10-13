@@ -26,6 +26,7 @@ import androidx.core.content.ContextCompat
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.abs
 import kotlin.math.min
+import java.util.Locale
 
 /**
  * Low-latency voice capture/playback engine.
@@ -204,6 +205,9 @@ class AudioEngine(private val context: Context) : AudioPipeline {
             // and invalid-operation are fatal (stop, don't spin); transient
             // errors back off with a bounded retry count.
             var consecutiveErrors = 0
+            var encodeWindowFrames = 0
+            var encodeWindowTotalNanos = 0L
+            var encodeWindowMaxNanos = 0L
             while (captureRunning.get()) {
                 val read = rec.read(frame, 0, frame.size)
                 if (read < 0) {
@@ -245,7 +249,23 @@ class AudioEngine(private val context: Context) : AudioPipeline {
                 for (s in frame) peak = maxOf(peak, abs(s.toInt()))
                 val level = min(1f, peak / 32768f)
                 try {
+                    val encodeStartedAt = System.nanoTime()
                     val encoded = codec.encode(frame)
+                    val encodeElapsedNanos = System.nanoTime() - encodeStartedAt
+                    encodeWindowFrames++
+                    encodeWindowTotalNanos += encodeElapsedNanos
+                    encodeWindowMaxNanos = maxOf(encodeWindowMaxNanos, encodeElapsedNanos)
+                    if (encodeWindowFrames >= ENCODE_DIAGNOSTIC_INTERVAL) {
+                        AppLog.log(
+                            TAG,
+                            "capture encode timing: frames=$encodeWindowFrames, " +
+                                "avgMs=${String.format(Locale.ROOT, "%.2f", encodeWindowTotalNanos / encodeWindowFrames / 1_000_000.0)}, " +
+                                "maxMs=${String.format(Locale.ROOT, "%.2f", encodeWindowMaxNanos / 1_000_000.0)}",
+                        )
+                        encodeWindowFrames = 0
+                        encodeWindowTotalNanos = 0L
+                        encodeWindowMaxNanos = 0L
+                    }
                     try {
                         onFrame(encoded, level)
                     } finally {
@@ -359,11 +379,16 @@ class AudioEngine(private val context: Context) : AudioPipeline {
         }
         track = at
         playbackRunning.set(true)
+        val initialUnderruns = try { at.underrunCount } catch (_: Exception) { -1 }
+        val effectiveBufferMs = at.bufferSizeInFrames * 1000.0 / at.sampleRate
         AppLog.log(
             TAG,
-            "playback initialized: sampleRate=${at.sampleRate}, " +
-                "performanceMode=${at.performanceMode}, bufferFrames=${at.bufferSizeInFrames}, " +
-                "capacityFrames=${at.bufferCapacityInFrames}, frameMs=20",
+            "playback initialized: sampleRate=${at.sampleRate}, nativeOutputRate=$nativeOutputRate, " +
+                "minBufferBytes=$minBuf, requestedBufferBytes=$requestedBufferBytes, " +
+                "requestedPerformanceMode=$preferredMode, actualPerformanceMode=${at.performanceMode}, " +
+                "bufferFrames=${at.bufferSizeInFrames}, capacityFrames=${at.bufferCapacityInFrames}, " +
+                "effectiveBufferMs=${String.format(Locale.ROOT, "%.1f", effectiveBufferMs)}, " +
+                "initialUnderruns=$initialUnderruns, frameMs=20",
         )
         playbackThread = Thread({
             try {
@@ -374,8 +399,21 @@ class AudioEngine(private val context: Context) : AudioPipeline {
             val silence = ShortArray(AudioCodec.FRAME_SAMPLES)
             var last: ShortArray? = null
             var plcCount = 0
+            var lastHealthLogNanos = System.nanoTime()
             try {
                 playback@ while (playbackRunning.get()) {
+                    val healthNowNanos = System.nanoTime()
+                    if (healthNowNanos - lastHealthLogNanos >= PLAYBACK_DIAGNOSTIC_INTERVAL_MS * 1_000_000L) {
+                        val underruns = try { at.underrunCount } catch (_: Exception) { -1 }
+                        AppLog.log(
+                            TAG,
+                            "playback health: underruns=$underruns, " +
+                                "bufferFrames=${at.bufferSizeInFrames}, capacityFrames=${at.bufferCapacityInFrames}, " +
+                                "jitterLost=${buffer.lost}, jitterStaleDropped=${buffer.droppedStale}, " +
+                                "jitterBuffered=${buffer.bufferedFrames()}",
+                        )
+                        lastHealthLogNanos = healthNowNanos
+                    }
                     when (val r = buffer.takeNext()) {
                         is JitterBuffer.TakeResult.Frame -> {
                             val pcm = try {
@@ -741,6 +779,8 @@ class AudioEngine(private val context: Context) : AudioPipeline {
         private const val MAX_PLC_FRAMES = 5
         private const val PLC_DECAY = 0.85f
         private const val JITTER_DIAGNOSTIC_INTERVAL = 25L
+        private const val ENCODE_DIAGNOSTIC_INTERVAL = 50
+        private const val PLAYBACK_DIAGNOSTIC_INTERVAL_MS = 5_000L
         /** HS-09: bounded retries for transient AudioRecord.read errors. */
         private const val MAX_CONSECUTIVE_READ_ERRORS = 10
         private const val READ_ERROR_BACKOFF_MS = 20L
