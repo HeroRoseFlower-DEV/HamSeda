@@ -86,6 +86,8 @@ class SessionManager(
     // ------------------------------------------------------- observable state
 
     private val lifecycleLock = Any()
+    /** Serializes handshake startup with inbound-frame processing on separate dispatcher threads. */
+    private val handshakeFrameLock = Any()
     /** Independent cleanup survives VoiceService cancelling its child scope in onDestroy(). */
     private val cleanupJob = SupervisorJob()
     private val cleanupScope = CoroutineScope(cleanupJob + Dispatchers.IO)
@@ -638,9 +640,10 @@ class SessionManager(
 
     // ------------------------------------------------------- handshake
 
-    private fun beginHandshake() {
-        // Guarded: the transport may report CONNECTED twice (once via the
-        // state flow, once via the post-attach check below).
+    private fun beginHandshake() = synchronized(handshakeFrameLock) {
+        // A CONNECTED state callback and the first inbound HELLO can race on
+        // different dispatcher threads. Keep startup atomic with inbound frame
+        // processing so KEY_EXCHANGE cannot overtake this side's own HELLO.
         if (handshakeStarted) return
         handshakeStarted = true
         peerHelloReceived = false
@@ -653,7 +656,8 @@ class SessionManager(
         myNonce = SessionCrypto.newNonce16()
         sendSeq = 0
         lastPeerSeen = elapsedClock()
-        // HELLO payload: protocol-version byte + codec-preference byte.
+        // Queue our protocol preamble before another thread can process the
+        // peer HELLO and enqueue KEY_EXCHANGE. The sender serializes this FIFO.
         val hello = byteArrayOf(Protocol.VERSION, myCodecPref)
         enqueuePlain(MessageType.HELLO, hello)
         Log.i(TAG, "handshake started, HELLO sent")
@@ -707,7 +711,7 @@ class SessionManager(
         sasDeadlineJob?.cancel(); sasDeadlineJob = null
     }
 
-    private fun onRawFrame(bytes: ByteArray) {
+    private fun onRawFrame(bytes: ByteArray) = synchronized(handshakeFrameLock) {
         // An inbound frame proves that the transport's data path is already
         // usable, even if its CONNECTED state update is still queued behind the
         // socket-reader callback. Starting the handshake only when state ==
