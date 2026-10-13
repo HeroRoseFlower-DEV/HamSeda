@@ -1,5 +1,6 @@
 package com.hamseda.walkie.audio
 
+import android.annotation.SuppressLint
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -152,6 +153,10 @@ class AudioEngine(private val context: Context) : AudioPipeline {
      * the preferred source (for voice-processing effects), then make one bounded
      * compatibility attempt with MIC instead of failing the whole PTT session.
      */
+    // startCapture checks RECORD_AUDIO before calling this helper. Keep this annotation
+    // scoped to the guarded platform-builder calls rather than suppressing permission
+    // diagnostics across the whole AudioEngine.
+    @SuppressLint("MissingPermission")
     private fun buildCaptureRecorder(format: AudioFormat, bufferBytes: Int): CaptureRecorder? {
         val sources = listOf(
             MediaRecorder.AudioSource.VOICE_COMMUNICATION to "VOICE_COMMUNICATION",
