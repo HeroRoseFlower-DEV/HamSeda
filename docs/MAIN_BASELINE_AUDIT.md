@@ -225,10 +225,10 @@ The absence of the APK identity means these results cannot yet be attributed con
 ### Android 8/9 compatibility pass (source changes, device validation pending)
 
 - minSdk=26 continues to support Android 8.0 and later; no minSdk increase was made.
-- On API 26–28 only, the native Opus encoder now uses complexity 8 instead of
-  10. The 40 kbps target, mono 48 kHz PCM, 20 ms frame duration, and wire
-  protocol remain unchanged. This is a CPU-efficiency tradeoff, not a measured
-  performance result yet.
+- On API 26–28, the native Opus encoder uses complexity 6; API 29+ uses
+  complexity 8. The 40 kbps target, mono 48 kHz PCM, 20 ms frame duration, and
+  wire protocol remain unchanged. This is a CPU-efficiency tradeoff, not a
+  measured performance result yet; test intelligibility and encode timing.
 - If constructing or initializing an AudioRecord with VOICE_COMMUNICATION fails,
   the engine makes one bounded attempt with MIC. The primary source remains
   preferred. The fallback path has not been validated on a real OEM audio HAL

@@ -33,12 +33,14 @@ class CodecTest {
     }
 
     @Test
-    fun `encoder complexity is conservative on Android 8 and 9 but keeps modern defaults`() {
-        assertEquals(8, OpusCodec.recommendedEncoderComplexity(26))
-        assertEquals(8, OpusCodec.recommendedEncoderComplexity(27))
-        assertEquals(8, OpusCodec.recommendedEncoderComplexity(28))
-        assertEquals(10, OpusCodec.recommendedEncoderComplexity(29))
-        assertEquals(10, OpusCodec.recommendedEncoderComplexity(36))
+    fun `encoder complexity uses 6 on Android 8 and 9 and 8 on newer versions`() {
+        assertEquals(6, OpusCodec.recommendedEncoderComplexity(26))
+        assertEquals(6, OpusCodec.recommendedEncoderComplexity(27))
+        assertEquals(6, OpusCodec.recommendedEncoderComplexity(28))
+        assertEquals(8, OpusCodec.recommendedEncoderComplexity(29))
+        assertEquals(8, OpusCodec.recommendedEncoderComplexity(36))
+        assertEquals(8, OpusCodec.ENCODER_COMPLEXITY)
+        assertEquals(6, OpusCodec.LEGACY_ANDROID_ENCODER_COMPLEXITY)
         assertEquals(40_000, OpusCodec.DEFAULT_BITRATE_BPS)
     }
 
@@ -65,7 +67,7 @@ class CodecTest {
             assertEquals(1, codec.channels)
             assertEquals(960, codec.frameSamples)
             assertEquals(40_000, OpusCodec.DEFAULT_BITRATE_BPS)
-            assertEquals(10, OpusCodec.ENCODER_COMPLEXITY)
+            assertEquals(8, OpusCodec.ENCODER_COMPLEXITY)
             // The loaded native-library version is checked by the Android instrumentation test.
         }
     }

@@ -141,10 +141,11 @@ not validate vendor audio HAL behavior.
   if the OEM rejects it during build/initialization, MIC_FALLBACK should be
   reported and capture should still work. Confirm audible AEC/noise behavior
   because MIC fallback may sound different.
-- Confirm the selected Opus complexity is 8 on API 26–28 and that the target
-  bitrate remains 40 kbps. Compare CPU usage, encode timing, intelligibility,
-  clipping, and gaps against the earlier build; do not assume the lower
-  complexity automatically improves perceived quality on every chipset.
+- Confirm the selected Opus complexity is 6 on API 26–28 and 8 on API 29+,
+  while the target bitrate remains 40 kbps. Compare CPU usage, encode timing,
+  intelligibility, clipping, and gaps against the earlier build. Lower
+  complexity may reduce CPU work but can also change speech quality; do not
+  assume it is an improvement without listening and measuring.
 - Lock the screen for 5 minutes and test repeated PTT, stop notification,
   headset insertion/removal, incoming call/audio-focus loss, radio loss, and
   reconnect. Confirm microphone, wake lock, and foreground notification are

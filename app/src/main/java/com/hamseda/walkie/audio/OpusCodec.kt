@@ -9,8 +9,9 @@ import java.io.Closeable
  *
  * Profile: 48 kHz mono PCM16, 20 ms frames, VOIP application, 40 kbps,
  * voice signal hint, full-band maximum bandwidth and unconstrained VBR.
- * Android 8/9 use complexity 8 to reduce encoder CPU cost on older hardware;
- * API 29+ keep complexity 10. The upstream source archive is hash-pinned in CMake;
+ * Android 8/9 use complexity 6 to reduce encoder CPU cost on older hardware;
+ * API 29+ use complexity 8. This trades some encoder-side analysis for CPU headroom.
+ * The upstream source archive is hash-pinned in CMake;
  * the codec is packaged in the APK and does not download anything at runtime.
  *
  * JVM tests can construct this class for protocol wiring, but real encode /
@@ -32,7 +33,7 @@ class OpusCodec(
     private val lock = Any()
     private val selectedEncoderComplexity = recommendedEncoderComplexity(Build.VERSION.SDK_INT)
 
-    /** Actual encoder complexity selected for this Android API level (8 on API 26–28, 10 otherwise). */
+    /** Actual encoder complexity selected for this Android API level (6 on API 26–28, 8 otherwise). */
     val encoderComplexityInUse: Int get() = selectedEncoderComplexity
 
     /** Reports the actual version string returned by the linked native library. */
@@ -130,8 +131,8 @@ class OpusCodec(
     companion object {
         const val LIBOPUS_VERSION = "1.6.1"
         const val DEFAULT_BITRATE_BPS = 40_000
-        const val ENCODER_COMPLEXITY = 10
-        const val LEGACY_ANDROID_ENCODER_COMPLEXITY = 8
+        const val ENCODER_COMPLEXITY = 8
+        const val LEGACY_ANDROID_ENCODER_COMPLEXITY = 6
         const val MAX_PACKET_BYTES = 1275
 
         /** Pure selector for the conservative CPU profile used on Oreo/Pie-era devices. */

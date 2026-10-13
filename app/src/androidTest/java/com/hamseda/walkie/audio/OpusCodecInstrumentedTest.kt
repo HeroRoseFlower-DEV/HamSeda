@@ -25,7 +25,7 @@ class OpusCodecInstrumentedTest {
     }
 
     @Test
-    fun encoderComplexityMatchesLegacyApiProfile() {
+    fun encoderComplexityMatchesApiProfile() {
         OpusCodec().use { codec ->
             assertEquals(
                 OpusCodec.recommendedEncoderComplexity(android.os.Build.VERSION.SDK_INT),

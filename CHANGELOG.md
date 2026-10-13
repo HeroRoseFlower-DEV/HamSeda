@@ -1,9 +1,9 @@
 # HamSeda Changelog
 
 ## 2026-10-14 — Real-time audio backpressure hardening
-- **Android 8/9 audio compatibility:** use Opus encoder complexity 8 on API 26–28
-  to lower CPU work while retaining 48 kHz mono, 20 ms frames, and 40 kbps;
-  API 29+ keeps complexity 10. If a legacy OEM cannot construct/initialize
+- **Android 8/9 audio compatibility:** use Opus encoder complexity 6 on API 26–28
+  and complexity 8 on API 29+ to lower CPU work, retaining 48 kHz mono, 20 ms
+  frames, and 40 kbps. If a legacy OEM cannot construct/initialize
   VOICE_COMMUNICATION capture, try MIC once as a compatibility fallback.
 
 - **Session lifecycle diagnostics:** correlate connection attempts with a
