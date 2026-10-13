@@ -44,6 +44,7 @@ import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withContext
 import java.io.IOException
 import java.net.InetSocketAddress
+import java.net.BindException
 import java.net.ServerSocket
 import java.net.Socket
 import java.net.SocketTimeoutException
@@ -97,7 +98,7 @@ class WifiDirectTransport(private val context: Context) : Transport {
     @Volatile private var p2pListenModeActive = false
     @Volatile private var p2pDiscoveryActive = false
     private var framed: FramedSocket? = null
-    private var serverSocket: ServerSocket? = null
+    @Volatile private var serverSocket: ServerSocket? = null
     private var readerJob: Job? = null
     private var socketJob: Job? = null
     private var connectWatchdog: Job? = null
@@ -844,7 +845,7 @@ class WifiDirectTransport(private val context: Context) : Transport {
                 socketJob = scope.launch {
                     try {
                         val socket = withTimeout(Protocol.CONNECT_TIMEOUT_MS.toLong()) {
-                            if (info.isGroupOwner) acceptAsOwner(info) else connectAsClient(info)
+                            if (info.isGroupOwner) acceptAsOwner(info, expectedGeneration) else connectAsClient(info)
                         }
                         AppLog.log(TAG, "p2p socket established")
                         onSocketReady(socket, expectedGeneration)
@@ -897,30 +898,82 @@ class WifiDirectTransport(private val context: Context) : Transport {
         }
     }
 
-    private fun acceptAsOwner(info: WifiP2pInfo): Socket {
-        // Bind only to the P2P group-owner interface. Binding ServerSocket(port)
-        // uses 0.0.0.0 and exposes the listener on unrelated LAN/VPN interfaces,
-        // where another local process/device could occupy the port and DoS pairing.
+    private fun acceptAsOwner(info: WifiP2pInfo, expectedGeneration: Long): Socket {
+        // Bind only to the P2P group-owner interface. Never bind to 0.0.0.0:
+        // the fixed listener must not be exposed on unrelated LAN/VPN interfaces.
         val groupAddress = info.groupOwnerAddress
             ?: throw IOException("group owner address unavailable")
-        val server = ServerSocket().also {
-            it.reuseAddress = false
-            it.soTimeout = Protocol.CONNECT_TIMEOUT_MS
-            it.bind(InetSocketAddress(groupAddress, Protocol.WIFI_DIRECT_PORT))
-            serverSocket = it
+        val bindDeadlineNanos =
+            System.nanoTime() + OWNER_BIND_RETRY_WINDOW_MS * 1_000_000L
+        var server: ServerSocket? = null
+
+        // A just-closed accepted TCP connection can temporarily leave the fixed
+        // local port unavailable (EADDRINUSE/TIME_WAIT on some Android kernels).
+        // Reuse is limited to the P2P interface above; authentication is still
+        // enforced by the HamSeda handshake. Retry only briefly, never forever.
+        while (server == null) {
+            if (operationGeneration.get() != expectedGeneration) {
+                throw IOException("stale Wi-Fi Direct owner socket attempt")
+            }
+            val candidate = ServerSocket()
+            try {
+                candidate.reuseAddress = true
+                candidate.soTimeout = Protocol.CONNECT_TIMEOUT_MS
+                // Publish before bind so disconnect() can close even a socket
+                // whose setup races with teardown. Recheck generation afterwards
+                // to avoid leaving an orphan listener when Stop wins the race.
+                serverSocket = candidate
+                if (operationGeneration.get() != expectedGeneration) {
+                    throw IOException("stale Wi-Fi Direct owner socket attempt")
+                }
+                candidate.bind(InetSocketAddress(groupAddress, Protocol.WIFI_DIRECT_PORT))
+                server = candidate
+            } catch (e: BindException) {
+                try { candidate.close() } catch (_: IOException) {}
+                if (serverSocket === candidate) serverSocket = null
+                val remainingNanos = bindDeadlineNanos - System.nanoTime()
+                if (remainingNanos <= 0L) {
+                    throw IOException(
+                        "could not bind P2P listener ${groupAddress.hostAddress}:" +
+                            "${Protocol.WIFI_DIRECT_PORT} after ${OWNER_BIND_RETRY_WINDOW_MS}ms; " +
+                            "lastError=${e.message}",
+                        e,
+                    )
+                }
+                AppLog.log(
+                    TAG,
+                    "P2P listener port is temporarily unavailable; retrying bind " +
+                        "(attemptWindowMs=${OWNER_BIND_RETRY_WINDOW_MS}, cause=EADDRINUSE)",
+                )
+                val sleepMs = minOf(
+                    OWNER_BIND_RETRY_DELAY_MS,
+                    (remainingNanos / 1_000_000L).coerceAtLeast(1L),
+                )
+                try {
+                    Thread.sleep(sleepMs)
+                } catch (interrupted: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    throw IOException("P2P listener bind retry interrupted", interrupted)
+                }
+            } catch (e: Exception) {
+                try { candidate.close() } catch (_: IOException) {}
+                if (serverSocket === candidate) serverSocket = null
+                throw e
+            }
         }
+
+        val listener = server ?: throw IOException("P2P listener was not created")
         Log.i(TAG, "group owner: accepting on P2P interface (port ${Protocol.WIFI_DIRECT_PORT})")
-        val accepted = server.accept()
-        // The session uses the accepted socket only. Close the listening
-        // endpoint immediately so no second local peer can queue connections
-        // on the fixed P2P port for the lifetime of the voice session.
         try {
-            server.close()
-        } catch (_: IOException) {
+            val accepted = listener.accept()
+            Log.i(TAG, "group owner: peer socket accepted; listener closed")
+            return accepted
+        } finally {
+            // Only the accepted socket is used for the session. Close the
+            // listening endpoint immediately after accept or on every failure.
+            try { listener.close() } catch (_: IOException) {}
+            if (serverSocket === listener) serverSocket = null
         }
-        if (serverSocket === server) serverSocket = null
-        Log.i(TAG, "group owner: peer socket accepted; listener closed")
-        return accepted
     }
 
     private fun connectAsClient(info: WifiP2pInfo): Socket {
@@ -1426,5 +1479,7 @@ class WifiDirectTransport(private val context: Context) : Transport {
 
     companion object {
         private const val TAG = "HamSedaWifiDirect"
+        private const val OWNER_BIND_RETRY_WINDOW_MS = 2_500L
+        private const val OWNER_BIND_RETRY_DELAY_MS = 200L
     }
 }
