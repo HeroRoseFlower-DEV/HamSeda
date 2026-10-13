@@ -190,6 +190,8 @@ class SessionManager(
             val key: ByteArray,
             val role: Byte,
             val plaintext: ByteArray,
+            /** Monotonic enqueue time; used only for aggregate real-time diagnostics. */
+            val enqueuedAtNanos: Long = System.nanoTime(),
         ) : OutboundMsg
     }
 
@@ -202,6 +204,19 @@ class SessionManager(
     private val outboundSignal = Channel<Unit>(capacity = Channel.CONFLATED)
     private var senderJob: Job? = null
     @Volatile private var lastLoggedAudioDrops = 0L
+
+    // Written only by the single sender coroutine. Windowed aggregates help
+    // distinguish queue starvation, crypto/frame-build cost, and transport
+    // backpressure without logging per-frame payloads or timestamps.
+    private var audioTimingSamples = 0
+    private var audioTimingSent = 0
+    private var audioTimingFailed = 0
+    private var audioQueueWaitTotalNanos = 0L
+    private var audioQueueWaitMaxNanos = 0L
+    private var audioBuildTotalNanos = 0L
+    private var audioBuildMaxNanos = 0L
+    private var audioTransportTotalNanos = 0L
+    private var audioTransportMaxNanos = 0L
 
     private fun isAudioMessage(msg: OutboundMsg): Boolean =
         msg is OutboundMsg.Sealed && msg.type == MessageType.AUDIO
@@ -244,10 +259,20 @@ class SessionManager(
         senderJob?.cancel()
         senderJob = null
         drainOutbound()
+        resetAudioTimingWindow()
         senderJob = scope.launch {
             while (isActive) {
                 val msg = nextOutbound()
+                val audioMsg = (msg as? OutboundMsg.Sealed)
+                    ?.takeIf { it.type == MessageType.AUDIO }
+                val queueWaitNanos = audioMsg?.let {
+                    (System.nanoTime() - it.enqueuedAtNanos).coerceAtLeast(0L)
+                } ?: 0L
+                var buildNanos = 0L
+                var transportNanos = 0L
+                var delivered = false
                 try {
+                    val buildStartedAt = System.nanoTime()
                     val bytes = try {
                         when (msg) {
                             is OutboundMsg.Plain -> buildPlainFrame(msg.type, msg.payload)
@@ -256,12 +281,20 @@ class SessionManager(
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Exception) {
+                        buildNanos = System.nanoTime() - buildStartedAt
                         Log.w(TAG, "outbound build failed: " + e.javaClass.simpleName)
                         continue
                     }
+                    buildNanos = System.nanoTime() - buildStartedAt
                     try {
                         val t = transport ?: break
-                        t.sendFrame(bytes)
+                        val transportStartedAt = System.nanoTime()
+                        try {
+                            t.sendFrame(bytes)
+                            delivered = true
+                        } finally {
+                            transportNanos = System.nanoTime() - transportStartedAt
+                        }
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Exception) {
@@ -271,10 +304,62 @@ class SessionManager(
                         bytes.fill(0)
                     }
                 } finally {
+                    if (audioMsg != null) {
+                        recordAudioTiming(queueWaitNanos, buildNanos, transportNanos, delivered)
+                    }
                     wipeOutboundMessage(msg)
                 }
             }
         }
+    }
+
+    private fun resetAudioTimingWindow() {
+        audioTimingSamples = 0
+        audioTimingSent = 0
+        audioTimingFailed = 0
+        audioQueueWaitTotalNanos = 0L
+        audioQueueWaitMaxNanos = 0L
+        audioBuildTotalNanos = 0L
+        audioBuildMaxNanos = 0L
+        audioTransportTotalNanos = 0L
+        audioTransportMaxNanos = 0L
+    }
+
+    private fun recordAudioTiming(
+        queueWaitNanos: Long,
+        buildNanos: Long,
+        transportNanos: Long,
+        delivered: Boolean,
+    ) {
+        audioTimingSamples++
+        if (delivered) audioTimingSent++ else audioTimingFailed++
+        audioQueueWaitTotalNanos += queueWaitNanos
+        audioQueueWaitMaxNanos = maxOf(audioQueueWaitMaxNanos, queueWaitNanos)
+        audioBuildTotalNanos += buildNanos
+        audioBuildMaxNanos = maxOf(audioBuildMaxNanos, buildNanos)
+        audioTransportTotalNanos += transportNanos
+        audioTransportMaxNanos = maxOf(audioTransportMaxNanos, transportNanos)
+        if (audioTimingSamples < AUDIO_TIMING_LOG_INTERVAL) return
+
+        fun avgMs(totalNanos: Long) =
+            String.format(java.util.Locale.ROOT, "%.2f", totalNanos / audioTimingSamples / 1_000_000.0)
+        fun maxMs(valueNanos: Long) =
+            String.format(java.util.Locale.ROOT, "%.2f", valueNanos / 1_000_000.0)
+
+        AppLog.log(
+            TAG,
+            "audio sender timing: frames=\$audioTimingSamples, sent=\$audioTimingSent, " +
+                "failed=\$audioTimingFailed, queueWaitAvgMs=\${avgMs(audioQueueWaitTotalNanos)}, " +
+                "queueWaitMaxMs=\${maxMs(audioQueueWaitMaxNanos)}, " +
+                "frameBuildAvgMs=\${avgMs(audioBuildTotalNanos)}, " +
+                "frameBuildMaxMs=\${maxMs(audioBuildMaxNanos)}, " +
+                "transportSendAvgMs=\${avgMs(audioTransportTotalNanos)}, " +
+                "transportSendMaxMs=\${maxMs(audioTransportMaxNanos)}, " +
+                "pendingAudio=\${outboundQueue.pendingAudioFrames()}, " +
+                "pendingMessages=\${outboundQueue.size()}, " +
+                "droppedAudioTotal=\${outboundQueue.droppedAudioFrames}",
+        )
+        resetAudioTimingWindow()
     }
 
     private fun stopSender() {
@@ -1431,6 +1516,7 @@ class SessionManager(
         private const val MAX_QUEUED_AUDIO_FRAMES = 6
         private const val MAX_PENDING_OUTBOUND_MESSAGES = 64
         private const val AUDIO_DROP_LOG_INTERVAL = 50L
+        private const val AUDIO_TIMING_LOG_INTERVAL = 50
         private const val TAG = "HamSedaSession"
     }
 }
