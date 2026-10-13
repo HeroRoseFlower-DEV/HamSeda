@@ -93,7 +93,13 @@ procedure and its device variations).
   teardown. Record the battery cost.
 - Force sender backpressure in a test build and verify the outbound queue stays
   freshness-first: old pending audio is evicted, recent audio survives, and
-  control frames remain queued in order.
+  control frames remain queued in order. For Bluetooth, confirm that a stream
+  write completing under 350 ms proceeds normally, while a simulated/observed
+  write exceeding 350 ms closes only the matching active socket, emits a
+  connection-lost diagnostic, and allows a fresh authenticated reconnect.
+  Check that a late return cannot report the timed-out write as delivered.
+  Do not deliberately inject a production timeout on a live conversation; use
+  a controlled lab/test build for the forced-stall scenario.
 - 10-minute continuous session: watch CPU/battery/thermal in Android Studio
   profiler; note anomalies per device model.
 - RF range and transmit power are hardware / Android-framework controlled.

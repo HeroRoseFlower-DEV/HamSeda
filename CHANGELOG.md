@@ -1,5 +1,22 @@
 # HamSeda Changelog
 
+## 2026-10-14 — Real-time audio backpressure hardening
+
+- **Bluetooth RFCOMM write watchdog:** close the matching active socket if a
+  blocking stream write remains stalled for 350 ms. This bounds how long the
+  sender can remain stuck behind a bad write; the session must reconnect and
+  authenticate again after a triggered timeout.
+- **Cancellation cleanup:** cancelling a send also initiates cleanup for that
+  exact socket instead of leaving a blocking stream write orphaned.
+- **Race regression tests:** added deterministic completion/timeout/abort cases
+  and a 100-iteration concurrent completion-versus-timeout test.
+- **Playback backlog bound (preceding commit):** cap application-fed PCM in
+  AudioTrack at three 20 ms frames and report pacing waits separately from
+  native write timing.
+- **Validation caveat:** the 350 ms threshold is an experiment for real-device
+  validation, not an end-to-end audio latency measurement or proof of improved
+  speech quality.
+
 ## 2026-10-09 — Security hardening & modernization
 
 ### Fixed (HS-01…HS-11, with regression tests)

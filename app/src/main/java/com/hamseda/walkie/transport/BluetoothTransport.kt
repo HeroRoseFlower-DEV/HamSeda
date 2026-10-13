@@ -898,18 +898,54 @@ class BluetoothTransport(private val context: Context) : Transport {
             ?: throw IOException("not connected")
         val byteCount = frames.sumOf { 4L + it.size }.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
         val startedAtNanos = System.nanoTime()
+        val writeGuard = RfcommWriteGuard()
         var succeeded = false
+
+        // Socket stream writes are blocking platform calls: coroutine timeout
+        // alone cannot interrupt one. The watchdog closes the *same* active
+        // socket if the write stalls, which unblocks the native write and
+        // prevents a growing stale-audio backlog from surviving indefinitely.
+        val watchdog = scope.launch {
+            delay(RFCOMM_WRITE_STALL_TIMEOUT_MS)
+            if (!writeGuard.tryTimeout()) return@launch
+
+            mutex.withLock {
+                if (framed !== f || _state.value != TransportState.CONNECTED) {
+                    AppLog.log(TAG, "RFCOMM write watchdog ignored a stale socket")
+                    return@withLock
+                }
+                val reason = "Bluetooth send stalled (>${RFCOMM_WRITE_STALL_TIMEOUT_MS} ms)"
+                AppLog.log(TAG, "$reason; closing socket to avoid delayed voice")
+                _error.value = TransportError.ConnectionLost(reason)
+                closeSocketLocked()
+                _state.value = TransportState.IDLE
+            }
+        }
+
         try {
-            // RFCOMM output can block during radio retransmission/backpressure;
-            // keep that wait off the session's CPU dispatcher.
             withContext(Dispatchers.IO) {
                 f.writeFrames(frames)
             }
+            // A timeout may win just as the blocking write returns. If it did,
+            // this connection is no longer safe to treat as live.
+            if (!writeGuard.tryComplete()) {
+                throw IOException("RFCOMM write exceeded watchdog deadline")
+            }
             succeeded = true
+        } catch (e: CancellationException) {
+            // Cancellation does not reliably interrupt a blocking Java I/O
+            // call. Close the matching socket so no orphan write thread stays
+            // blocked after the caller has stopped sending.
+            if (writeGuard.tryAbort()) {
+                scope.launch { handleLost("RFCOMM write cancelled", f) }
+            }
+            throw e
         } catch (e: IOException) {
             scope.launch { handleLost(e.message ?: "write error", f) }
             throw e
         } finally {
+            writeGuard.tryComplete()
+            watchdog.cancel()
             recordRfcommWriteTiming(
                 frameCount = frames.size,
                 byteCount = byteCount,
@@ -1101,6 +1137,8 @@ class BluetoothTransport(private val context: Context) : Transport {
 
     companion object {
         private const val RFCOMM_WRITE_DIAGNOSTIC_INTERVAL = 50
+        /** Long stalls are worse than a clean reconnect for real-time speech. */
+        private const val RFCOMM_WRITE_STALL_TIMEOUT_MS = 350L
         private const val TAG = "HamSedaBluetooth"
         private const val MAX_DISCOVERED_PEERS = 128
         private const val MAX_VISIBLE_PEERS = 192
