@@ -1,6 +1,6 @@
 # Main Branch Baseline Audit and Two-Device Validation
 
-**Status:** source review completed; physical-device baseline is **NOT RUN**.  
+**Status:** source review completed; first physical-device run received; reconnect failures found and targeted fixes committed. Formal 10-attempt baseline remains incomplete.  
 **Branch reviewed:** `main`  
 **Source snapshot at review start:** `80463e4e6ec095707d0d9de935b20f5668a6a3b9`  
 **App version in source:** `1.1` (`versionCode=2`)  
@@ -59,7 +59,7 @@ Complete one copy of this section for every device pair.
 | Available audio outputs tested | NOT RECORDED | NOT RECORDED |
 | Wi-Fi / Bluetooth firmware notes, if exposed | NOT RECORDED | NOT RECORDED |
 
-**Initial execution status:** NOT RUN — no two-physical-device test result was available during this repository review.
+**Initial execution status:** Superseded by the first user-supplied device logs in Section 9. Exact APK identity and formal repeat counts are still not recorded.
 
 ## 4. Test procedure and release gates
 
@@ -177,3 +177,55 @@ Priority 1 is complete only when:
 5. At least one comparable audio-performance baseline is recorded for each transport; any missing measurement remains explicitly marked missing.
 6. All failed cases have a disposition (fixed and retested, known limitation, or release-blocking).
 7. The report is updated with observed facts only. Never change NOT RUN to PASS based on source inspection or CI compilation alone.
+
+
+## 9. First physical-device run — user-supplied logs
+
+**Evidence received:** two device logs pasted into the conversation. These are observations from that run, not a statement that all release-gate tests passed.
+
+### Device/build identity available
+
+| Field | Phone A (user's phone) | Phone B |
+|---|---|---|
+| Android API level from log | API 36 | API 27 |
+| App version / versionCode | NOT PROVIDED | NOT PROVIDED |
+| Source commit SHA used to build APK | NOT PROVIDED | NOT PROVIDED |
+| APK SHA-256 | NOT PROVIDED | NOT PROVIDED |
+| Manufacturer / model | NOT encoded in the supplied excerpt | NOT encoded in the supplied excerpt |
+
+The absence of the APK identity means these results cannot yet be attributed conclusively to the exact post-fix main build.
+
+### Observed results
+
+| Test area | Observed evidence | Assessment |
+|---|---|---|
+| First Wi-Fi Direct session | Both devices establish P2P sockets, complete protocol v3 HELLO/key exchange, and log `session established (codec=0)`. | **PASS once** for establishing a session; audio intelligibility and performance were not measured objectively. |
+| First Bluetooth Classic session | RFCOMM socket establishes on both sides and both log `session established (codec=0)`. | **PASS once** for establishing a session; not a 10-attempt baseline. |
+| Audio route / playback | Phone A logs `performanceMode=0, bufferFrames=3072`; Phone B logs `performanceMode=0, bufferFrames=3848`, at 48 kHz. | Output mode is normal rather than low-latency. Nominal configured buffer durations are ~64 ms and ~80 ms respectively; these are not mouth-to-ear latency measurements. |
+| Bluetooth transmit queue | Phone B reports `realtime audio freshness drops=50, pendingAudio=6, pendingMessages=7` during the Bluetooth session. | **Needs investigation.** At least 50 audio frames were dropped by the freshness policy by the time this cumulative diagnostic fired. The log does not isolate whether the bottleneck is codec work, scheduling, or RFCOMM backpressure. |
+| Wi-Fi Direct reconnect — handshake | Phone A logs `received frame type=2 before HELLO`; type 2 is KEY_EXCHANGE. Phone B logs an incoming HELLO and starts its own handshake within a few milliseconds. | **FAIL observed.** Strongly consistent with concurrent handshake startup/inbound-frame processing allowing KEY_EXCHANGE to be queued ahead of the local HELLO. A serialization fix and stress regression test were committed to main. |
+| Wi-Fi Direct reconnect — owner listener | Phone A later logs `BindException: bind failed: EADDRINUSE` on the fixed P2P TCP port 8988. | **FAIL observed.** The listener failed to bind. The code now enables address reuse only on the specific P2P interface, keeps a reference available for teardown before binding, and retries transient bind contention within a short bounded window. |
+| Wi-Fi Direct reconnect — client side | Phone B logs repeated connection attempts and finally a timeout connecting to the group-owner address on port 8988. | **FAIL observed.** This is consistent with no listener becoming available on the owner during that attempt; it may be the downstream consequence of the owner-side bind failure. |
+| Session cleanup | Both devices log session teardown and release of the partial CPU wake lock. | **Observed on these paths.** Separate background, interruption, and long-duration cleanup cases remain untested. |
+
+### Important interpretation notes
+
+- The first Wi-Fi Direct and Bluetooth sessions did establish. The failures occurred on later Wi-Fi Direct reconnection attempts; they should not be reported as if the transports never worked.
+- The repeated `capture initialized` messages align with multiple capture-start events (for example, separate PTT transmissions) and are not alone proof of a leak. Correlate them with actual PTT press/release events and verify no microphone remains active after release.
+- The reported audio queue drop count is cumulative. It is useful evidence of congestion but does not directly measure loss on the radio, end-to-end delay, or speech intelligibility.
+- The `performanceMode=0` log proves the created AudioTrack is not reporting Android's low-latency mode. The configured buffers are comparatively large, but we should not reduce them blindly: the native output rate differs on some devices and must be measured before choosing a safe buffering/resampling strategy.
+- The API 27 device uses the legacy Wi-Fi Direct discovery fallback; results on this pair should not be generalized to all supported Android versions.
+
+### Targeted main-branch fixes following these logs
+
+1. **Handshake ordering:** serialize `beginHandshake()` with inbound frame processing so the local HELLO is queued before a racing inbound HELLO can enqueue KEY_EXCHANGE; add a dispatcher-concurrency regression test.
+2. **P2P listener rebinding:** use `SO_REUSEADDR` while remaining bound to the specific P2P group-owner address, check the operation generation around bind, publish the server socket before the blocking bind so teardown can close it, and retry transient `EADDRINUSE` for at most 2.5 seconds.
+3. **Verification pending:** run the latest main-branch CI and repeat the same two-device reconnect scenario. These code changes have not yet been proven to fix the physical-device symptom until the rebuilt APK is tested on the same devices.
+
+### Remaining release gates
+
+- The exact new APK SHA-256 must be recorded on both phones.
+- Repeat at least 10 Wi-Fi Direct connections (alternating initiator) and 10 Bluetooth connections on the same pair.
+- Re-test repeated PTT and confirm no freshness-drop growth under normal close-range Bluetooth conditions; if drops recur, add or use timing diagnostics around encode, queue wait, and socket write.
+- Measure audio quality and mouth-to-ear latency with a repeatable method, separately for both routes. The values in these logs are not latency results.
+- Do not mark the baseline complete until the post-fix build is physically tested.
