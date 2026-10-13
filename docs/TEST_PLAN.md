@@ -26,6 +26,17 @@ tests intentionally do not load Android ABI-specific shared libraries.
 
 ## 2. Manual two-device tests (cannot run on GitHub-hosted CI)
 
+### Session timing diagnostics
+
+For each connection attempt, retain the lines **session attempt=**,
+**session transport connected**, **handshake started**, **session timing**,
+and **session ending**. The attempt counter is local to one app process; pair
+the two phones' logs by timestamp and selected transport. **setupMs** measures
+local elapsed time from attaching a transport to session entry, not radio
+round-trip time or mouth-to-ear latency. A value of **-1** means the phase was
+not reached or its timestamp was unavailable.
+
+
 Setup for every case: install `HamSeda-debug-apk` on **two physical phones**,
 mobile data OFF, no internet (see README "تضمین آفلاین بودن" for the airplane
 procedure and its device variations).

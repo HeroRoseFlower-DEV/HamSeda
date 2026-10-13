@@ -253,6 +253,10 @@ The absence of the APK identity means these results cannot yet be attributed con
 ### Targeted diagnostic instrumentation added on main
 
 The source now emits aggregate-only timing summaries instead of payload-level or per-frame logging:
+- Session lifecycle events also include a process-local attempt counter and
+  monotonic elapsed durations. These fields are diagnostic only, do not identify
+  a peer across installs, and are not network or audio-latency measurements.
+
 
 - `HamSedaAudio capture encode timing`: encode average and maximum over each 50 successfully encoded frames.
 - `HamSedaSession audio sender timing`: queue wait, frame-build/seal time, transport send duration, successful/failed sends, queue depth, and cumulative freshness drops over each 50 processed audio messages.

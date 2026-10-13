@@ -165,6 +165,11 @@ class SessionManager(
      * from an old session can never mutate a newer one.
      */
     private var sessionGeneration = 0L
+    // Monotonic timestamps used only for aggregate session lifecycle diagnostics.
+    // Null means the corresponding phase was never reached in this attempt.
+    @Volatile private var attemptStartedAtMs: Long? = null
+    @Volatile private var transportConnectedAtMs: Long? = null
+    @Volatile private var sessionEstablishedAtMs: Long? = null
     private var handshakeDeadlineJob: Job? = null
     private var sasDeadlineJob: Job? = null
 
@@ -619,12 +624,16 @@ class SessionManager(
     private fun attachTransport(t: Transport, peerName: String) {
         detachTransport()
         sessionGeneration++
+        attemptStartedAtMs = elapsedClock()
+        transportConnectedAtMs = null
+        sessionEstablishedAtMs = null
         startSender()
         transport = t
         _peerName.value = peerName
         _transportType.value = t.type
         _error.value = null
         transportWasConnected = false
+        AppLog.log(TAG, "session attempt=$sessionGeneration started (transport=${t.type})")
         // SharedFlow(extraBufferCapacity) does NOT retain emissions when there are
         // zero subscribers. Subscribe synchronously before the state watcher can
         // begin the handshake and before connect()/listen() can produce frames.
@@ -636,7 +645,18 @@ class SessionManager(
                 _transportState.value = st
                 when (st) {
                     TransportState.CONNECTED -> {
-                        transportWasConnected = true
+                        if (!transportWasConnected) {
+                            transportWasConnected = true
+                            val connectedAt = elapsedClock()
+                            transportConnectedAtMs = connectedAt
+                            val setupMs = attemptStartedAtMs
+                                ?.let { (connectedAt - it).coerceAtLeast(0L) } ?: -1L
+                            AppLog.log(
+                                TAG,
+                                "session transport connected: attempt=$sessionGeneration, " +
+                                    "transport=${t.type}, elapsedMs=$setupMs",
+                            )
+                        }
                         if (_phase.value == Phase.CONNECTING_TRANSPORT) beginHandshake()
                     }
                     TransportState.FAILED -> {
@@ -718,11 +738,18 @@ class SessionManager(
         val phaseBeforeEnd = _phase.value
         if (!markEndedIfActive()) return
         val activeTransport = transport
+        val endedAt = elapsedClock()
+        val elapsedSinceAttemptMs = attemptStartedAtMs
+            ?.let { (endedAt - it).coerceAtLeast(0L) } ?: -1L
+        val activeSessionMs = sessionEstablishedAtMs
+            ?.let { (endedAt - it).coerceAtLeast(0L) } ?: -1L
         AppLog.log(
             TAG,
-            "session ending: reason=${error?.name ?: "USER_HANGUP"}, " +
-                "previousPhase=$phaseBeforeEnd, transport=${activeTransport?.type}, " +
-                "transportState=${activeTransport?.state?.value}, notifyPeer=$notifyPeer",
+            "session ending: attempt=$sessionGeneration, " +
+                "reason=${error?.name ?: "USER_HANGUP"}, elapsedSinceAttemptMs=$elapsedSinceAttemptMs, " +
+                "activeSessionMs=$activeSessionMs, previousPhase=$phaseBeforeEnd, " +
+                "transport=${activeTransport?.type}, transportState=${activeTransport?.state?.value}, " +
+                "notifyPeer=$notifyPeer",
         )
         // Enqueue DISCONNECT while the sender is still running; the flush
         // delay below gives it a bounded window to go out.
@@ -846,9 +873,12 @@ class SessionManager(
         val hello = byteArrayOf(Protocol.VERSION, myCodecPref)
         enqueuePlain(MessageType.HELLO, hello)
         Log.i(TAG, "handshake started, HELLO sent")
+        val handshakeElapsedMs = attemptStartedAtMs
+            ?.let { (elapsedClock() - it).coerceAtLeast(0L) } ?: -1L
         AppLog.log(
             TAG,
-            "handshake started: HELLO sent (localProtocolVersion=${Protocol.VERSION.toInt() and 0xFF}, " +
+            "handshake started: attempt=$sessionGeneration, elapsedSinceAttemptMs=$handshakeElapsedMs, " +
+                "HELLO sent (localProtocolVersion=${Protocol.VERSION.toInt() and 0xFF}, " +
                 "codecPreference=${myCodecPref.toInt() and 0xFF})",
         )
     }
@@ -1275,7 +1305,18 @@ class SessionManager(
             return
         }
         _phase.value = Phase.IN_SESSION
+        val establishedAt = elapsedClock()
+        sessionEstablishedAtMs = establishedAt
         AppLog.log(TAG, "session established (codec=$activeCodecId)")
+        val setupMs = attemptStartedAtMs
+            ?.let { (establishedAt - it).coerceAtLeast(0L) } ?: -1L
+        val connectedToSessionMs = transportConnectedAtMs
+            ?.let { (establishedAt - it).coerceAtLeast(0L) } ?: -1L
+        AppLog.log(
+            TAG,
+            "session timing: attempt=$sessionGeneration, setupMs=$setupMs, " +
+                "connectedToSessionMs=$connectedToSessionMs, transport=${transportType.value}",
+        )
         livenessJob = scope.launch {
             while (isActive && _phase.value == Phase.IN_SESSION) {
                 delay(1_000)
@@ -1581,9 +1622,9 @@ class SessionManager(
         // frames must not queue multiple teardowns that could affect a new session.
         if (!markEndedIfActive()) return
         if (detail.isNullOrBlank()) {
-            AppLog.log(TAG, "session failed: $error")
+            AppLog.log(TAG, "session failed: attempt=$sessionGeneration, error=$error")
         } else {
-            AppLog.log(TAG, "session failed: $error ($detail)")
+            AppLog.log(TAG, "session failed: attempt=$sessionGeneration, error=$error ($detail)")
         }
         scope.launch { teardown(error) }
     }

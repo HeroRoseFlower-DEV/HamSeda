@@ -1,6 +1,11 @@
 # HamSeda Changelog
 
 ## 2026-10-14 — Real-time audio backpressure hardening
+- **Session lifecycle diagnostics:** correlate connection attempts with a
+  process-local attempt counter and monotonic elapsed durations for transport
+  connection, handshake start, successful session entry, and teardown. Logs
+  deliberately omit peer names, addresses, SAS codes, key material, and audio.
+
 
 - **Bluetooth RFCOMM write watchdog:** close the matching active socket if a
   blocking stream write remains stalled for 350 ms. This bounds how long the
