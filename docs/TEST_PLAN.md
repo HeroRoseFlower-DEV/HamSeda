@@ -93,7 +93,13 @@ procedure and its device variations).
   teardown. Record the battery cost.
 - Force sender backpressure in a test build and verify the outbound queue stays
   freshness-first: old pending audio is evicted, recent audio survives, and
-  control frames remain queued in order. For Bluetooth, confirm that a stream
+  control frames remain queued in order.
+- HS-12 regression: during an active PTT session, simulate an RFCOMM write
+  watchdog disconnect on one endpoint and a peer-side EOF on the other.
+  Both session managers must return to IDLE; microphone capture/playback stop,
+  jitter and floor state clear, SAS is discarded, and the error is
+  TRANSPORT_LOST. On real phones, repeat this with a naturally occurring write
+  stall (do not inject a forced stall during a live/private conversation). For Bluetooth, confirm that a stream
   write completing under 350 ms proceeds normally, while a simulated/observed
   write exceeding 350 ms closes only the matching active socket, emits a
   connection-lost diagnostic, and allows a fresh authenticated reconnect.

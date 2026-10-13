@@ -13,6 +13,9 @@
 - **Playback backlog bound (preceding commit):** cap application-fed PCM in
   AudioTrack at three 20 ms frames and report pacing waits separately from
   native write timing.
+- **HS-12 transport-loss teardown test:** exercise a secure, active PTT session
+  and verify both sides stop capture/playback, clear floor/SAS state, and return
+  to IDLE after a socket loss. This tests session recovery, not radio behavior.
 - **Validation caveat:** the 350 ms threshold is an experiment for real-device
   validation, not an end-to-end audio latency measurement or proof of improved
   speech quality.

@@ -10,6 +10,7 @@ import com.hamseda.walkie.session.FloorController
 import com.hamseda.walkie.session.SessionManager
 import com.hamseda.walkie.transport.PeerDevice
 import com.hamseda.walkie.transport.TransportType
+import com.hamseda.walkie.transport.TransportState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -124,6 +125,51 @@ class SessionSecurityTest {
         assertEquals(SessionManager.Phase.IDLE, smA.phase.value)
         assertEquals(SessionManager.SessionError.PEER_TIMEOUT, smA.error.value)
         smA.close(); smB.close()
+    }
+
+    @Test
+    fun `hs12 transport loss during active PTT stops capture and playback on both peers`() {
+        val rig = newRig()
+        rig.start()
+        rig.await("both endpoints waiting for SAS") {
+            rig.a.phase.value == SessionManager.Phase.AWAITING_SAS_CONFIRM &&
+                rig.b.phase.value == SessionManager.Phase.AWAITING_SAS_CONFIRM
+        }
+        rig.a.confirmSas(true)
+        rig.b.confirmSas(true)
+        rig.await("both endpoints in session") {
+            rig.a.phase.value == SessionManager.Phase.IN_SESSION &&
+                rig.b.phase.value == SessionManager.Phase.IN_SESSION
+        }
+
+        rig.a.setPttPressed(true)
+        rig.await("A transmitting and B receiving") {
+            rig.audioA.isCapturing &&
+                rig.b.floorHolder.value == FloorController.Holder.PEER &&
+                rig.audioB.playbackBuffer != null
+        }
+
+        // Simulate the local RFCOMM watchdog closing A's socket and the peer
+        // reader observing EOF. The transport watcher must enter the normal
+        // session teardown path on both endpoints.
+        rig.ta.setState(TransportState.IDLE)
+        rig.tb.setState(TransportState.IDLE)
+        rig.await("both endpoints finish teardown and release audio") {
+            rig.a.phase.value == SessionManager.Phase.IDLE &&
+                rig.b.phase.value == SessionManager.Phase.IDLE &&
+                !rig.audioA.isCapturing &&
+                !rig.audioB.isCapturing &&
+                rig.audioA.playbackBuffer == null &&
+                rig.audioB.playbackBuffer == null
+        }
+
+        assertEquals(SessionManager.SessionError.TRANSPORT_LOST, rig.a.error.value)
+        assertEquals(SessionManager.SessionError.TRANSPORT_LOST, rig.b.error.value)
+        assertEquals(FloorController.Holder.NONE, rig.a.floorHolder.value)
+        assertEquals(FloorController.Holder.NONE, rig.b.floorHolder.value)
+        assertEquals(null, rig.a.sasCode.value)
+        assertEquals(null, rig.b.sasCode.value)
+        rig.close()
     }
 
     private fun Rig.start() {
