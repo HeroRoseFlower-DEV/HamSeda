@@ -348,16 +348,16 @@ class SessionManager(
 
         AppLog.log(
             TAG,
-            "audio sender timing: frames=\$audioTimingSamples, sent=\$audioTimingSent, " +
-                "failed=\$audioTimingFailed, queueWaitAvgMs=\${avgMs(audioQueueWaitTotalNanos)}, " +
-                "queueWaitMaxMs=\${maxMs(audioQueueWaitMaxNanos)}, " +
-                "frameBuildAvgMs=\${avgMs(audioBuildTotalNanos)}, " +
-                "frameBuildMaxMs=\${maxMs(audioBuildMaxNanos)}, " +
-                "transportSendAvgMs=\${avgMs(audioTransportTotalNanos)}, " +
-                "transportSendMaxMs=\${maxMs(audioTransportMaxNanos)}, " +
-                "pendingAudio=\${outboundQueue.pendingAudioFrames()}, " +
-                "pendingMessages=\${outboundQueue.size()}, " +
-                "droppedAudioTotal=\${outboundQueue.droppedAudioFrames}",
+            "audio sender timing: frames=$audioTimingSamples, sent=$audioTimingSent, " +
+                "failed=$audioTimingFailed, queueWaitAvgMs=${avgMs(audioQueueWaitTotalNanos)}, " +
+                "queueWaitMaxMs=${maxMs(audioQueueWaitMaxNanos)}, " +
+                "frameBuildAvgMs=${avgMs(audioBuildTotalNanos)}, " +
+                "frameBuildMaxMs=${maxMs(audioBuildMaxNanos)}, " +
+                "transportSendAvgMs=${avgMs(audioTransportTotalNanos)}, " +
+                "transportSendMaxMs=${maxMs(audioTransportMaxNanos)}, " +
+                "pendingAudio=${outboundQueue.pendingAudioFrames()}, " +
+                "pendingMessages=${outboundQueue.size()}, " +
+                "droppedAudioTotal=${outboundQueue.droppedAudioFrames}",
         )
         resetAudioTimingWindow()
     }
