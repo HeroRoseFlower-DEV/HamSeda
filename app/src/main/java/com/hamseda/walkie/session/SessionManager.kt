@@ -172,6 +172,16 @@ class SessionManager(
     private var lastLevelPush: Long = 0
     private var pttHeld = false
 
+    // Inter-arrival telemetry after authentication/replay checks, before jitter insertion.
+    private var lastAudioReceiveAtNanos = 0L
+    private var audioReceiveWindowFrames = 0
+    private var audioReceiveIntervalSamples = 0
+    private var audioReceiveIntervalTotalNanos = 0L
+    private var audioReceiveIntervalMaxNanos = 0L
+    private var audioReceiveGapsOver30Ms = 0
+    private var audioReceiveGapsOver60Ms = 0
+    private var audioReceiveGapsOver100Ms = 0
+
     // ------------------------------------------------------- outbound pipeline
     //
     // HS-02: all outgoing messages pass through one bounded FIFO and one sender.
@@ -351,6 +361,56 @@ class SessionManager(
             }
             frames.forEach { it.fill(0) }
         }
+    }
+
+    private fun resetAudioReceiveTiming() {
+        lastAudioReceiveAtNanos = 0L
+        audioReceiveWindowFrames = 0
+        audioReceiveIntervalSamples = 0
+        audioReceiveIntervalTotalNanos = 0L
+        audioReceiveIntervalMaxNanos = 0L
+        audioReceiveGapsOver30Ms = 0
+        audioReceiveGapsOver60Ms = 0
+        audioReceiveGapsOver100Ms = 0
+    }
+
+    private fun recordAudioReceiveTiming() {
+        val now = System.nanoTime()
+        val previous = lastAudioReceiveAtNanos
+        lastAudioReceiveAtNanos = now
+        audioReceiveWindowFrames++
+        if (previous > 0L) {
+            val interval = (now - previous).coerceAtLeast(0L)
+            audioReceiveIntervalSamples++
+            audioReceiveIntervalTotalNanos += interval
+            audioReceiveIntervalMaxNanos = maxOf(audioReceiveIntervalMaxNanos, interval)
+            if (interval >= 30_000_000L) audioReceiveGapsOver30Ms++
+            if (interval >= 60_000_000L) audioReceiveGapsOver60Ms++
+            if (interval >= 100_000_000L) audioReceiveGapsOver100Ms++
+        }
+        if (audioReceiveWindowFrames < AUDIO_RECEIVE_TIMING_LOG_INTERVAL) return
+
+        fun ms(nanos: Long) = String.format(java.util.Locale.ROOT, "%.2f", nanos / 1_000_000.0)
+        val intervalSamples = audioReceiveIntervalSamples
+        val avgIntervalNanos = if (intervalSamples > 0) {
+            audioReceiveIntervalTotalNanos / intervalSamples
+        } else 0L
+        AppLog.log(
+            TAG,
+            "audio receive timing: frames=$audioReceiveWindowFrames, intervals=$intervalSamples, " +
+                "avgIntervalMs=" + ms(avgIntervalNanos) + ", maxIntervalMs=" + ms(audioReceiveIntervalMaxNanos) + ", " +
+                "gapsOver30Ms=$audioReceiveGapsOver30Ms, gapsOver60Ms=$audioReceiveGapsOver60Ms, " +
+                "gapsOver100Ms=$audioReceiveGapsOver100Ms, jitterBuffered=" + jitter.bufferedFrames() + ", " +
+                "jitterStaleDropped=" + jitter.droppedStale + ", jitterLost=" + jitter.lost,
+        )
+        // Keep lastAudioReceiveAtNanos across windows for a continuous cadence measurement.
+        audioReceiveWindowFrames = 0
+        audioReceiveIntervalSamples = 0
+        audioReceiveIntervalTotalNanos = 0L
+        audioReceiveIntervalMaxNanos = 0L
+        audioReceiveGapsOver30Ms = 0
+        audioReceiveGapsOver60Ms = 0
+        audioReceiveGapsOver100Ms = 0
     }
 
     private fun resetAudioTimingWindow() {
@@ -1195,6 +1255,7 @@ class SessionManager(
         replay.reset()
         lastPeerSeen = elapsedClock()
         receivedAudioSeq = 0
+        resetAudioReceiveTiming()
         // HS-05: never report voice readiness if playback fails to start.
         // Roll the session back cleanly instead of a fake IN_SESSION.
         val playbackOk = try {
@@ -1284,6 +1345,7 @@ class SessionManager(
                 MessageType.AUDIO -> {
                     if (floor.holder != FloorController.Holder.PEER) return
                     floor.onPeerAudio()
+                    recordAudioReceiveTiming()
                     // JitterBuffer owns a copy; this decrypted temporary is cleared below.
                     jitter.push(receivedAudioSeq++, plaintext)
                 }
@@ -1558,6 +1620,7 @@ class SessionManager(
         private const val MAX_PENDING_OUTBOUND_MESSAGES = 64
         private const val AUDIO_DROP_LOG_INTERVAL = 50L
         private const val AUDIO_TIMING_LOG_INTERVAL = 50
+        private const val AUDIO_RECEIVE_TIMING_LOG_INTERVAL = 50
         private const val TAG = "HamSedaSession"
     }
 }

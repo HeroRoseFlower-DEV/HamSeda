@@ -66,6 +66,16 @@ class AudioEngine(private val context: Context) : AudioPipeline {
     private var playbackThread: Thread? = null
     private var track: AudioTrack? = null
 
+    // Playback worker owns these aggregates; they distinguish output write stalls
+    // from gaps in incoming media, without logging per-frame audio data.
+    private var playbackWriteWindowFrames = 0
+    private var playbackWriteWindowSucceeded = 0
+    private var playbackWriteWindowFailed = 0
+    private var playbackWriteWindowOver5Ms = 0
+    private var playbackWriteWindowOver20Ms = 0
+    private var playbackWriteWindowTotalNanos = 0L
+    private var playbackWriteWindowMaxNanos = 0L
+
     private var focusRequest: AudioFocusRequest? = null
     /** Audio routing is global to the device; restore the previous state when this app stops audio. */
     private var previousAudioMode: Int? = null
@@ -378,6 +388,13 @@ class AudioEngine(private val context: Context) : AudioPipeline {
             return false
         }
         track = at
+        playbackWriteWindowFrames = 0
+        playbackWriteWindowSucceeded = 0
+        playbackWriteWindowFailed = 0
+        playbackWriteWindowOver5Ms = 0
+        playbackWriteWindowOver20Ms = 0
+        playbackWriteWindowTotalNanos = 0L
+        playbackWriteWindowMaxNanos = 0L
         playbackRunning.set(true)
         val initialUnderruns = try { at.underrunCount } catch (_: Exception) { -1 }
         val effectiveBufferMs = at.bufferSizeInFrames * 1000.0 / at.sampleRate
@@ -387,7 +404,7 @@ class AudioEngine(private val context: Context) : AudioPipeline {
                 "minBufferBytes=$minBuf, requestedBufferBytes=$requestedBufferBytes, " +
                 "requestedPerformanceMode=$preferredMode, actualPerformanceMode=${at.performanceMode}, " +
                 "bufferFrames=${at.bufferSizeInFrames}, capacityFrames=${at.bufferCapacityInFrames}, " +
-                "effectiveBufferMs=${String.format(Locale.ROOT, "%.1f", effectiveBufferMs)}, " +
+                "bufferLimitMs=${String.format(Locale.ROOT, "%.1f", effectiveBufferMs)}, " +
                 "initialUnderruns=$initialUnderruns, frameMs=20",
         )
         playbackThread = Thread({
@@ -474,23 +491,57 @@ class AudioEngine(private val context: Context) : AudioPipeline {
 
     /** Write an entire PCM frame without silently truncating a partial write. */
     private fun writePcm(at: AudioTrack, pcm: ShortArray): Boolean {
-        var offset = 0
-        while (offset < pcm.size && playbackRunning.get()) {
-            val written = at.write(
-                pcm,
-                offset,
-                pcm.size - offset,
-                AudioTrack.WRITE_BLOCKING,
-            )
-            if (written <= 0) {
-                if (playbackRunning.get()) {
-                    AppLog.log(TAG, "AudioTrack write failed: result=$written, offset=$offset, samples=${pcm.size}")
+        val startedAtNanos = System.nanoTime()
+        var succeeded = false
+        try {
+            var offset = 0
+            while (offset < pcm.size && playbackRunning.get()) {
+                val written = at.write(
+                    pcm,
+                    offset,
+                    pcm.size - offset,
+                    AudioTrack.WRITE_BLOCKING,
+                )
+                if (written <= 0) {
+                    if (playbackRunning.get()) {
+                        AppLog.log(TAG, "AudioTrack write failed: result=$written, offset=$offset, samples=${pcm.size}")
+                    }
+                    return false
                 }
-                return false
+                offset += written
             }
-            offset += written
+            succeeded = offset == pcm.size
+            return succeeded
+        } finally {
+            recordPlaybackWriteTiming(System.nanoTime() - startedAtNanos, succeeded)
         }
-        return offset == pcm.size
+    }
+
+    private fun recordPlaybackWriteTiming(elapsedNanos: Long, succeeded: Boolean) {
+        playbackWriteWindowFrames++
+        if (succeeded) playbackWriteWindowSucceeded++ else playbackWriteWindowFailed++
+        playbackWriteWindowTotalNanos += elapsedNanos.coerceAtLeast(0L)
+        playbackWriteWindowMaxNanos = maxOf(playbackWriteWindowMaxNanos, elapsedNanos)
+        if (elapsedNanos >= 5_000_000L) playbackWriteWindowOver5Ms++
+        if (elapsedNanos >= 20_000_000L) playbackWriteWindowOver20Ms++
+        if (playbackWriteWindowFrames < PLAYBACK_WRITE_DIAGNOSTIC_INTERVAL) return
+
+        fun ms(nanos: Long) = String.format(Locale.ROOT, "%.2f", nanos / 1_000_000.0)
+        AppLog.log(
+            TAG,
+            "AudioTrack write timing: frames=$playbackWriteWindowFrames, " +
+                "succeeded=$playbackWriteWindowSucceeded, failed=$playbackWriteWindowFailed, " +
+                "avgMs=" + ms(playbackWriteWindowTotalNanos / playbackWriteWindowFrames) + ", " +
+                "maxMs=" + ms(playbackWriteWindowMaxNanos) + ", " +
+                "over5Ms=$playbackWriteWindowOver5Ms, over20Ms=$playbackWriteWindowOver20Ms",
+        )
+        playbackWriteWindowFrames = 0
+        playbackWriteWindowSucceeded = 0
+        playbackWriteWindowFailed = 0
+        playbackWriteWindowOver5Ms = 0
+        playbackWriteWindowOver20Ms = 0
+        playbackWriteWindowTotalNanos = 0L
+        playbackWriteWindowMaxNanos = 0L
     }
 
     private fun reportPlaybackWriteFailure() {
@@ -781,6 +832,7 @@ class AudioEngine(private val context: Context) : AudioPipeline {
         private const val JITTER_DIAGNOSTIC_INTERVAL = 25L
         private const val ENCODE_DIAGNOSTIC_INTERVAL = 50
         private const val PLAYBACK_DIAGNOSTIC_INTERVAL_MS = 5_000L
+        private const val PLAYBACK_WRITE_DIAGNOSTIC_INTERVAL = 50
         /** HS-09: bounded retries for transient AudioRecord.read errors. */
         private const val MAX_CONSECUTIVE_READ_ERRORS = 10
         private const val READ_ERROR_BACKOFF_MS = 20L
