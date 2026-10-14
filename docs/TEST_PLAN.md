@@ -30,17 +30,21 @@ tests intentionally do not load Android ABI-specific shared libraries.
 ### AudioTrack startup-threshold regression
 
 The playback queue ceiling must not be below the threshold Android requires to
-start consuming a streaming AudioTrack. The implementation tries to reduce the
-effective PCM buffer to the three-frame queue on all supported API levels and
-sets a two-frame start threshold on API 31+. On API 26–30, if the platform does
-not apply the requested buffer size exactly, the queue ceiling is rounded to a
-complete 20 ms PCM frame at or above the effective buffer threshold.
+start consuming a streaming AudioTrack. The app requests 100 ms native output
+capacity. If Android actually grants LOW_LATENCY mode, it caps application-fed
+PCM at three 20 ms frames (60 ms); otherwise it keeps up to five frames (100 ms)
+to absorb occasional output scheduling/HAL stalls. API 31+ requests a two-frame
+start threshold. On API 26–30, the queue ceiling is rounded to a complete 20 ms
+PCM frame at or above the effective streaming threshold.
 
-On API 27 and API 36 devices, inspect the `playback initialized` line for
-`bufferFrames`, `startThresholdFrames`, `queueLimitFrames`, and
-`bufferResizeResult`. Confirm ordinary close-range speech no longer triggers
-`AudioTrack queue pacing timed out`. Record underruns and audible gaps; the
-absence of this timeout alone does not prove that playback quality is good.
+On API 27 and API 36 devices, inspect `playback initialized` for
+`actualPerformanceMode`, `bufferFrames`, `capacityFrames`,
+`startThresholdFrames`, `queueLimitFrames`, and `bufferResizeResult`.
+Confirm ordinary close-range speech no longer triggers
+`AudioTrack queue pacing timed out`. The expected queue limit is 4,800 frames
+in default mode and 2,880 frames only when LOW_LATENCY is actually active.
+Record underruns and audible gaps; absence of the timeout alone does not prove
+that playback quality is good.
 
 ### Session timing diagnostics
 
