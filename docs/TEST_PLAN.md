@@ -111,11 +111,11 @@ procedure and its device variations).
 ### 2.6 Performance (before any numeric claim)
 - Measure end-to-end latency (mouth-to-ear) on real devices before quoting it.
 - Confirm diagnostics report the selected AudioTrack performance mode, buffer
-  limit, and 3-frame initial jitter target. The playback path also limits
-  application-fed PCM already queued in AudioTrack to three 20 ms frames
-  (2,880 mono frames at 48 kHz); inspect the `AudioTrack queue pacing` log
-  for `waitedFrames`, `maxWaitMs`, `maxObservedQueuedFrames`, and
-  `queueLimitFrames`. The limit should be 2,880 frames; a queue-pacing timeout
+  limit, and 3-frame initial jitter target. In actual LOW_LATENCY mode the app
+  caps pending output PCM at three 20 ms frames (2,880 mono frames); when the
+  platform falls back to default mode it allows five frames (4,800 mono frames).
+  Inspect `AudioTrack queue pacing` for `waitedFrames`, `maxWaitMs`,
+  `maxObservedQueuedFrames`, and the effective `queueLimitFrames`. A queue-pacing timeout
   is a playback failure, not a pass. Compare audibility, perceived gaps,
   underruns, and pacing waits against the prior APK on both transports. This
   bounds queued PCM; it is not a measurement of mouth-to-ear latency.
