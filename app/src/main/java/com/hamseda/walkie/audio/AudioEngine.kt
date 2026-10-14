@@ -97,6 +97,14 @@ class AudioEngine(private val context: Context) : AudioPipeline {
         private set
 
     @Volatile
+    private var softwareGainEnabled: Boolean = true
+
+    /** Updates the software microphone leveler without restarting capture. */
+    fun setSoftwareGainEnabled(enabled: Boolean) {
+        softwareGainEnabled = enabled
+    }
+
+    @Volatile
     var currentRoute: AudioRoute = AudioRoute.SPEAKER
         private set
 
@@ -268,6 +276,11 @@ class AudioEngine(private val context: Context) : AudioPipeline {
             var encodeWindowFrames = 0
             var encodeWindowTotalNanos = 0L
             var encodeWindowMaxNanos = 0L
+            val gainController = CaptureGainController()
+            var gainWindowInputRmsTotal = 0.0
+            var gainWindowAppliedTotal = 0.0
+            var gainWindowMaxApplied = 1f
+            var gainWindowNearSilenceFrames = 0
             while (captureRunning.get()) {
                 val read = rec.read(frame, 0, frame.size)
                 if (read < 0) {
@@ -305,6 +318,16 @@ class AudioEngine(private val context: Context) : AudioPipeline {
                 }
                 consecutiveErrors = 0
                 if (read != frame.size) continue // wait for a full 20 ms frame
+
+                // Runs after AudioRecord returns PCM, downstream of platform capture effects.
+                val appliedGain = gainController.processInPlace(frame, enabled = softwareGainEnabled)
+                gainWindowInputRmsTotal += gainController.lastInputRms.toDouble()
+                gainWindowAppliedTotal += appliedGain.toDouble()
+                gainWindowMaxApplied = maxOf(gainWindowMaxApplied, appliedGain)
+                if (gainController.lastInputRms < CaptureGainController.MINIMUM_ACTIVE_RMS) {
+                    gainWindowNearSilenceFrames++
+                }
+
                 var peak = 0
                 for (s in frame) peak = maxOf(peak, abs(s.toInt()))
                 val level = min(1f, peak / 32768f)
@@ -320,11 +343,19 @@ class AudioEngine(private val context: Context) : AudioPipeline {
                             TAG,
                             "capture encode timing: frames=$encodeWindowFrames, " +
                                 "avgMs=${String.format(Locale.ROOT, "%.2f", encodeWindowTotalNanos / encodeWindowFrames / 1_000_000.0)}, " +
-                                "maxMs=${String.format(Locale.ROOT, "%.2f", encodeWindowMaxNanos / 1_000_000.0)}",
+                                "maxMs=${String.format(Locale.ROOT, "%.2f", encodeWindowMaxNanos / 1_000_000.0)}, " +
+                                "avgInputRms=${String.format(Locale.ROOT, "%.0f", gainWindowInputRmsTotal / encodeWindowFrames)}, " +
+                                "avgGain=${String.format(Locale.ROOT, "%.2f", gainWindowAppliedTotal / encodeWindowFrames)}, " +
+                                "maxGain=${String.format(Locale.ROOT, "%.2f", gainWindowMaxApplied)}, " +
+                                "nearSilenceFrames=$gainWindowNearSilenceFrames, gainEnabled=$softwareGainEnabled",
                         )
                         encodeWindowFrames = 0
                         encodeWindowTotalNanos = 0L
                         encodeWindowMaxNanos = 0L
+                        gainWindowInputRmsTotal = 0.0
+                        gainWindowAppliedTotal = 0.0
+                        gainWindowMaxApplied = 1f
+                        gainWindowNearSilenceFrames = 0
                     }
                     try {
                         onFrame(encoded, level)
