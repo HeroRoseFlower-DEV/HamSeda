@@ -287,7 +287,7 @@ The next log must contain these new lines to establish that the instrumented bui
 - high **capture encode** points to encoder/CPU cost on the transmitting device;
 - rising **underruns** or jitter losses points to the receiving/playback path.
 
-The codec profile, Opus bitrate, negotiated protocol, and AudioTrack capacity/performance-mode selection remain unchanged. A conservative playback experiment caps the application-fed PCM backlog at three 20 ms frames (2,880 mono samples / about 60 ms at 48 kHz); playback-head pacing is logged separately from native write duration, with a 1-second playback-head stall limit.
+The codec profile and wire protocol remain unchanged. Playback now requests 100 ms native output capacity and adapts the app-fed PCM backlog to the actual AudioTrack performance mode: three 20 ms frames (60 ms) only when LOW_LATENCY is granted, otherwise up to five frames (100 ms). Playback-head pacing is logged separately from native write duration; the output-head stall limit is 500 ms and each non-blocking frame submission is bounded to 250 ms.
 
 The Bluetooth Classic output path now has a separate **350 ms RFCOMM write watchdog**. A blocking Java stream write cannot be safely cancelled by coroutine timeout alone, so the watchdog closes the *currently matching socket* if the write remains blocked past the limit; a late return cannot be counted as a successful write. Cancellation also tears down the matching connection rather than leaving a blocked write behind. This deliberately favors a clean connection loss/re-authentication over playing stale speech indefinitely. The threshold is a conservative experimental limit and must be checked on the two physical phones; it is not a guaranteed audio-latency figure.
 
