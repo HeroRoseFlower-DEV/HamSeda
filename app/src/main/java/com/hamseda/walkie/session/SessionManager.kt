@@ -326,7 +326,7 @@ class SessionManager(
                     val audio = message as OutboundMsg.Sealed
                     val ageNanos = (System.nanoTime() - audio.enqueuedAtNanos).coerceAtLeast(0L)
                     queuedAtWaitNanos[index] = maxOf(queuedAtWaitNanos[index], ageNanos)
-                    if (ageNanos > MAX_OUTBOUND_AUDIO_AGE_MS * 1_000_000L) {
+                    if (isAudioFrameExpired(ageNanos, MAX_OUTBOUND_AUDIO_AGE_MS * 1_000_000L)) {
                         outboundQueue.recordDroppedAudioFrame()
                         continue
                     }
