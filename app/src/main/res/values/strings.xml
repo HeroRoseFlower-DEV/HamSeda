@@ -70,7 +70,7 @@
     <string name="transport_locked_hint">Connection mode cannot be changed during an active session.</string>
     <string name="settings_codec">Audio codec</string>
     <string name="codec_opus">Opus (default, high quality)</string>
-    <string name="codec_opus_desc">40 kbps target; 48 kHz mono voice audio.</string>
+    <string name="codec_opus_desc">32 kbps target; 48 kHz mono voice audio.</string>
     <string name="codec_pcm">Raw PCM (diagnostic)</string>
     <string name="codec_pcm_desc">768 kbps; diagnostic mode for Wi-Fi Direct only.</string>
     <string name="settings_speakerphone">Speakerphone output</string>
