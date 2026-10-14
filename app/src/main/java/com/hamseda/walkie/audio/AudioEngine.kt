@@ -645,10 +645,12 @@ class AudioEngine(private val context: Context) : AudioPipeline {
     }
 
     /**
-     * Keep at most three 20 ms PCM frames pending in AudioTrack. The track may
-     * have a larger OEM-selected capacity, but accepting a burst into that
-     * capacity can turn transport jitter into delayed speech. Audio frames
-     * waiting here remain subject to the bounded, freshness-first jitter queue.
+     * Keep a bounded PCM backlog in AudioTrack: three 20 ms frames when the
+     * platform actually grants LOW_LATENCY mode, or five frames (100 ms) when it
+     * falls back to the default mode. This gives ordinary output a little more
+     * headroom for observed scheduler/HAL stalls while retaining the lower-latency
+     * limit on devices that support it. Audio frames waiting here remain subject
+     * to the bounded, freshness-first jitter queue.
      */
     private fun writePcm(
         at: AudioTrack,
