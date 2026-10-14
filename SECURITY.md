@@ -56,6 +56,17 @@ completed the in-app pairing flow, against:
 No custom ciphers, no hard-coded keys, no certificate/pinning schemes (there
 is no TLS network to pin to — by design).
 
+## Machine-checked cryptographic domains
+
+CI verifies these exact documentation rows against `SessionCrypto.kt`.
+The source constants are authoritative; update this table whenever a domain
+separator is intentionally changed.
+
+| Source constant | Value |
+|---|---|
+| `SessionCrypto.INFO` | `HamSeda-v3/session-keys` |
+| `SessionCrypto.SAS_INFO` | `HamSeda-v3/sas` |
+
 ## What is NOT protected / limitations
 
 - **Compromised phone:** if either endpoint is compromised, the session is
