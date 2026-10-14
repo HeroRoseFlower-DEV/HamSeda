@@ -79,7 +79,7 @@ class AudioEngine(private val context: Context) : AudioPipeline {
     private var playbackWriteWindowWaitedFrames = 0
     private var playbackWriteWindowTotalWaitNanos = 0L
     private var playbackWriteWindowMaxWaitNanos = 0L
-    private var playbackWriteWindowNoProgressTimeouts = 0
+    private var playbackWriteWindowDeadlineTimeouts = 0
 
     // Bounds the application-fed PCM backlog in AudioTrack. Pacing waits are
     // measured separately from time spent inside the native AudioTrack.write().
@@ -524,7 +524,7 @@ class AudioEngine(private val context: Context) : AudioPipeline {
         playbackWriteWindowWaitedFrames = 0
         playbackWriteWindowTotalWaitNanos = 0L
         playbackWriteWindowMaxWaitNanos = 0L
-        playbackWriteWindowNoProgressTimeouts = 0
+        playbackWriteWindowDeadlineTimeouts = 0
         playbackQueueWindowFrames = 0
         playbackQueueWindowWaitedFrames = 0
         playbackQueueWindowTotalWaitNanos = 0L
@@ -790,7 +790,7 @@ class AudioEngine(private val context: Context) : AudioPipeline {
         if (submissionWaitNanos >= 1_000_000L) playbackWriteWindowWaitedFrames++
         playbackWriteWindowTotalWaitNanos += submissionWaitNanos.coerceAtLeast(0L)
         playbackWriteWindowMaxWaitNanos = maxOf(playbackWriteWindowMaxWaitNanos, submissionWaitNanos)
-        if (timedOut) playbackWriteWindowNoProgressTimeouts++
+        if (timedOut) playbackWriteWindowDeadlineTimeouts++
         if (playbackWriteWindowFrames < PLAYBACK_WRITE_DIAGNOSTIC_INTERVAL) return
 
         fun ms(nanos: Long) = String.format(Locale.ROOT, "%.2f", nanos / 1_000_000.0)
@@ -804,7 +804,7 @@ class AudioEngine(private val context: Context) : AudioPipeline {
                 "waitedFrames=$playbackWriteWindowWaitedFrames, " +
                 "avgWaitMs=" + ms(playbackWriteWindowTotalWaitNanos / playbackWriteWindowFrames) + ", " +
                 "maxWaitMs=" + ms(playbackWriteWindowMaxWaitNanos) + ", " +
-                "noProgressTimeouts=$playbackWriteWindowNoProgressTimeouts",
+                "deadlineTimeouts=$playbackWriteWindowDeadlineTimeouts",
         )
         playbackWriteWindowFrames = 0
         playbackWriteWindowSucceeded = 0
@@ -816,7 +816,7 @@ class AudioEngine(private val context: Context) : AudioPipeline {
         playbackWriteWindowWaitedFrames = 0
         playbackWriteWindowTotalWaitNanos = 0L
         playbackWriteWindowMaxWaitNanos = 0L
-        playbackWriteWindowNoProgressTimeouts = 0
+        playbackWriteWindowDeadlineTimeouts = 0
     }
 
     private fun reportPlaybackWriteFailure() {
