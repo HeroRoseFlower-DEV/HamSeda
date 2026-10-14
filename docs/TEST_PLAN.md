@@ -157,11 +157,15 @@ not validate vendor audio HAL behavior.
   if the OEM rejects it during build/initialization, MIC_FALLBACK should be
   reported and capture should still work. Confirm audible AEC/noise behavior
   because MIC fallback may sound different.
-- Confirm the selected Opus complexity is 6 on API 26–28 and 8 on API 29+,
-  while the target bitrate remains 40 kbps. Compare CPU usage, encode timing,
-  intelligibility, clipping, and gaps against the earlier build. Lower
-  complexity may reduce CPU work but can also change speech quality; do not
-  assume it is an improvement without listening and measuring.
+- Confirm the selected Opus complexity is 4 on API 26–28 and 8 on API 29+,
+  with a 32 kbps target and constrained VBR. Compare CPU usage, encode timing,
+  intelligibility, clipping, and gaps against the earlier build. This is a
+  lower-load real-time profile, not an assumed quality improvement.
+- In `AudioTrack write timing`, compare `nativeAvgMs/nativeMaxMs` (time inside
+  native write calls) separately from `avgWaitMs/maxWaitMs` (waiting for output
+  capacity). `noProgressTimeouts` should remain zero during ordinary speech.
+  In `audio receive timing`, `cadenceIntervals/avgIntervalMs` describe
+  within-burst cadence; `interBurstGapsOver250Ms` separates long gaps.
 - Lock the screen for 5 minutes and test repeated PTT, stop notification,
   headset insertion/removal, incoming call/audio-focus loss, radio loss, and
   reconnect. Confirm microphone, wake lock, and foreground notification are
