@@ -32,7 +32,7 @@ class CaptureGainControllerTest {
 
         assertEquals(1f, controller.currentGain, 0f)
         assertTrue(silence.all { it.toInt() == 0 })
-        assertTrue(lowFloor.all { it.toInt() == 10 })
+        assertTrue(lowFloor.all { abs(it.toInt()) == 10 })
     }
 
     @Test
@@ -60,5 +60,5 @@ class CaptureGainControllerTest {
         assertTrue(loud.minOf { it.toInt() } >= -CaptureGainController.DEFAULT_MAX_OUTPUT_PEAK.toInt())
     }
 
-    private fun constantFrame(value: Int) = ShortArray(960) { value.toShort() }
+    private fun constantFrame(value: Int) = ShortArray(960) { if (it % 2 == 0) value.toShort() else (-value).toShort() }
 }
