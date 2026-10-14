@@ -715,16 +715,22 @@ class AudioEngine(private val context: Context) : AudioPipeline {
                     }
                     return false
                 }
+                if (written > 0) {
+                    queueTracker.recordWrittenFrames(written)
+                    offset += written
+                }
+                // Check the deadline even if the platform keeps returning small
+                // positive writes; a partial-progress loop must remain bounded too.
+                if (System.nanoTime() >= writeDeadlineNanos) {
+                    timedOut = true
+                    AppLog.log(
+                        TAG,
+                        "AudioTrack non-blocking write deadline exceeded: offset=$offset, " +
+                            "samples=${pcm.size}, waitLimitMs=$MAX_AUDIO_TRACK_WRITE_WAIT_MS",
+                    )
+                    return false
+                }
                 if (written == 0) {
-                    if (System.nanoTime() >= writeDeadlineNanos) {
-                        timedOut = true
-                        AppLog.log(
-                            TAG,
-                            "AudioTrack non-blocking write made no progress: offset=$offset, " +
-                                "samples=${pcm.size}, waitLimitMs=$MAX_AUDIO_TRACK_WRITE_WAIT_MS",
-                        )
-                        return false
-                    }
                     val waitStartedAtNanos = System.nanoTime()
                     try {
                         Thread.sleep(1)
@@ -734,11 +740,7 @@ class AudioEngine(private val context: Context) : AudioPipeline {
                     } finally {
                         submissionWaitNanos += (System.nanoTime() - waitStartedAtNanos).coerceAtLeast(0L)
                     }
-                    continue
                 }
-
-                queueTracker.recordWrittenFrames(written)
-                offset += written
             }
             succeeded = offset == pcm.size
             return succeeded
