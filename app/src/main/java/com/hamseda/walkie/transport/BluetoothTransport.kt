@@ -74,7 +74,9 @@ class BluetoothTransport(private val context: Context) : Transport {
     private val _discoverable = MutableStateFlow(false)
     override val discoverable: StateFlow<Boolean> = _discoverable.asStateFlow()
 
-    private val _incomingFrames = MutableSharedFlow<ByteArray>(extraBufferCapacity = 64)
+    // No application backlog: suspend the reader until the session consumer accepts this frame.
+    // The TCP/RFCOMM stream and OS buffers provide transport backpressure; stale speech is not queued here.
+    private val _incomingFrames = MutableSharedFlow<ByteArray>()
     override val incomingFrames: SharedFlow<ByteArray> = _incomingFrames.asSharedFlow()
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)

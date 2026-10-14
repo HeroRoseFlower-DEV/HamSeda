@@ -1,5 +1,18 @@
 # HamSeda Changelog
 
+## 2026-10-15 — Reduce stale audio backlog under transport congestion
+
+- Remove the 64-frame application-level incoming SharedFlow buffer from both
+  TCP/Wi-Fi Direct and Bluetooth RFCOMM readers. The reader now suspends while
+  the single session consumer processes authenticated frames instead of adding
+  up to roughly 1.28 seconds of stale 20 ms media to the application queue.
+- Drop outbound audio older than 120 ms before framing/sealing and count it in
+  the existing audio-freshness drop metric. Control messages and sequence
+  allocation ordering are unchanged.
+- Unit tests cover the exact 120 ms boundary and drop accounting. Device tests
+  must still confirm latency and loss behavior during 60-second continuous talk
+  and ten PTT bursts on both transports.
+
 ## 2026-10-14 — AudioTrack startup-threshold deadlock fix
 - **Playback startup:** the queue previously capped at 60 ms even when an
   AudioTrack's default streaming start threshold was its full 64–80 ms buffer.

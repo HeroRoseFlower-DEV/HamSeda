@@ -315,6 +315,17 @@ class SessionManager(
         var delivered = false
         try {
             for ((index, message) in messages.withIndex()) {
+                // A blocked socket write can make queued speech obsolete.
+                // Drop it before encryption/serialization and sequence allocation.
+                if (isAudioMessage(message)) {
+                    val audio = message as OutboundMsg.Sealed
+                    val ageNanos = (System.nanoTime() - audio.enqueuedAtNanos).coerceAtLeast(0L)
+                    queuedAtWaitNanos[index] = maxOf(queuedAtWaitNanos[index], ageNanos)
+                    if (isAudioFrameExpired(ageNanos, MAX_OUTBOUND_AUDIO_AGE_MS * 1_000_000L)) {
+                        outboundQueue.recordDroppedAudioFrame()
+                        continue
+                    }
+                }
                 val buildStartedAt = System.nanoTime()
                 try {
                     val bytes = when (message) {
@@ -1658,6 +1669,8 @@ class SessionManager(
     companion object {
         private const val MAX_QUEUED_AUDIO_FRAMES = 6
         private const val MAX_BLUETOOTH_AUDIO_BATCH_FRAMES = 3
+        /** Stale audio is discarded before wire sequence allocation after a slow write. */
+        private const val MAX_OUTBOUND_AUDIO_AGE_MS = 120L
         private const val MAX_PENDING_OUTBOUND_MESSAGES = 64
         private const val AUDIO_DROP_LOG_INTERVAL = 50L
         private const val AUDIO_TIMING_LOG_INTERVAL = 50

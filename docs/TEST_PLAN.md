@@ -1,5 +1,16 @@
 # HamSeda Test Plan
 
+## Manual real-time queue validation
+
+Use two physical devices, preferably API 27 and API 36. Record a baseline APK
+before this change, then the candidate APK. For each transport (Wi-Fi Direct
+and Bluetooth Classic), run 60 seconds of continuous speech and 10 PTT bursts.
+Record outbound queued/dropped audio frames, frames older than 120 ms dropped,
+RFCOMM/TCP send duration, inbound cadence/gaps, jitter stale drops, AudioTrack
+underruns and perceived delay. Repeat each case at least twice. Compare like-for-
+like speech samples and retain logs without audio payloads. A passing build alone
+does not establish a user-perceptible improvement.
+
 > **Physical-device baseline:** use [`docs/MAIN_BASELINE_AUDIT.md`](MAIN_BASELINE_AUDIT.md) for the reproducible two-phone setup, attempt counts, evidence capture, performance-measurement method, and result sheet. CI compilation is not a substitute for tests on real radios and audio hardware. Do not mark unrun cases as passed.
 
 ## 1. Automated tests (run in CI)

@@ -81,6 +81,27 @@ class RealtimeOutboundQueueTest {
         )
     }
 
+    @Test
+    fun `audio freshness threshold permits boundary but rejects older frames`() {
+        val budgetNanos = 120_000_000L
+        assertFalse(isAudioFrameExpired(-1L, budgetNanos))
+        assertFalse(isAudioFrameExpired(budgetNanos - 1L, budgetNanos))
+        assertFalse(isAudioFrameExpired(budgetNanos, budgetNanos))
+        assertTrue(isAudioFrameExpired(budgetNanos + 1L, budgetNanos))
+    }
+
+    @Test
+    fun `sender can account for an expired dequeued audio frame`() {
+        val q = queue()
+        assertTrue(q.offer("audio-expired"))
+        assertEquals("audio-expired", q.poll())
+
+        q.recordDroppedAudioFrame()
+
+        assertEquals(1L, q.droppedAudioFrames)
+        assertEquals(0, q.pendingAudioFrames())
+    }
+
 @Test
     fun `discard callback clears evicted sensitive payloads`() {
         val discarded = mutableListOf<ByteArray>()
