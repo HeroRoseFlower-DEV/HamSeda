@@ -34,7 +34,7 @@ class OpusCodec(
     private val lock = Any()
     private val selectedEncoderComplexity = recommendedEncoderComplexity(Build.VERSION.SDK_INT)
 
-    /** Actual encoder complexity selected for this Android API level (6 on API 26–28, 8 otherwise). */
+    /** Actual encoder complexity selected for this Android API level (4 on API 26–28, 8 otherwise). */
     val encoderComplexityInUse: Int get() = selectedEncoderComplexity
 
     /** Reports the actual version string returned by the linked native library. */
