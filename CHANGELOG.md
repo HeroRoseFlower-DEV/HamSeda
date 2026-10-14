@@ -12,7 +12,7 @@
   interval remains visible, so true long stalls are not hidden.
 - **Playback writer:** replace potentially long blocking AudioTrack writes with
   bounded non-blocking submissions. Native write-call time and time waiting for
-  output capacity are logged independently; a no-progress write fails within
+  output capacity are logged independently; a write submission that misses its deadline fails within
   250 ms rather than pinning the audio worker indefinitely.
 - **Playback queue timeout:** reduce the output-head pacing timeout from 1 s to
   500 ms so an unhealthy output path does not keep stale speech queued for too long.
