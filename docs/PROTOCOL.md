@@ -51,10 +51,14 @@ have been ignored anyway (e.g. audio from a non-floor-holder).
 
 ## Outbound ordering (HS-02)
 
-All outgoing messages flow through a single bounded channel (capacity 256)
-with one consumer coroutine. The consumer allocates the uint32 sequence,
-seals, and writes in FIFO order. Audio frames are dropped (counted) on a
-full queue to bound latency; control frames are never expected to overflow.
+All outgoing messages pass through one bounded FIFO (maximum 64 total
+messages) and one sender coroutine. A conflated signal wakes the consumer; it
+allocates the uint32 sequence, seals, and writes frames in FIFO order. Audio has
+a separate three-frame queue budget (about 60 ms at 20 ms/frame); when full, the
+oldest queued audio is evicted. Before encryption/serialization, audio already
+older than 120 ms is discarded and counted as a freshness drop. This avoids
+replaying stale speech after a blocked/slow socket write. Control messages are
+retained where possible and can displace queued audio at the total queue cap.
 
 ## Message types
 
