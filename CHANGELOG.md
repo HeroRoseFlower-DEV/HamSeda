@@ -4,6 +4,10 @@
 - **Bluetooth freshness under congestion:** limit queued outbound audio from six
   frames to three (about 60 ms). When a socket write stalls, the queue now keeps
   newer speech instead of allowing a long stale backlog to accumulate.
+- **Inbound media backpressure:** remove the 64-frame SharedFlow receive backlog
+  from both transports. Socket readers now wait for the session collector to
+  process each frame, propagating pressure to the peer's bounded sender queue
+  rather than allowing up to about 1.28 seconds of stale frames to pile up.
 - **Stale-frame guard:** before encryption/serialization, drop any dequeued
   audio frame already older than 120 ms and count it with the existing freshness
   drops. This prevents a delayed RFCOMM write from replaying old queued speech.
