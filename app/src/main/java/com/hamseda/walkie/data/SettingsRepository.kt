@@ -40,6 +40,7 @@ class SettingsRepository(private val context: Context) {
         val TRANSPORT = stringPreferencesKey("transport_preference")
         val CODEC = intPreferencesKey("codec_pref")
         val SPEAKERPHONE = booleanPreferencesKey("speakerphone")
+        val SOFTWARE_GAIN = booleanPreferencesKey("software_microphone_gain")
         val VIBRATION = booleanPreferencesKey("vibration")
         val THEME = stringPreferencesKey("theme_mode")
         val LANGUAGE = stringPreferencesKey("language")
@@ -59,6 +60,10 @@ class SettingsRepository(private val context: Context) {
 
     val vibrationFlow: Flow<Boolean> =
         context.dataStore.data.map { it[Keys.VIBRATION] ?: true }
+
+    /** Software microphone leveler; enabled by default for existing installs. */
+    val softwareGainFlow: Flow<Boolean> =
+        context.dataStore.data.map { it[Keys.SOFTWARE_GAIN] ?: true }
 
     val themeFlow: Flow<ThemeMode> =
         context.dataStore.data.map {
@@ -87,6 +92,10 @@ class SettingsRepository(private val context: Context) {
 
     suspend fun setVibration(v: Boolean) {
         context.dataStore.edit { it[Keys.VIBRATION] = v }
+    }
+
+    suspend fun setSoftwareGain(v: Boolean) {
+        context.dataStore.edit { it[Keys.SOFTWARE_GAIN] = v }
     }
 
     suspend fun setTheme(v: ThemeMode) {
