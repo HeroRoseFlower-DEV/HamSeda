@@ -163,7 +163,7 @@ not validate vendor audio HAL behavior.
   lower-load real-time profile, not an assumed quality improvement.
 - In `AudioTrack write timing`, compare `nativeAvgMs/nativeMaxMs` (time inside
   native write calls) separately from `avgWaitMs/maxWaitMs` (waiting for output
-  capacity). `noProgressTimeouts` should remain zero during ordinary speech.
+  capacity). `deadlineTimeouts` should remain zero during ordinary speech.
   In `audio receive timing`, `cadenceIntervals/avgIntervalMs` describe
   within-burst cadence; `interBurstGapsOver250Ms` separates long gaps.
 - Lock the screen for 5 minutes and test repeated PTT, stop notification,
