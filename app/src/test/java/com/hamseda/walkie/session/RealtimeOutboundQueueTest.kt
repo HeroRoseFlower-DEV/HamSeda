@@ -82,6 +82,18 @@ class RealtimeOutboundQueueTest {
     }
 
 @Test
+    @Test
+    fun `sender can account for an expired dequeued audio frame`() {
+        val q = queue()
+        assertTrue(q.offer("audio-expired"))
+        assertEquals("audio-expired", q.poll())
+
+        q.recordDroppedAudioFrame()
+
+        assertEquals(1L, q.droppedAudioFrames)
+        assertEquals(0, q.pendingAudioFrames())
+    }
+
     fun `discard callback clears evicted sensitive payloads`() {
         val discarded = mutableListOf<ByteArray>()
         val queue = RealtimeOutboundQueue(
