@@ -730,7 +730,9 @@ class AudioEngine(private val context: Context) : AudioPipeline {
                     )
                     return false
                 }
-                if (written == 0) {
+                if (offset < pcm.size) {
+                    // Yield after both no-progress and partial writes so a
+                    // vendor AudioTrack that returns tiny chunks cannot spin.
                     val waitStartedAtNanos = System.nanoTime()
                     try {
                         Thread.sleep(1)
