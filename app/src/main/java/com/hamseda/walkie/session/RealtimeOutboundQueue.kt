@@ -2,6 +2,12 @@ package com.hamseda.walkie.session
 
 import java.util.ArrayDeque
 
+/** True when an audio age has exceeded the freshness budget; equality is still allowed. */
+internal fun isAudioFrameExpired(ageNanos: Long, maxAgeNanos: Long): Boolean {
+    require(maxAgeNanos >= 0L) { "maxAgeNanos must be non-negative" }
+    return ageNanos.coerceAtLeast(0L) > maxAgeNanos
+}
+
 /**
  * Bounded FIFO for the single outbound sender. Audio is freshness-first:
  * when its budget is reached, the oldest queued audio is evicted so speech
