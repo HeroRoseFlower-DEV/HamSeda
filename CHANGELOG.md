@@ -1,5 +1,21 @@
 # HamSeda Changelog
 
+## 2026-10-14 — Adaptive microphone input level
+- **Software gain control:** normalize low-level active PCM speech before encoding,
+  complementing Android's optional vendor AGC rather than relying on it alone.
+- **Bounded gain:** gradual gain increases target about 5,500 RMS samples with an
+  8x maximum (+18 dB); sudden loud input reduces gain immediately and output
+  peaks are held below 30,000 to leave headroom.
+- **Near-silence guard:** frames below the configured RMS floor are not amplified
+  to avoid making electronic/background noise dominate quiet moments.
+- **Diagnostics:** every 50 captured frames report mean input RMS, mean/max
+  applied gain, and near-silence frame count, without logging audio content.
+- **Validation caveat:** deterministic JVM tests cover gain-up, silence guard,
+  rapid reduction and peak safety. Input sensitivity and intelligibility still
+  need confirmation on the two physical phones; digital gain cannot recover
+  speech that is buried below the microphone's noise floor.
+
+
 ## 2026-10-14 — Adaptive playback headroom
 - **Default AudioTrack mode:** request 100 ms native output capacity and permit
   up to five PCM frames (100 ms) in the app-fed queue when LOW_LATENCY mode is
