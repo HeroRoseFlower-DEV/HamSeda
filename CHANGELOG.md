@@ -1,5 +1,16 @@
 # HamSeda Changelog
 
+## 2026-10-14 — AudioTrack startup-threshold deadlock fix
+- **Playback startup:** the queue previously capped at 60 ms even when an
+  AudioTrack's default streaming start threshold was its full 64–80 ms buffer.
+  This could prevent the playback head from starting, then end the session when
+  the queue wait timed out. Reduce the effective PCM buffer where supported,
+  set a 40 ms start threshold on API 31+, and round legacy fallback limits up
+  to a full PCM-frame boundary at or above the effective start threshold.
+- **Validation status:** unit tests cover queue-limit calculation. The new APK
+  still needs fresh playback tests on API 27 and API 36; a successful build is
+  not proof of audible output or acceptable latency.
+
 ## 2026-10-14 — Real-time audio backpressure hardening
 - **Android 8/9 audio compatibility:** use Opus encoder complexity 6 on API 26–28
   and complexity 8 on API 29+ to lower CPU work, retaining 48 kHz mono, 20 ms

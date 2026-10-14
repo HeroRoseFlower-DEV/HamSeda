@@ -52,3 +52,25 @@ internal class PlaybackQueueTracker {
         private const val MAX_REASONABLE_HEAD_ADVANCE_FRAMES = 48_000L * 10L
     }
 }
+
+
+/**
+ * The writer sends complete PCM frames. Its queue ceiling must therefore be
+ * rounded up to a frame boundary at or above AudioTrack's streaming start
+ * threshold; otherwise playback can wait for head movement before the platform
+ * has enough samples buffered to start.
+ */
+internal fun queueLimitFramesForStartThreshold(
+    desiredQueueFrames: Int,
+    frameSamples: Int,
+    startThresholdFrames: Int,
+): Int {
+    require(desiredQueueFrames > 0) { "desiredQueueFrames must be positive" }
+    require(frameSamples > 0) { "frameSamples must be positive" }
+    require(startThresholdFrames > 0) { "startThresholdFrames must be positive" }
+    val roundedThreshold = (
+        (startThresholdFrames.toLong() + frameSamples - 1L) / frameSamples
+        ) * frameSamples
+    require(roundedThreshold <= Int.MAX_VALUE) { "rounded threshold exceeds Int range" }
+    return maxOf(desiredQueueFrames, roundedThreshold.toInt())
+}

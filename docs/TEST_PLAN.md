@@ -13,6 +13,7 @@
 | Replay protection | `CryptoTest` (ReplayProtectionTest) | in-order, duplicates, too-old, in-window reorder, far jump, reset |
 | Floor control | `FloorControlTest` | request→grant→release, busy deny, pending-vs-peer race, peer lease extension by audio, silent-peer timeout, self-TX cap, late grant ignored |
 | Jitter buffer | `JitterBufferTest` | priming, in-order playout, gap→Lost after wait, in-time gap fill, stale drop, queue cap, stats; **HS-10: stale/duplicate at full buffer does not evict useful frames** |
+| Playback queue tracker | `PlaybackQueueTrackerTest` | pending PCM accounting, underrun clamp, unsigned playback-head wrap, implausible position jump, and queue-limit rounding to the AudioTrack start threshold |
 | Codecs (JVM) | `CodecTest` | PCM bit-exact roundtrip, Opus profile defaults, codec factory and bad-input checks that do not require native audio I/O |
 | Native Opus | `OpusCodecInstrumentedTest` | Actual Android JNI load, runtime libopus version, 20 ms encode/decode, signal correlation/energy, silence, reset and bad-input rejection |
 | Framed socket | `FramedSocketTest` | delimiting, clean EOF → Closed, oversized envelope rejected, truncated frame → Error, oversized write rejected |
@@ -25,6 +26,21 @@ emulator or physical device to verify the packaged native library and codec I/O;
 tests intentionally do not load Android ABI-specific shared libraries.
 
 ## 2. Manual two-device tests (cannot run on GitHub-hosted CI)
+
+### AudioTrack startup-threshold regression
+
+The playback queue ceiling must not be below the threshold Android requires to
+start consuming a streaming AudioTrack. The implementation tries to reduce the
+effective PCM buffer to the three-frame queue on all supported API levels and
+sets a two-frame start threshold on API 31+. On API 26–30, if the platform does
+not apply the requested buffer size exactly, the queue ceiling is rounded to a
+complete 20 ms PCM frame at or above the effective buffer threshold.
+
+On API 27 and API 36 devices, inspect the `playback initialized` line for
+`bufferFrames`, `startThresholdFrames`, `queueLimitFrames`, and
+`bufferResizeResult`. Confirm ordinary close-range speech no longer triggers
+`AudioTrack queue pacing timed out`. Record underruns and audible gaps; the
+absence of this timeout alone does not prove that playback quality is good.
 
 ### Session timing diagnostics
 

@@ -5,6 +5,17 @@ import org.junit.Test
 
 class PlaybackQueueTrackerTest {
     @Test
+    fun roundsQueueCapUpToWholeFramesWhenNeededToReachStartThreshold() {
+        // API 31+ can start after two 20 ms frames while retaining the 60 ms queue cap.
+        assertEquals(2_880, queueLimitFramesForStartThreshold(2_880, 960, 1_920))
+        assertEquals(2_880, queueLimitFramesForStartThreshold(2_880, 960, 2_880))
+
+        // Legacy buffer thresholds may not align with a 20 ms frame boundary.
+        assertEquals(3_840, queueLimitFramesForStartThreshold(2_880, 960, 3_072))
+        assertEquals(4_800, queueLimitFramesForStartThreshold(2_880, 960, 3_848))
+    }
+
+    @Test
     fun tracksPendingFramesAndSubtractsConsumedFrames() {
         val tracker = PlaybackQueueTracker()
         tracker.reset(1_000)

@@ -365,6 +365,77 @@ class AudioEngine(private val context: Context) : AudioPipeline {
      * Starts speaker playback fed from [buffer]. Lost frames are concealed
      * with last-frame repeat (decaying), then silence.
      */
+    /**
+     * Prevent a startup deadlock between the app's freshness queue and Android's
+     * AudioTrack streaming start threshold. The platform defaults that threshold
+     * to its buffer capacity; if we stop writing below it, playback never starts
+     * and playbackHeadPosition cannot advance to release the queue.
+     */
+    private data class PlaybackBufferConfiguration(
+        val effectiveBufferFrames: Int,
+        val capacityFrames: Int,
+        val startThresholdFrames: Int,
+        val startThresholdSource: String,
+        val queueLimitFrames: Int,
+        val bufferResizeResult: Int,
+    )
+
+    private fun configurePlaybackBuffer(at: AudioTrack): PlaybackBufferConfiguration {
+        val desiredQueueFrames = AudioCodec.FRAME_SAMPLES * MAX_TRACKED_PLAYBACK_QUEUE_FRAMES
+        val capacityFrames = at.bufferCapacityInFrames.coerceAtLeast(1)
+        val requestedBufferFrames = minOf(desiredQueueFrames, capacityFrames)
+        val resizeResult = try {
+            at.setBufferSizeInFrames(requestedBufferFrames)
+        } catch (e: Exception) {
+            Log.w(TAG, "AudioTrack buffer resize failed: ${e.javaClass.simpleName}")
+            -1
+        }
+        val effectiveBufferFrames = try {
+            at.bufferSizeInFrames.coerceAtLeast(1)
+        } catch (_: Exception) {
+            capacityFrames
+        }
+        if (resizeResult <= 0) {
+            AppLog.log(
+                TAG,
+                "AudioTrack buffer resize unavailable; using compatible queue fallback " +
+                    "(requestedFrames=$requestedBufferFrames, effectiveFrames=$effectiveBufferFrames, " +
+                    "capacityFrames=$capacityFrames, result=$resizeResult)",
+            )
+        }
+
+        var startThresholdFrames = effectiveBufferFrames
+        var startThresholdSource = "effective-buffer-size"
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val requestedThreshold = minOf(
+                AudioCodec.FRAME_SAMPLES * 2,
+                capacityFrames,
+            ).coerceAtLeast(1)
+            try {
+                at.setStartThresholdInFrames(requestedThreshold)
+                startThresholdFrames = at.startThresholdInFrames.coerceAtLeast(1)
+                startThresholdSource = "api31+"
+            } catch (e: Exception) {
+                // Keep the implicit reduced-buffer threshold if the newer API is unavailable.
+                Log.w(TAG, "AudioTrack start-threshold tuning failed: ${e.javaClass.simpleName}")
+            }
+        }
+
+        val queueLimitFrames = queueLimitFramesForStartThreshold(
+            desiredQueueFrames = desiredQueueFrames,
+            frameSamples = AudioCodec.FRAME_SAMPLES,
+            startThresholdFrames = startThresholdFrames,
+        )
+        return PlaybackBufferConfiguration(
+            effectiveBufferFrames = effectiveBufferFrames,
+            capacityFrames = capacityFrames,
+            startThresholdFrames = startThresholdFrames,
+            startThresholdSource = startThresholdSource,
+            queueLimitFrames = queueLimitFrames,
+            bufferResizeResult = resizeResult,
+        )
+    }
+
     override fun startPlayback(codec: AudioCodec, buffer: JitterBuffer): Boolean {
         if (playbackRunning.get()) return true
         val minBuf = AudioTrack.getMinBufferSize(
@@ -426,6 +497,7 @@ class AudioEngine(private val context: Context) : AudioPipeline {
             restoreAudioModeIfIdle()
             return false
         }
+        val playbackBuffer = configurePlaybackBuffer(at)
         // Audio playback must start before we report success to SessionManager.
         // Previously the worker thread could fail at AudioTrack.play() only
         // after startPlayback() had already returned true.
@@ -458,7 +530,11 @@ class AudioEngine(private val context: Context) : AudioPipeline {
             "playback initialized: sampleRate=${at.sampleRate}, nativeOutputRate=$nativeOutputRate, " +
                 "minBufferBytes=$minBuf, requestedBufferBytes=$requestedBufferBytes, " +
                 "requestedPerformanceMode=$preferredMode, actualPerformanceMode=${at.performanceMode}, " +
-                "bufferFrames=${at.bufferSizeInFrames}, capacityFrames=${at.bufferCapacityInFrames}, " +
+                "bufferFrames=${playbackBuffer.effectiveBufferFrames}, capacityFrames=${playbackBuffer.capacityFrames}, " +
+                "bufferResizeResult=${playbackBuffer.bufferResizeResult}, " +
+                "startThresholdFrames=${playbackBuffer.startThresholdFrames}, " +
+                "startThresholdSource=${playbackBuffer.startThresholdSource}, " +
+                "queueLimitFrames=${playbackBuffer.queueLimitFrames}, " +
                 "bufferLimitMs=${String.format(Locale.ROOT, "%.1f", effectiveBufferMs)}, " +
                 "initialUnderruns=$initialUnderruns, frameMs=20",
         )
@@ -502,7 +578,7 @@ class AudioEngine(private val context: Context) : AudioPipeline {
                                 r.packet.payload.fill(0)
                             }
                             if (pcm != null) {
-                                if (!writePcm(at, pcm, queueTracker)) {
+                                if (!writePcm(at, pcm, queueTracker, playbackBuffer.queueLimitFrames)) {
                                     pcm.fill(0)
                                     reportPlaybackWriteFailure()
                                     break@playback
@@ -511,7 +587,7 @@ class AudioEngine(private val context: Context) : AudioPipeline {
                                 last = pcm
                                 plcCount = 0
                             } else {
-                                val next = conceal(at, queueTracker, last, silence, plcCount)
+                                val next = conceal(at, queueTracker, last, silence, plcCount, playbackBuffer.queueLimitFrames)
                                 if (next == null) {
                                     reportPlaybackWriteFailure()
                                     break@playback
@@ -520,7 +596,7 @@ class AudioEngine(private val context: Context) : AudioPipeline {
                             }
                         }
                         is JitterBuffer.TakeResult.Lost -> {
-                            val next = conceal(at, queueTracker, last, silence, plcCount)
+                            val next = conceal(at, queueTracker, last, silence, plcCount, playbackBuffer.queueLimitFrames)
                             if (next == null) {
                                 reportPlaybackWriteFailure()
                                 break@playback
@@ -559,13 +635,12 @@ class AudioEngine(private val context: Context) : AudioPipeline {
         at: AudioTrack,
         pcm: ShortArray,
         queueTracker: PlaybackQueueTracker,
+        queueLimitFrames: Int,
     ): Boolean {
         val queueWaitStartedNanos = System.nanoTime()
         var maxObservedQueuedFrames = 0L
         var readyForWrite = false
         var queueWaitTimedOut = false
-        val queueLimitFrames = AudioCodec.FRAME_SAMPLES * MAX_TRACKED_PLAYBACK_QUEUE_FRAMES
-
         while (playbackRunning.get()) {
             val queuedFrames = queueTracker.pendingFrames(at.playbackHeadPosition)
             maxObservedQueuedFrames = maxOf(maxObservedQueuedFrames, queuedFrames)
@@ -694,6 +769,7 @@ class AudioEngine(private val context: Context) : AudioPipeline {
         last: ShortArray?,
         silence: ShortArray,
         plcCount: Int,
+        queueLimitFrames: Int,
     ): Int? {
         val generated = last != null && plcCount < MAX_PLC_FRAMES
         val pcm = if (generated) {
@@ -702,7 +778,7 @@ class AudioEngine(private val context: Context) : AudioPipeline {
             silence
         }
         return try {
-            if (writePcm(at, pcm, queueTracker)) plcCount + 1 else null
+            if (writePcm(at, pcm, queueTracker, queueLimitFrames)) plcCount + 1 else null
         } finally {
             if (generated) pcm.fill(0)
         }
