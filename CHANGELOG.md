@@ -10,6 +10,12 @@
 - **Receive diagnostics:** average cadence now excludes intervals longer than
   250 ms and reports those separately as inter-burst gaps. The maximum raw
   interval remains visible, so true long stalls are not hidden.
+- **Playback writer:** replace potentially long blocking AudioTrack writes with
+  bounded non-blocking submissions. Native write-call time and time waiting for
+  output capacity are logged independently; a no-progress write fails within
+  250 ms rather than pinning the audio worker indefinitely.
+- **Playback queue timeout:** reduce the output-head pacing timeout from 1 s to
+  500 ms so an unhealthy output path does not keep stale speech queued for too long.
 - **Validation status:** code and regression-test expectations are updated.
   CI must pass before the change is considered build-verified; audible latency,
   intelligibility, and hardware-specific Bluetooth behavior are not claimed
