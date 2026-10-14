@@ -15,6 +15,7 @@
 | Jitter buffer | `JitterBufferTest` | priming, in-order playout, gap→Lost after wait, in-time gap fill, stale drop, queue cap, stats; **HS-10: stale/duplicate at full buffer does not evict useful frames** |
 | Playback queue tracker | `PlaybackQueueTrackerTest` | pending PCM accounting, underrun clamp, unsigned playback-head wrap, implausible position jump, and queue-limit rounding to the AudioTrack start threshold |
 | Codecs (JVM) | `CodecTest` | PCM bit-exact roundtrip, Opus profile defaults, codec factory and bad-input checks that do not require native audio I/O |
+| Microphone level control (JVM) | `CaptureGainControllerTest` | boosts quiet active frames, leaves near-silence unamplified, reduces gain on loud transients immediately, and respects the peak ceiling |
 | Native Opus | `OpusCodecInstrumentedTest` | Actual Android JNI load, runtime libopus version, 20 ms encode/decode, signal correlation/energy, silence, reset and bad-input rejection |
 | Framed socket | `FramedSocketTest` | delimiting, clean EOF → Closed, oversized envelope rejected, truncated frame → Error, oversized write rejected |
 | Full session | `SessionHandshakeTest` | handshake→SAS→IN_SESSION over loopback transport, matching SAS, PTT→grant→audio frames→release, SAS-mismatch abort, **MITM tamper → AUTH_MISMATCH**, abrupt transport loss → clean teardown |
@@ -198,3 +199,16 @@ runs cannot validate Wi-Fi Direct/Bluetooth audio — they only compile.
 - AudioRecord/AudioTrack latency & quality (needs hardware + ears).
 - Foreground-service microphone behavior under OEM battery savers.
 - Wi-Fi Direct group-owner negotiation across vendors.
+
+
+### Microphone level and distant speech (physical-device check)
+
+Use the same two phones, transport, room and receiver volume for each run. Hold
+PTT and speak the same phrase first at roughly 15–20 cm and then at 60–100 cm
+from the transmitting phone; repeat on both devices and both transports. Compare
+intelligibility, background-noise pumping, clipping, and the sender's
+`capture encode timing` fields: `avgInputRms`, `avgGain`, `maxGain`, and
+`nearSilenceFrames`. Also verify quiet-room silence does not become a loud hiss.
+This is a comparative manual check, not a calibrated microphone-sensitivity
+measurement. A gain increase cannot recover speech whose signal is below the
+microphone/noise-suppression floor.
