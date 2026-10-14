@@ -7,10 +7,11 @@ import java.io.Closeable
 /**
  * Real-time speech codec backed by the official native libopus 1.6.1 build.
  *
- * Profile: 48 kHz mono PCM16, 20 ms frames, VOIP application, 40 kbps,
- * voice signal hint, full-band maximum bandwidth and unconstrained VBR.
- * Android 8/9 use complexity 6 to reduce encoder CPU cost on older hardware;
- * API 29+ use complexity 8. This trades some encoder-side analysis for CPU headroom.
+ * Profile: 48 kHz mono PCM16, 20 ms frames, VOIP application, 32 kbps,
+ * voice signal hint, full-band maximum bandwidth and constrained VBR. This
+ * keeps the speech stream lighter and limits packet-size bursts on byte-stream
+ * transports. Android 8/9 use complexity 4 to leave more CPU headroom on older
+ * hardware; API 29+ use complexity 8 for higher encoder analysis quality.
  * The upstream source archive is hash-pinned in CMake;
  * the codec is packaged in the APK and does not download anything at runtime.
  *
@@ -130,9 +131,9 @@ class OpusCodec(
 
     companion object {
         const val LIBOPUS_VERSION = "1.6.1"
-        const val DEFAULT_BITRATE_BPS = 40_000
+        const val DEFAULT_BITRATE_BPS = 32_000
         const val ENCODER_COMPLEXITY = 8
-        const val LEGACY_ANDROID_ENCODER_COMPLEXITY = 6
+        const val LEGACY_ANDROID_ENCODER_COMPLEXITY = 4
         const val MAX_PACKET_BYTES = 1275
 
         /** Pure selector for the conservative CPU profile used on Oreo/Pie-era devices. */
