@@ -163,6 +163,10 @@ not validate vendor audio HAL behavior.
   lower-load real-time profile, not an assumed quality improvement.
 - The sender drops audio older than 120 ms before serialization and counts
   it in `droppedAudioTotal`; stale audio must not be replayed after a blocked send.
+- Inbound transport flows have no application-side frame backlog: when the
+  session consumer slows, the reader must suspend and backpressure the peer
+  rather than accumulating up to 64 frames. Verify ordinary floor/control frames
+  still arrive and the session does not disconnect due to routine backpressure.
 - In `AudioTrack write timing`, compare `nativeAvgMs/nativeMaxMs` (time inside
   native write calls) separately from `avgWaitMs/maxWaitMs` (waiting for output
   capacity). `deadlineTimeouts` should remain zero during ordinary speech.
