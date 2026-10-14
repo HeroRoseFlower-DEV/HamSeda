@@ -69,6 +69,9 @@
     <string name="settings_transport">Connection mode</string>
     <string name="transport_locked_hint">Connection mode cannot be changed during an active session.</string>
     <string name="settings_codec">Audio codec</string>
+    <string name="settings_audio_processing">Microphone processing</string>
+    <string name="settings_software_gain">Software microphone leveler</string>
+    <string name="settings_software_gain_desc">Raises quiet speech up to 8×. Turn off to compare raw microphone audio or avoid raising background noise.</string>
     <string name="codec_opus">Opus (default, high quality)</string>
     <string name="codec_opus_desc">40 kbps target; 48 kHz mono voice audio.</string>
     <string name="codec_pcm">Raw PCM (diagnostic)</string>
