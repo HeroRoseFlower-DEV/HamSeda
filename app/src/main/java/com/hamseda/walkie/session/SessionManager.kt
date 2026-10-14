@@ -320,6 +320,17 @@ class SessionManager(
         var delivered = false
         try {
             for ((index, message) in messages.withIndex()) {
+                // A prior blocked socket write may make queued voice obsolete.
+                // Drop it before assigning a sequence or serializing a frame.
+                if (isAudioMessage(message)) {
+                    val audio = message as OutboundMsg.Sealed
+                    val ageNanos = (System.nanoTime() - audio.enqueuedAtNanos).coerceAtLeast(0L)
+                    queuedAtWaitNanos[index] = maxOf(queuedAtWaitNanos[index], ageNanos)
+                    if (ageNanos > MAX_OUTBOUND_AUDIO_AGE_MS * 1_000_000L) {
+                        outboundQueue.recordDroppedAudioFrame()
+                        continue
+                    }
+                }
                 val buildStartedAt = System.nanoTime()
                 try {
                     val bytes = when (message) {
@@ -1679,6 +1690,8 @@ class SessionManager(
         // Bound stale voice waiting behind a blocked/slow socket to about 60 ms.
         // Fresh frames replace old ones during congestion instead of building latency.
         private const val MAX_QUEUED_AUDIO_FRAMES = 3
+        /** Discard dequeued speech already stale before encryption/serialization. */
+        private const val MAX_OUTBOUND_AUDIO_AGE_MS = 120L
         private const val MAX_BLUETOOTH_AUDIO_BATCH_FRAMES = 3
         private const val MAX_PENDING_OUTBOUND_MESSAGES = 64
         private const val AUDIO_DROP_LOG_INTERVAL = 50L
