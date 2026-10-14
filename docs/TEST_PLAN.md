@@ -1,5 +1,16 @@
 # HamSeda Test Plan
 
+## Microphone leveler validation
+
+On each test phone, compare the same quiet phrase, normal speech, loud phrase,
+and room silence with software microphone gain enabled and disabled. Repeat
+while connected over Wi-Fi Direct and Bluetooth Classic. Inspect the 50-frame
+capture diagnostics (input RMS, average/maximum gain, near-silence count and
+enabled flag), and listen for background-noise pumping, clipping, tail
+suppression and intelligibility. Run at least ten PTT bursts after a 60-second
+session. Synthetic tests do not prove subjective quality on every microphone
+or vendor AGC implementation.
+
 > **Physical-device baseline:** use [`docs/MAIN_BASELINE_AUDIT.md`](MAIN_BASELINE_AUDIT.md) for the reproducible two-phone setup, attempt counts, evidence capture, performance-measurement method, and result sheet. CI compilation is not a substitute for tests on real radios and audio hardware. Do not mark unrun cases as passed.
 
 ## 1. Automated tests (run in CI)
