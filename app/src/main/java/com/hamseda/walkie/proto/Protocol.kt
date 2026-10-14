@@ -26,8 +26,8 @@ object Protocol {
      * + seq(4) + timestamp(8) + codecId(1) + payloadLen(4). */
     const val HEADER_SIZE = 29
 
-    /** Maximum payload bytes per frame. A 20 ms Opus frame at ~40 kbps is
-     * around 100 bytes; PCM 20 ms @48 kHz mono is 1920 bytes. 4096 leaves wide
+    /** Maximum payload bytes per frame. A 20 ms Opus frame at ~32 kbps is
+     * around 80 bytes; PCM 20 ms @48 kHz mono is 1920 bytes. 4096 leaves wide
      * margin for authenticated media and control messages while bounding memory. */
     const val MAX_PAYLOAD = 4096
 
