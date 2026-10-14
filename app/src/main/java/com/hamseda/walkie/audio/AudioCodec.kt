@@ -7,7 +7,7 @@ import com.hamseda.walkie.proto.CodecId
  * 48 kHz (960 samples) — the unit the audio engine captures and plays.
  *
  * Two implementations ship:
- * - [OpusCodec] (default): official native libopus 1.6.1, 40 kbps high-quality voice profile.
+ * - [OpusCodec] (default): official native libopus 1.6.1, 32 kbps real-time voice profile.
  * - [PcmCodec] (fallback): raw 16-bit PCM, 768 kbps. Use only for diagnostics over Wi-Fi Direct.
  */
 interface AudioCodec {
