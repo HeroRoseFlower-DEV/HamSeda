@@ -1,5 +1,20 @@
 # HamSeda Changelog
 
+## 2026-10-14 — PTT audio backpressure and timing diagnostics
+- **Bluetooth freshness under congestion:** limit queued outbound audio from six
+  frames to three (about 60 ms). When a socket write stalls, the queue now keeps
+  newer speech instead of allowing a long stale backlog to accumulate.
+- **Opus transport profile:** target 32 kbps instead of 40 kbps and enable
+  constrained VBR to reduce packet bursts. Android API 26–28 use encoder
+  complexity 4 (from 6) to leave more CPU headroom; API 29+ retain complexity 8.
+- **Receive diagnostics:** average cadence now excludes intervals longer than
+  250 ms and reports those separately as inter-burst gaps. The maximum raw
+  interval remains visible, so true long stalls are not hidden.
+- **Validation status:** code and regression-test expectations are updated.
+  CI must pass before the change is considered build-verified; audible latency,
+  intelligibility, and hardware-specific Bluetooth behavior are not claimed
+  without physical-device evidence.
+
 ## 2026-10-14 — AudioTrack startup-threshold deadlock fix
 - **Playback startup:** the queue previously capped at 60 ms even when an
   AudioTrack's default streaming start threshold was its full 64–80 ms buffer.
