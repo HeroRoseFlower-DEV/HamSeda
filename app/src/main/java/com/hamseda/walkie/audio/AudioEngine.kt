@@ -232,7 +232,12 @@ class AudioEngine(private val context: Context) : AudioPipeline {
             .build()
         // Note: AudioRecord.Builder has no setAudioAttributes — routing and
         // usage are driven by the VOICE_COMMUNICATION audio source.
-        val requestedBufferBytes = maxOf(minBuf, AudioCodec.FRAME_BYTES_PCM * 3)
+        // Request 100 ms capacity up front. configurePlaybackBuffer() will use
+        // a 60 ms application queue only when LOW_LATENCY mode is actually active.
+        val requestedBufferBytes = maxOf(
+            minBuf,
+            AudioCodec.FRAME_BYTES_PCM * MAX_TRACKED_PLAYBACK_QUEUE_FRAMES,
+        )
         val captureRecorder = buildCaptureRecorder(format, requestedBufferBytes)
         if (captureRecorder == null) {
             abandonFocus()
@@ -385,7 +390,13 @@ class AudioEngine(private val context: Context) : AudioPipeline {
     )
 
     private fun configurePlaybackBuffer(at: AudioTrack): PlaybackBufferConfiguration {
-        val desiredQueueFrames = AudioCodec.FRAME_SAMPLES * MAX_TRACKED_PLAYBACK_QUEUE_FRAMES
+        // On devices where LOW_LATENCY was requested but not granted, use a
+        // larger PCM headroom to absorb short scheduler/HAL stalls. Only use the
+        // small queue when the track actually reports LOW_LATENCY mode.
+        val trackedQueueFrames = if (
+            at.performanceMode == AudioTrack.PERFORMANCE_MODE_LOW_LATENCY
+        ) LOW_LATENCY_PLAYBACK_QUEUE_FRAMES else MAX_TRACKED_PLAYBACK_QUEUE_FRAMES
+        val desiredQueueFrames = AudioCodec.FRAME_SAMPLES * trackedQueueFrames
         val capacityFrames = at.bufferCapacityInFrames.coerceAtLeast(1)
         val requestedBufferFrames = minOf(desiredQueueFrames, capacityFrames)
         val resizeResult = try {
@@ -669,7 +680,7 @@ class AudioEngine(private val context: Context) : AudioPipeline {
         }
 
         val queueWaitNanos = (System.nanoTime() - queueWaitStartedNanos).coerceAtLeast(0L)
-        recordPlaybackQueueTiming(queueWaitNanos, maxObservedQueuedFrames)
+        recordPlaybackQueueTiming(queueWaitNanos, maxObservedQueuedFrames, queueLimitFrames)
         if (!readyForWrite) {
             if (queueWaitTimedOut && playbackRunning.get()) {
                 AppLog.log(
@@ -751,7 +762,11 @@ class AudioEngine(private val context: Context) : AudioPipeline {
         }
     }
 
-    private fun recordPlaybackQueueTiming(waitNanos: Long, maxObservedQueuedFrames: Long) {
+    private fun recordPlaybackQueueTiming(
+        waitNanos: Long,
+        maxObservedQueuedFrames: Long,
+        queueLimitFrames: Int,
+    ) {
         playbackQueueWindowFrames++
         if (waitNanos >= 1_000_000L) playbackQueueWindowWaitedFrames++
         playbackQueueWindowTotalWaitNanos += waitNanos.coerceAtLeast(0L)
@@ -768,7 +783,7 @@ class AudioEngine(private val context: Context) : AudioPipeline {
                 "avgWaitMs=" + ms(playbackQueueWindowTotalWaitNanos / playbackQueueWindowFrames) + ", " +
                 "maxWaitMs=" + ms(playbackQueueWindowMaxWaitNanos) + ", " +
                 "maxObservedQueuedFrames=$playbackQueueWindowMaxObservedFrames, " +
-                "queueLimitFrames=${AudioCodec.FRAME_SAMPLES * MAX_TRACKED_PLAYBACK_QUEUE_FRAMES}",
+                "queueLimitFrames=$queueLimitFrames",
         )
         playbackQueueWindowFrames = 0
         playbackQueueWindowWaitedFrames = 0
@@ -1113,7 +1128,9 @@ class AudioEngine(private val context: Context) : AudioPipeline {
         private const val PLAYBACK_DIAGNOSTIC_INTERVAL_MS = 5_000L
         private const val PLAYBACK_WRITE_DIAGNOSTIC_INTERVAL = 50
         /** At most three 20 ms PCM frames in the application-fed track queue. */
-        private const val MAX_TRACKED_PLAYBACK_QUEUE_FRAMES = 3
+        private const val LOW_LATENCY_PLAYBACK_QUEUE_FRAMES = 3
+        /** 100 ms PCM headroom when Android declines AudioTrack LOW_LATENCY mode. */
+        private const val MAX_TRACKED_PLAYBACK_QUEUE_FRAMES = 5
         /** A stuck output head is a playback failure, not an infinite wait. */
         private const val MAX_PLAYBACK_QUEUE_WAIT_MS = 500L
         /** Bound time spent retrying a full/no-progress non-blocking AudioTrack write. */
