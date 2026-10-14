@@ -225,10 +225,11 @@ The absence of the APK identity means these results cannot yet be attributed con
 ### Android 8/9 compatibility pass (source changes, device validation pending)
 
 - minSdk=26 continues to support Android 8.0 and later; no minSdk increase was made.
-- On API 26–28, the native Opus encoder uses complexity 6; API 29+ uses
-  complexity 8. The 40 kbps target, mono 48 kHz PCM, 20 ms frame duration, and
-  wire protocol remain unchanged. This is a CPU-efficiency tradeoff, not a
-  measured performance result yet; test intelligibility and encode timing.
+- The follow-up real-time profile uses Opus complexity 4 on API 26–28 and
+  complexity 8 on API 29+, with a 32 kbps target and constrained VBR. Mono
+  48 kHz PCM, 20 ms frame duration, and wire protocol remain unchanged. This is
+  intended to reduce legacy encoder load and payload bursts; intelligibility and
+  performance still require validation on the target devices.
 - If constructing or initializing an AudioRecord with VOICE_COMMUNICATION fails,
   the engine makes one bounded attempt with MIC. The primary source remains
   preferred. The fallback path has not been validated on a real OEM audio HAL
@@ -294,4 +295,4 @@ A new **HS-12 session-level regression test** drives a secure PTT session, simul
 
 ### Current conclusion and next gate
 
-The reconnect fixes remain **not reproduced** in the latest supplied logs, but the full physical-device baseline and audio quality are still unverified. Build/install the latest successful CI artifact, record its SHA-256, and test both transports in both directions. Specifically inspect `AudioTrack queue pacing`, `AudioTrack write timing`, `audio receive timing`, playback underruns, and RFCOMM write timing. On Bluetooth, confirm the new watchdog only fires when a write exceeds 350 ms; if it fires repeatedly at close range, reconsider the threshold only after correlating it with audible gaps and queue drops. Compare the same speech passage before/after under the same route and phone pair; do not mark either performance change successful until the logs and audible result support it.
+The reconnect fixes remain **not reproduced** in the latest supplied logs, but the full physical-device baseline and audio quality are still unverified. Build/install the latest successful CI artifact, record its SHA-256, and test both transports in both directions. Specifically inspect `AudioTrack queue pacing`, `AudioTrack write timing` (native-call time separately from submission wait), `audio receive timing` (within-burst cadence separately from inter-burst gaps), playback underruns, and RFCOMM write timing. On Bluetooth, confirm the new watchdog only fires when a write exceeds 350 ms; if it fires repeatedly at close range, reconsider the threshold only after correlating it with audible gaps and queue drops. Compare the same speech passage before/after under the same route and phone pair; do not mark either performance change successful until the logs and audible result support it.
