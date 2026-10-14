@@ -77,6 +77,15 @@ internal class RealtimeOutboundQueue<T>(
         return result
     }
 
+    /**
+     * Counts an audio frame that was dequeued but expired before serialization.
+     * It is no longer in this queue, but belongs in the same freshness-drop metric.
+     */
+    @Synchronized
+    fun recordDroppedAudioFrame() {
+        droppedAudio++
+    }
+
     @Synchronized
     fun clear() {
         queue.forEach(onDiscard)
