@@ -1,5 +1,17 @@
 # HamSeda Changelog
 
+## 2026-10-14 — Adaptive playback headroom
+- **Default AudioTrack mode:** request 100 ms native output capacity and permit
+  up to five PCM frames (100 ms) in the app-fed queue when LOW_LATENCY mode is
+  unavailable. This provides headroom for the 80–90 ms scheduling/HAL spikes
+  observed in the logs.
+- **Real low-latency mode:** retain a three-frame (60 ms) cap if the platform
+  actually reports LOW_LATENCY. Queue-pacing logs now report the effective cap,
+  rather than the maximum profile for every device.
+- **Trade-off:** default-mode playback can add up to about 40 ms of queued output
+  versus the former 60 ms profile. This is intended to reduce underruns; it is
+  not a measured claim of end-to-end latency or audible improvement.
+
 ## 2026-10-14 — PTT audio backpressure and timing diagnostics
 - **Bluetooth freshness under congestion:** limit queued outbound audio from six
   frames to three (about 60 ms). When a socket write stalls, the queue now keeps
