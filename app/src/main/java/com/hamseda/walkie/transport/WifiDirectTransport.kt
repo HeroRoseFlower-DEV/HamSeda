@@ -84,7 +84,7 @@ class WifiDirectTransport(private val context: Context) : Transport {
     override val discoverable: StateFlow<Boolean> =
         MutableStateFlow(true).asStateFlow()
 
-    private val _incomingFrames = MutableSharedFlow<ByteArray>(extraBufferCapacity = 64)
+    private val _incomingFrames = MutableSharedFlow<ByteArray>()
     override val incomingFrames: SharedFlow<ByteArray> = _incomingFrames.asSharedFlow()
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
