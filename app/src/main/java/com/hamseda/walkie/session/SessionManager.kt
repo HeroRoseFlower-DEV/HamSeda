@@ -665,9 +665,10 @@ class SessionManager(
         _error.value = null
         transportWasConnected = false
         AppLog.log(TAG, "session attempt=$sessionGeneration started (transport=${t.type})")
-        // SharedFlow(extraBufferCapacity) does NOT retain emissions when there are
-        // zero subscribers. Subscribe synchronously before the state watcher can
-        // begin the handshake and before connect()/listen() can produce frames.
+        // The transport's inbound SharedFlow is intentionally unbuffered so
+        // slow frame processing backpressures the reader rather than queueing a
+        // second's worth of stale voice. Subscribe synchronously before the state
+        // watcher starts the handshake or connect()/listen() can produce frames.
         collectJob = scope.launch(start = CoroutineStart.UNDISPATCHED) {
             t.incomingFrames.collect { bytes -> onRawFrame(bytes) }
         }
