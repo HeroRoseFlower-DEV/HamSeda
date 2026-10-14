@@ -161,6 +161,8 @@ not validate vendor audio HAL behavior.
   with a 32 kbps target and constrained VBR. Compare CPU usage, encode timing,
   intelligibility, clipping, and gaps against the earlier build. This is a
   lower-load real-time profile, not an assumed quality improvement.
+- The sender drops audio older than 120 ms before serialization and counts
+  it in `droppedAudioTotal`; stale audio must not be replayed after a blocked send.
 - In `AudioTrack write timing`, compare `nativeAvgMs/nativeMaxMs` (time inside
   native write calls) separately from `avgWaitMs/maxWaitMs` (waiting for output
   capacity). `deadlineTimeouts` should remain zero during ordinary speech.
