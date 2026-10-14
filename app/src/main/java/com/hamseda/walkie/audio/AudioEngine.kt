@@ -721,7 +721,7 @@ class AudioEngine(private val context: Context) : AudioPipeline {
                 }
                 // Check the deadline even if the platform keeps returning small
                 // positive writes; a partial-progress loop must remain bounded too.
-                if (System.nanoTime() >= writeDeadlineNanos) {
+                if (offset < pcm.size && System.nanoTime() >= writeDeadlineNanos) {
                     timedOut = true
                     AppLog.log(
                         TAG,
