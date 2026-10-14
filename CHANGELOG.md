@@ -1,5 +1,18 @@
 # HamSeda Changelog
 
+## 2026-10-15 — Lower Opus byte-stream pressure
+
+- Set the Opus target to 32 kbps with constrained VBR and encoder complexity
+  4 on Android API 26–28; API 29+ remains at complexity 8.
+- This changes encoder output size only. The 48 kHz mono format, 20 ms/960
+  sample frames, Opus codec ID, length-prefixed framing, and protocol v3
+  handshake are unchanged. The protocol uses explicit frame lengths and does
+  not require a fixed Opus payload size, so this profile change is expected to
+  interoperate with v3 peers that decode standard Opus packets.
+- Validation: unit tests verify the selected profile. CPU use, intelligibility,
+  packet timings, and device-specific quality still require before/after tests
+  on the API 27 and API 36 phones; no audible improvement is claimed here.
+
 ## 2026-10-14 — AudioTrack startup-threshold deadlock fix
 - **Playback startup:** the queue previously capped at 60 ms even when an
   AudioTrack's default streaming start threshold was its full 64–80 ms buffer.

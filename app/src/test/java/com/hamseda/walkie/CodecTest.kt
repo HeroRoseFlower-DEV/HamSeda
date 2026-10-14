@@ -33,15 +33,15 @@ class CodecTest {
     }
 
     @Test
-    fun `encoder complexity uses 6 on Android 8 and 9 and 8 on newer versions`() {
-        assertEquals(6, OpusCodec.recommendedEncoderComplexity(26))
-        assertEquals(6, OpusCodec.recommendedEncoderComplexity(27))
-        assertEquals(6, OpusCodec.recommendedEncoderComplexity(28))
+    fun `encoder complexity uses 4 on Android 8 and 9 and 8 on newer versions`() {
+        assertEquals(4, OpusCodec.recommendedEncoderComplexity(26))
+        assertEquals(4, OpusCodec.recommendedEncoderComplexity(27))
+        assertEquals(4, OpusCodec.recommendedEncoderComplexity(28))
         assertEquals(8, OpusCodec.recommendedEncoderComplexity(29))
         assertEquals(8, OpusCodec.recommendedEncoderComplexity(36))
         assertEquals(8, OpusCodec.ENCODER_COMPLEXITY)
-        assertEquals(6, OpusCodec.LEGACY_ANDROID_ENCODER_COMPLEXITY)
-        assertEquals(40_000, OpusCodec.DEFAULT_BITRATE_BPS)
+        assertEquals(4, OpusCodec.LEGACY_ANDROID_ENCODER_COMPLEXITY)
+        assertEquals(32_000, OpusCodec.DEFAULT_BITRATE_BPS)
     }
 
     @Test
@@ -60,13 +60,13 @@ class CodecTest {
     }
 
     @Test
-    fun `opus profile is configured for high-quality full-band voice`() {
+    fun `opus profile is configured for constrained variable bitrate voice`() {
         OpusCodec().use { codec ->
             assertEquals(CodecId.OPUS, codec.codecId)
             assertEquals(48000, codec.sampleRate)
             assertEquals(1, codec.channels)
             assertEquals(960, codec.frameSamples)
-            assertEquals(40_000, OpusCodec.DEFAULT_BITRATE_BPS)
+            assertEquals(32_000, OpusCodec.DEFAULT_BITRATE_BPS)
             assertEquals(8, OpusCodec.ENCODER_COMPLEXITY)
             // The loaded native-library version is checked by the Android instrumentation test.
         }
