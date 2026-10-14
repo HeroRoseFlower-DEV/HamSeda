@@ -52,14 +52,21 @@ SAS_INFO="$(extract_one 'SessionCrypto.SAS_INFO' app/src/main/java/com/hamseda/w
 AGP_VERSION="$(extract_one 'Android Gradle Plugin version' gradle/libs.versions.toml '^[[:space:]]*agp = "([^"]+)".*$')"
 GRADLE_VERSION="$(extract_one 'Gradle wrapper version' gradle/wrapper/gradle-wrapper.properties '^[[:space:]]*distributionUrl=.*gradle-([^/-]+)-bin\.zip.*$')"
 
-check_exact_line README.md "| نسخهٔ نمایشی برنامه (`versionName`) | `${APP_VERSION}` |"
-check_exact_line README.md "| کد نسخه (`versionCode`) | `${APP_CODE}` |"
-check_exact_line README.md "| پروتکل ارتباطی سیم (`Protocol.VERSION`) | `${WIRE_VERSION}` |"
-check_exact_line README.md "| نرخ هدف Opus (`DEFAULT_BITRATE_BPS`) | `${BITRATE_BPS} bps` |"
+printf -v APP_VERSION_DOC '\x60%s\x60' "$APP_VERSION"
+printf -v APP_CODE_DOC '\x60%s\x60' "$APP_CODE"
+printf -v WIRE_VERSION_DOC '\x60%s\x60' "$WIRE_VERSION"
+printf -v BITRATE_DOC '\x60%s bps\x60' "$BITRATE_BPS"
+printf -v KEY_INFO_DOC '\x60%s\x60' "$KEY_INFO"
+printf -v SAS_INFO_DOC '\x60%s\x60' "$SAS_INFO"
+
+check_table_row_value README.md 'نسخهٔ نمایشی برنامه (`versionName`)' "$APP_VERSION_DOC"
+check_table_row_value README.md 'کد نسخه (`versionCode`)' "$APP_CODE_DOC"
+check_table_row_value README.md 'پروتکل ارتباطی سیم (`Protocol.VERSION`)' "$WIRE_VERSION_DOC"
+check_table_row_value README.md 'نرخ هدف Opus (`DEFAULT_BITRATE_BPS`)' "$BITRATE_DOC"
 check_table_row_value README.md "Android Gradle Plugin" "$AGP_VERSION"
 check_table_row_value README.md "Gradle Wrapper" "$GRADLE_VERSION"
 
-check_exact_line SECURITY.md "| `SessionCrypto.INFO` | `${KEY_INFO}` |"
-check_exact_line SECURITY.md "| `SessionCrypto.SAS_INFO` | `${SAS_INFO}` |"
+check_table_row_value SECURITY.md '`SessionCrypto.INFO`' "$KEY_INFO_DOC"
+check_table_row_value SECURITY.md '`SessionCrypto.SAS_INFO`' "$SAS_INFO_DOC"
 
 echo "Consistency checks passed: versionName=$APP_VERSION, versionCode=$APP_CODE, wireVersion=$WIRE_VERSION, opusBitrateBps=$BITRATE_BPS, AGP=$AGP_VERSION, Gradle=$GRADLE_VERSION."
