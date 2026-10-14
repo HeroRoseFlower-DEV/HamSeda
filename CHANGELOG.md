@@ -4,6 +4,9 @@
 - **Bluetooth freshness under congestion:** limit queued outbound audio from six
   frames to three (about 60 ms). When a socket write stalls, the queue now keeps
   newer speech instead of allowing a long stale backlog to accumulate.
+- **Stale-frame guard:** before encryption/serialization, drop any dequeued
+  audio frame already older than 120 ms and count it with the existing freshness
+  drops. This prevents a delayed RFCOMM write from replaying old queued speech.
 - **Opus transport profile:** target 32 kbps instead of 40 kbps and enable
   constrained VBR to reduce packet bursts. Android API 26–28 use encoder
   complexity 4 (from 6) to leave more CPU headroom; API 29+ retain complexity 8.
