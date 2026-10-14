@@ -1129,7 +1129,7 @@ class AudioEngine(private val context: Context) : AudioPipeline {
         private const val ENCODE_DIAGNOSTIC_INTERVAL = 50
         private const val PLAYBACK_DIAGNOSTIC_INTERVAL_MS = 5_000L
         private const val PLAYBACK_WRITE_DIAGNOSTIC_INTERVAL = 50
-        /** At most three 20 ms PCM frames in the application-fed track queue. */
+        /** Three frames only when LOW_LATENCY is actually granted by Android. */
         private const val LOW_LATENCY_PLAYBACK_QUEUE_FRAMES = 3
         /** 100 ms PCM headroom when Android declines AudioTrack LOW_LATENCY mode. */
         private const val MAX_TRACKED_PLAYBACK_QUEUE_FRAMES = 5
