@@ -1,6 +1,7 @@
 package com.hamseda.walkie
 
 import com.hamseda.walkie.crypto.MemoryPeerIdentityStore
+import com.hamseda.walkie.crypto.PeerIdentityEncoding
 import com.hamseda.walkie.crypto.PeerIdentityStore
 import com.hamseda.walkie.proto.Frame
 import com.hamseda.walkie.proto.MessageType
@@ -15,6 +16,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -429,10 +431,34 @@ class SessionHandshakeTest {
                 second.a.phase.value == SessionManager.Phase.IN_SESSION &&
                     second.b.phase.value == SessionManager.Phase.IN_SESSION
             }
-            assertNotNull(second.a.sasCode.value)
-            assertNotNull(second.b.sasCode.value)
+            assertNull(second.a.sasCode.value)
+            assertNull(second.b.sasCode.value)
         } finally {
             second.close()
+        }
+
+        // If one device loses its peer pin, both sides must show the same
+        // SAS again so the first-contact side has a value to compare.
+        assertTrue(storeB.forgetPeer(PeerIdentityEncoding.toHex(storeA.localIdentityId())))
+        val third = newRig(storeA = storeA, storeB = storeB)
+        try {
+            third.start()
+            third.await("asymmetric TOFU falls back to SAS") {
+                third.a.phase.value == SessionManager.Phase.AWAITING_SAS_CONFIRM &&
+                    third.b.phase.value == SessionManager.Phase.AWAITING_SAS_CONFIRM &&
+                    third.a.sasCode.value != null && third.b.sasCode.value != null
+            }
+            assertEquals(third.a.sasCode.value, third.b.sasCode.value)
+            assertFalse(third.a.phase.value == SessionManager.Phase.IN_SESSION)
+            assertFalse(third.b.phase.value == SessionManager.Phase.IN_SESSION)
+            third.a.confirmSas(true)
+            third.b.confirmSas(true)
+            third.await("asymmetric-trust session established after SAS") {
+                third.a.phase.value == SessionManager.Phase.IN_SESSION &&
+                    third.b.phase.value == SessionManager.Phase.IN_SESSION
+            }
+        } finally {
+            third.close()
         }
     }
 
