@@ -17,6 +17,7 @@ import androidx.core.app.NotificationCompat
 import com.hamseda.walkie.MainActivity
 import com.hamseda.walkie.R
 import com.hamseda.walkie.audio.AudioEngine
+import com.hamseda.walkie.crypto.AndroidPeerIdentityStore
 import com.hamseda.walkie.session.SessionManager
 import com.hamseda.walkie.util.AppLog
 import kotlinx.coroutines.CoroutineScope
@@ -56,7 +57,11 @@ class VoiceService : Service() {
         super.onCreate()
         createChannel()
         audioEngine = AudioEngine(this)
-        sessionManager = SessionManager(serviceScope, audioEngine)
+        sessionManager = SessionManager(
+            serviceScope,
+            audioEngine,
+            peerIdentityStore = AndroidPeerIdentityStore(this),
+        )
         // Apply the user's speakerphone preference to the audio engine.
         val settings = com.hamseda.walkie.data.SettingsRepository(this)
         serviceScope.launch {
