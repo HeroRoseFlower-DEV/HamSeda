@@ -6,6 +6,15 @@
 > still recommended before high-stakes use. Nothing below claims "fully
 > audited" or "100% secure."
 
+## Diagnostic log redaction
+
+The in-memory diagnostic log applies bounded input length, control-character
+normalization, and redaction for MAC/IPv4/IPv6 literals plus explicitly labeled
+secret fields such as private/derived/session/audio/control keys, nonce, and SAS
+values. This is defense in depth: callers must still never log raw keys, SAS
+seeds, plaintext audio, or protocol payloads. Unlabeled arbitrary binary or
+encoded secret data cannot be reliably identified by generic text redaction.
+
 ## What is protected
 
 Voice and control traffic between two nearby Android phones that have
