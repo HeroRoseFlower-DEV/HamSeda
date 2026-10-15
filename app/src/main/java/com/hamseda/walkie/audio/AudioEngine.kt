@@ -305,9 +305,6 @@ class AudioEngine(private val context: Context) : AudioPipeline {
             var encodeWindowFrames = 0
             var encodeWindowTotalNanos = 0L
             var encodeWindowMaxNanos = 0L
-            var encodeWindowFrames = 0
-            var encodeWindowTotalNanos = 0L
-            var encodeWindowMaxNanos = 0L
             while (captureRunning.get() && captureGeneration == generation) {
                 val read = rec.read(frame, 0, frame.size)
                 if (read < 0) {
