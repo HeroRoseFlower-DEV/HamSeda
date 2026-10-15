@@ -278,7 +278,7 @@ class AudioEngine(private val context: Context) : AudioPipeline {
                 "softwareGainMax=${CaptureGainController.DEFAULT_MAX_GAIN}, " +
                 "opusComplexity=${(codec as? OpusCodec)?.encoderComplexityInUse ?: -1}",
         )
-        captureThread = Thread({
+        val worker = Thread({
             try {
                 Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
             } catch (e: Exception) {
