@@ -104,7 +104,7 @@ class AudioEngine(private val context: Context) : AudioPipeline {
         private set
 
     @Volatile
-    private var softwareGainEnabled: Boolean = true
+    private var softwareGainEnabled: Boolean = false
 
     /** Updates the software microphone leveler without restarting capture. */
     fun setSoftwareGainEnabled(enabled: Boolean) {
