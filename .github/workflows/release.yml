@@ -138,7 +138,6 @@ jobs:
 
           mkdir -p release-assets
           cp "$APK" release-assets/
-          cp "$APK" release-assets/
           cp "$AAB" release-assets/
           (
             cd release-assets
