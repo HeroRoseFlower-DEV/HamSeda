@@ -44,8 +44,9 @@ import javax.crypto.spec.SecretKeySpec
  * frame header is passed as associated data, binding ciphertext to its
  * session/sequence/type.
  *
- * Ephemeral session keys are wiped from memory when the session ends; nothing is
- * persisted (see [SessionKeys.wipe]). The v5 handshake commits to each share
+ * Ephemeral session keys are wiped from memory when the session ends (see
+ * [SessionKeys.wipe]). A separate long-term signing key is retained by Android
+ * Keystore, and peer public-key pins are stored locally for TOFU. The v5 handshake commits to each share
  * before revealing it, preventing adaptive SAS grinding against the peer's share.
  */
 object SessionCrypto {
