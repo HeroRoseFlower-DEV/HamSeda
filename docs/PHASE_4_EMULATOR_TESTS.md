@@ -10,7 +10,7 @@ The `Build HamSeda APK` workflow now:
 
 1. Installs Android platform-tools, the emulator, and the API 35 Google APIs x86_64 system image.
 2. Creates a clean Pixel 2 AVD, starts it headlessly, and waits for `sys.boot_completed=1` with a bounded timeout.
-3. Builds and installs the debug APK, then grants only the runtime permissions required to keep the first-run permission gate from blocking unrelated instrumentation checks.
+3. Uses AndroidX `GrantPermissionRule` in the instrumentation suite to grant only the runtime permissions needed to keep the first-run permission gate from blocking unrelated lifecycle checks; Gradle installs the APK as part of the connected test task.
 4. Executes `:app:connectedDebugAndroidTest` after the existing unit tests, lint, APK builds, and `:app:assembleAndroidTest`.
 5. Collects logcat, emulator properties, emulator console output, and connected-test reports; uploads available evidence even if a test fails.
 6. Shuts down the emulator during cleanup.
