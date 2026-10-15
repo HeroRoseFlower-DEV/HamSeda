@@ -72,10 +72,14 @@ internal class CaptureGainController(
         }
         desiredGain = desiredGain.coerceAtLeast(0f)
 
-        currentGain = if (desiredGain < currentGain) {
-            desiredGain
-        } else {
-            (currentGain + (desiredGain - currentGain) * gainRiseSmoothing)
+        currentGain = when {
+            // PTT bursts can be short: do not make the first audible speech
+            // frame quiet while the leveler slowly ramps up from unity.
+            // The RMS gate above ensures this fast attack is applied only to
+            // active-level input, not silence or low-level background noise.
+            currentGain <= 1f && desiredGain > 1f -> desiredGain
+            desiredGain < currentGain -> desiredGain
+            else -> (currentGain + (desiredGain - currentGain) * gainRiseSmoothing)
                 .coerceAtMost(maxGain)
         }
 
