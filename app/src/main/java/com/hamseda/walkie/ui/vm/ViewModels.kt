@@ -215,8 +215,6 @@ class SettingsViewModel(private val deps: VmDeps) : ViewModel() {
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
     val vibration = deps.settings.vibrationFlow
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
-    val softwareGain = deps.settings.softwareGainFlow
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
     val theme = deps.settings.themeFlow
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SettingsRepository.ThemeMode.SYSTEM)
     val language = deps.settings.languageFlow
@@ -244,10 +242,6 @@ class SettingsViewModel(private val deps: VmDeps) : ViewModel() {
 
     fun setVibration(on: Boolean) {
         viewModelScope.launch { deps.settings.setVibration(on) }
-    }
-
-    fun setSoftwareGain(on: Boolean) {
-        viewModelScope.launch { deps.settings.setSoftwareGain(on) }
     }
 
     fun setTheme(mode: SettingsRepository.ThemeMode) {
