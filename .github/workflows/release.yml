@@ -81,6 +81,27 @@ jobs:
             echo "::error::Tag $GITHUB_REF_NAME does not match app versionName $app_version."
             exit 1
           fi
+          if [ "$(git cat-file -t "refs/tags/$GITHUB_REF_NAME")" != "tag" ]; then
+            echo "::error::Release tags must be annotated Git tags."
+            exit 1
+          fi
+          mapfile -t version_tags < <(git tag --list "v*" --sort=-version:refname)
+          if [ "${version_tags[0]:-}" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::This tag is not the newest version tag; refusing an out-of-order release."
+            exit 1
+          fi
+          if [ "${#version_tags[@]}" -gt 1 ]; then
+            previous_tag="${version_tags[1]}"
+            previous_version_code="$(git show "$previous_tag:app/build.gradle.kts" | sed -nE 's/^[[:space:]]*versionCode[[:space:]]*=[[:space:]]*([0-9]+).*$/\1/p' | head -nn1)"
+            if [[ ! "$previous_version_code" =~ ^[0-9]+$ ]]; then
+              echo "::error::Could not read a numeric versionCode from previous tag $previous_tag."
+              exit 1
+            fi
+            if [ "$app_code" -le "$previous_version_code" ]; then
+              echo "::error::versionCode $app_code must exceed previous release $previous_tag versionCode $previous_version_code."
+              exit 1
+            fi
+          fi
           echo "Validated release tag $GITHUB_REF_NAME (versionName=$app_version, versionCode=$app_code)."
           echo "version_name=$app_version" >> "$GITHUB_OUTPUT"
           echo "version_code=$app_code" >> "$GITHUB_OUTPUT"
