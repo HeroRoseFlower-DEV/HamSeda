@@ -66,7 +66,7 @@ retained where possible and can displace queued audio at the total queue cap.
 |---|---|---|
 | 0x01 | HELLO | `version(1) || codecPref(1)` — plaintext |
 | 0x02 | KEY_EXCHANGE | `ephLen(2) || ephemeral P-256 key || nonce(16) || salt(32) || identityId(16) || identityPubLen(2) || identity P-256 key || sigLen(2) || ECDSA/SHA-256 signature` — plaintext reveal after peer commitment |
-| 0x03 | KEY_CONFIRM | `SHA-256(domain || uint16(pubkey_len) || pubkey || nonce || HELLO, for each ordered peer record)` — sealed (control key) |
+| 0x03 | KEY_CONFIRM | `transcriptHash(32) || senderAlreadyPinsReceiver(1)` — sealed (control key). The trust byte is 1 only when the sender already has a valid TOFU pin for the receiver's identity. |
 | 0x04 | SAS_CONFIRM | empty — sealed (control key) |
 | 0x05 | KEY_COMMIT | 32-byte SHA-256 commitment to ephemeral key, nonce, HELLO, identity ID/key and salt — plaintext |
 | 0x10 | AUDIO | `nonce(12) \|\| AES-256-GCM(audio)` — sealed (audio key) |
@@ -93,14 +93,14 @@ B -> A: KEY_COMMIT       (commit to B's ephemeral key, nonce, HELLO, identity ID
 A -> B: KEY_EXCHANGE     (reveal only after receiving B's commitment)
 B -> A: KEY_EXCHANGE     (reveal only after receiving A's commitment)
 A,B: verify reveals against commitments using constant-time digest comparison
-A,B: derive ECDH/HKDF keys; exchange sealed KEY_CONFIRM transcript hashes
-A,B: display SAS = HMAC(sasSeed,"HamSeda-v5/sas") mod 1e6 (unknown identities only; a pinned identity skips SAS)
-A -> B: SAS_CONFIRM      (after local user confirms matching SAS)
-B -> A: SAS_CONFIRM      (after local user confirms matching SAS)
+A,B: derive ECDH/HKDF keys; exchange sealed KEY_CONFIRM transcript hashes plus authenticated trust flags
+A,B: skip SAS only if each has pinned the other's identity and both trust flags are 1; otherwise both display the same six-digit SAS and await local confirmation
+A -> B: SAS_CONFIRM      (automatic only when mutual TOFU trust is verified; otherwise after local SAS confirmation)
+B -> A: SAS_CONFIRM      (automatic only when mutual TOFU trust is verified; otherwise after local SAS confirmation)
 => IN_SESSION (audio enabled)
 ```
 
-Commit/reveal: KEY_COMMIT is SHA-256 with domain HamSeda-v5/key-commitment over the ephemeral public key, 16-byte nonce, exact two-byte HELLO, 16-byte identity ID, length-prefixed identity-signing public key and fresh 32-byte random salt. The salt is revealed only in KEY_EXCHANGE. The reveal also carries an ECDSA/SHA-256 signature using HamSeda-v5/identity-proof, binding the identity to the full reveal. Commitment, signature and any existing TOFU pin are checked before ECDH or SAS display; mismatches abort as AUTH_MISMATCH.
+Commit/reveal: KEY_COMMIT is SHA-256 with domain HamSeda-v5/key-commitment over the ephemeral public key, 16-byte nonce, exact two-byte HELLO, 16-byte identity ID, length-prefixed identity-signing public key and fresh 32-byte random salt. The salt is revealed only in KEY_EXCHANGE. The reveal also carries an ECDSA/SHA-256 signature using HamSeda-v5/identity-proof, binding the identity to the full reveal. Commitment, signature and any existing TOFU pin are checked before ECDH or SAS display; mismatches abort as AUTH_MISMATCH. KEY_CONFIRM contains the locally verified transcript hash plus an AEAD-authenticated trust flag. SAS is skipped only when both endpoints verify their pinned peer key and each reports that it already pins the other; if one device has lost a pin, both display and manually compare SAS.
 
 Codec negotiation: `codec = min(prefA, prefB)` from the two HELLOs
 (Opus=0x00 wins unless both prefer PCM).
