@@ -122,7 +122,22 @@ jobs:
           APKSIGNER="$ANDROID_HOME/build-tools/36.0.0/apksigner"
           test -x "$APKSIGNER"
           "$APKSIGNER" verify --verbose --print-certs "$APK"
-          if ! unzip -Z1 "$AAB" | grep -Eq '^META-INF/[^/]+\\.(RSA|DSA|EC)
+          if ! unzip -Z1 "$AAB" | grep -Eq '^META-INF/[^/]+\.(RSA|DSA|EC)$'; then
+            echo "::error::AAB has no JAR signature block; refusing to publish an unsigned bundle."
+            exit 1
+          fi
+          if ! jarsigner -verify -verbose "$AAB" > "$RUNNER_TEMP/aab-jarsigner-verification.txt" 2>&1; then
+            cat "$RUNNER_TEMP/aab-jarsigner-verification.txt"
+            exit 1
+          fi
+          if ! grep -Fq "jar verified." "$RUNNER_TEMP/aab-jarsigner-verification.txt"; then
+            cat "$RUNNER_TEMP/aab-jarsigner-verification.txt"
+            echo "::error::jarsigner did not confirm the AAB signature."
+            exit 1
+          fi
+
+          mkdir -p release-assets
+          cp "$APK" release-assets/
           cp "$APK" release-assets/
           cp "$AAB" release-assets/
           (
