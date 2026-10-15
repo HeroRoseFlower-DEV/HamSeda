@@ -1,5 +1,17 @@
 # HamSeda Changelog
 
+## 2026-10-15 — Add gated, optional microphone leveler
+
+- Add a stateful PCM leveler with a 5,500 RMS target, maximum 8× gain,
+  a 30,000 peak ceiling, immediate gain reduction, and smoothed gain increase.
+- Do not amplify frames below RMS 160. Add a persisted setting to disable
+  software gain; disabled processing leaves PCM samples unchanged and resets
+  applied gain to unity.
+- Add synthetic JVM tests for quiet input, noise-floor guard, disabled
+  processing, loud transients, full-scale safety and gain release to silence.
+- Real-device checks of platform AEC/NS/AGC interaction, microphone noise,
+  perceived loudness and far-field intelligibility remain required.
+
 ## 2026-10-14 — Adaptive microphone input level
 - **Software gain control:** normalize low-level active PCM speech before encoding,
   complementing Android's optional vendor AGC rather than relying on it alone.
