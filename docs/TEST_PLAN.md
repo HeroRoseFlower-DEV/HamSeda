@@ -39,7 +39,7 @@ Run at least ten PTT bursts after a 60-second session. Listen for clipping, nois
 
 `./gradlew :app:lintDebug` must be clean. CI compiles instrumented sources with
 `:app:assembleAndroidTest` and executes them with `:app:connectedDebugAndroidTest` on a
-clean API 35 Google APIs x86_64 emulator. The emulator suite verifies actual JNI loading,
+clean API 35 Google APIs x86_64 emulator. AndroidX `GrantPermissionRule` grants the runtime permissions needed by tests without changing the app's permission policy. The emulator suite verifies actual JNI loading,
 packaged libopus encode/decode behavior, platform ECDH/AES-GCM behavior, declared core
 runtime permissions, and `MainActivity` recreation. Reports and emulator logs are uploaded
 as a workflow artifact even when the test step fails. Host-JVM tests intentionally do not
