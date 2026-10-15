@@ -56,6 +56,7 @@ object SessionCrypto {
     private const val SAS_INFO = "HamSeda-v5/sas"
     private const val TRANSCRIPT_INFO = "HamSeda-v5/key-confirm"
     private const val COMMIT_INFO = "HamSeda-v5/key-commitment"
+    private const val IDENTITY_PROOF_INFO = "HamSeda-v5/identity-proof"
 
     /** Maximum accepted encoded public-key size (P-256 X.509 ≈ 91 bytes). */
     const val MAX_PUBKEY_BYTES = 256
@@ -285,7 +286,7 @@ object SessionCrypto {
         require(hello.size == 2) { "HELLO payload must be exactly 2 bytes" }
         require(salt.size == COMMITMENT_SALT_BYTES) { "commitment salt must be 32 bytes" }
 
-        val domain = "HamSeda-v5/identity-proof".toByteArray(Charsets.UTF_8)
+        val domain = IDENTITY_PROOF_INFO.toByteArray(Charsets.UTF_8)
         val encoded = ByteBuffer.allocate(
             domain.size + identityId.size + 2 + identityPublicKey.size +
                 2 + ephemeralPublicKey.size + nonce.size + hello.size + salt.size,
