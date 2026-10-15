@@ -1425,8 +1425,6 @@ class SessionManager(
         Log.i(TAG, "session established (codec=$activeCodecId)")
     }
 
-    }
-
     private var lastPingSent: Long = 0
 
     // ------------------------------------------------------- session frames
