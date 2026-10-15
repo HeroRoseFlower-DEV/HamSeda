@@ -46,6 +46,7 @@ import com.hamseda.walkie.data.SettingsRepository
 import com.hamseda.walkie.proto.CodecId
 import com.hamseda.walkie.session.SessionManager
 import com.hamseda.walkie.transport.TransportPreference
+import com.hamseda.walkie.transport.TransportType
 import com.hamseda.walkie.ui.vm.SettingsViewModel
 import com.hamseda.walkie.ui.vm.VmDeps
 import com.hamseda.walkie.ui.vm.VmFactory
@@ -61,6 +62,8 @@ fun SettingsScreen(
     vm: SettingsViewModel = viewModel(factory = VmFactory(deps)),
 ) {
     val transportPref by vm.transportPreference.collectAsStateWithLifecycle()
+    val activeTransportType by deps.transports.activeType.collectAsStateWithLifecycle()
+    val bluetoothVoiceOnly = activeTransportType == TransportType.BLUETOOTH
     val phase by vm.phase.collectAsStateWithLifecycle()
     val transportSelectionEnabled = phase == SessionManager.Phase.IDLE
     val codecPref by vm.codecPref.collectAsStateWithLifecycle()
@@ -126,17 +129,17 @@ fun SettingsScreen(
 
             SettingSection(title = stringResource(R.string.settings_codec)) {
                 RadioOption(
-                    selected = codecPref == CodecId.OPUS,
+                    selected = codecPref == CodecId.OPUS || bluetoothVoiceOnly,
                     title = stringResource(R.string.codec_opus),
                     subtitle = stringResource(R.string.codec_opus_desc),
                     onClick = { vm.setCodec(CodecId.OPUS) },
                 )
                 RadioOption(
-                    selected = codecPref == CodecId.PCM16 && transportPref != TransportPreference.BLUETOOTH,
+                    selected = codecPref == CodecId.PCM16 && !bluetoothVoiceOnly,
                     title = stringResource(R.string.codec_pcm),
                     subtitle = stringResource(R.string.codec_pcm_desc),
                     onClick = { vm.setCodec(CodecId.PCM16) },
-                    enabled = transportPref != TransportPreference.BLUETOOTH,
+                    enabled = !bluetoothVoiceOnly,
                 )
             }
 
