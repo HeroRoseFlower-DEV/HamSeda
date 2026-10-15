@@ -36,7 +36,7 @@ object AppLog {
         Regex("""(?i)(?<![0-9a-z:.])(?:[0-9a-f]{0,4}:){2,7}[0-9a-f]{0,4}(?:%[a-z0-9_.-]+)?(?![0-9a-z:.])""")
     /** Redacts explicitly labeled secret material in exception/framework text. */
     private val SECRET_FIELD_RE = Regex(
-        """(?i)\\b((?:private[_ -]?key|derived[_ -]?key|session[_ -]?key|audio[_ -]?key|control[_ -]?key|key[_ -]?material|nonce|sas(?:[_ -]?code|[_ -]?seed)?)\\s*[:=]\\s*)([^\\s,;]+)"""
+        """(?i)\b((?:private[_ -]?key|derived[_ -]?key|session[_ -]?key|audio[_ -]?key|control[_ -]?key|key[_ -]?material|nonce|sas(?:[_ -]?code|[_ -]?seed)?)\s*[:=]\s*)([^\s,;]+)"""
     )
     /** Prevents attacker-controlled newlines/control bytes from forging log entries. */
     private val CONTROL_RE = Regex("[\\r\\n\\u0000-\\u001F\\u007F]+")
