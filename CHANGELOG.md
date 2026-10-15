@@ -1,3 +1,10 @@
+## 2026-10-15 — Emulator-executed instrumented tests
+
+- Extend CI from compiling Android instrumentation tests to executing them on a clean API 35 Google APIs x86_64 emulator.
+- Exercise the packaged native Opus JNI library and real encode/decode behavior, Android platform ECDH/AES-GCM primitives, core permission declarations, and MainActivity recreation.
+- Capture connected-test reports and emulator logs as a 30-day artifact even when instrumentation fails.
+- This does not emulate real radio behavior or prove physical microphone/audio quality; two-phone acceptance remains outstanding.
+
 ## 2026-10-15 — Transport stale-frame isolation
 
 - Re-check the Wi-Fi Direct operation generation, current socket identity, and transport state after a frame read completes and before publishing it. This closes a race where a blocking read could finish on an obsolete connection attempt.
