@@ -61,9 +61,13 @@ class SettingsRepository(private val context: Context) {
     val vibrationFlow: Flow<Boolean> =
         context.dataStore.data.map { it[Keys.VIBRATION] ?: true }
 
-    /** Software microphone leveler; enabled by default for existing installs. */
+    /**
+     * Bounded microphone leveler defaults on for installations without an
+     * explicit preference. An existing user's saved true/false choice is
+     * always respected; the leveler gates near-silence and limits output peaks.
+     */
     val softwareGainFlow: Flow<Boolean> =
-        context.dataStore.data.map { it[Keys.SOFTWARE_GAIN] ?: false }
+        context.dataStore.data.map { it[Keys.SOFTWARE_GAIN] ?: true }
 
     val themeFlow: Flow<ThemeMode> =
         context.dataStore.data.map {
