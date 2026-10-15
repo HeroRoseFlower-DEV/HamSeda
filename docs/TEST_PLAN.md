@@ -36,9 +36,9 @@ software leveler can amplify noise after hardware AGC/noise suppression.
 | Codecs (JVM) | `CodecTest` | PCM bit-exact roundtrip, Opus profile defaults, codec factory and bad-input checks that do not require native audio I/O |
 | Microphone level control (JVM) | `CaptureGainControllerTest` | boosts quiet active frames, leaves near-silence unamplified, reduces gain on loud transients immediately, and respects the peak ceiling |
 | Platform routing and Bluetooth discovery | `ModernizationTest` | deterministic API 31+ audio route priority and expiration of discovered non-bonded peers after the 120 s freshness TTL; bonded devices remain listed |
-| Native Opus | `OpusCodecInstrumentedTest` | Actual Android JNI load, runtime libopus version, 20 ms encode/decode, signal correlation/energy, silence, reset and bad-input rejection |
+| Native Opus | `OpusCodecInstrumentedTest` | Actual Android JNI load, runtime libopus version, 20 ms encode/decode, signal correlation/energy, DTX compaction during sustained silence, reset and bad-input rejection |
 | Framed socket | `FramedSocketTest` | delimiting, clean EOF → Closed, oversized envelope rejected, truncated frame → Error, oversized write rejected |
-| Full session | `SessionHandshakeTest` | v4 HELLO→KEY_COMMIT→KEY_EXCHANGE ordering; handshake→SAS→IN_SESSION; PTT→grant→audio→release; SAS mismatch and post-commitment MITM tamper → AUTH_MISMATCH before SAS; abrupt transport loss → clean teardown |
+| Full session | `SessionHandshakeTest` | v5 HELLO→KEY_COMMIT→KEY_EXCHANGE ordering; handshake→SAS→IN_SESSION; PTT→grant→audio→release; SAS mismatch and post-commitment MITM tamper → AUTH_MISMATCH before SAS; abrupt transport loss → clean teardown |
 | Security (HS-01/02/05/07) | `SessionSecurityTest` | **bad-tag + huge seq does not poison replay window**; wrong session id dropped; duplicate rejected; concurrent malicious inputs don't race; **concurrent audio has unique monotonic wire seqs**; queue stays bounded; **playback failure → clean rollback (no fake IN_SESSION)**; **handshake/SAS timeouts fire (virtual time)** |
 
 `./gradlew :app:lintDebug` must be clean; `./gradlew :app:assembleAndroidTest`
