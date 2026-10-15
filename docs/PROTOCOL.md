@@ -1,4 +1,4 @@
-# HamSeda Wire Protocol v4
+# HamSeda Wire Protocol v5
 
 Transport-agnostic framing over a reliable byte stream (TCP socket for
 Wi-Fi Direct, RFCOMM socket stream for Bluetooth Classic). All integers are
@@ -19,7 +19,7 @@ protocol violation → drop the connection.
 
 ```
  0..1   magic        0x48 0x53 ("HS")
- 2      version      0x04
+ 2      version      0x05
  3      type         see below
  4..11  sessionId    8 bytes (zeros until keys are derived)
  12..15 seq          uint32, per-direction sequence number
@@ -29,7 +29,7 @@ protocol violation → drop the connection.
  29..   payload      payloadLen bytes
 ```
 
-Validation: magic, version == 4, known type, payloadLen bounds, exact
+Validation: magic, version == 5, known type, payloadLen bounds, exact
 `29 + payloadLen` total size. The timestamp is diagnostic only (HS-08) —
 it is NOT validated, because two offline phones may have different manual
 clock settings. Anti-replay relies on AEAD + sequence numbers.
@@ -65,10 +65,10 @@ retained where possible and can displace queued audio at the total queue cap.
 | Value | Name | Payload (plaintext / sealed) |
 |---|---|---|
 | 0x01 | HELLO | `version(1) || codecPref(1)` — plaintext |
-| 0x02 | KEY_EXCHANGE | `pubLen(2) || X.509 P-256 pubkey || nonce(16) || salt(32)` — plaintext reveal, after peer commitment |
+| 0x02 | KEY_EXCHANGE | `ephLen(2) || ephemeral P-256 key || nonce(16) || salt(32) || identityId(16) || identityPubLen(2) || identity P-256 key || sigLen(2) || ECDSA/SHA-256 signature` — plaintext reveal after peer commitment |
 | 0x03 | KEY_CONFIRM | `SHA-256(domain || uint16(pubkey_len) || pubkey || nonce || HELLO, for each ordered peer record)` — sealed (control key) |
 | 0x04 | SAS_CONFIRM | empty — sealed (control key) |
-| 0x05 | KEY_COMMIT | 32-byte SHA-256 commitment to public key, nonce, HELLO and salt — plaintext |
+| 0x05 | KEY_COMMIT | 32-byte SHA-256 commitment to ephemeral key, nonce, HELLO, identity ID/key and salt — plaintext |
 | 0x10 | AUDIO | `nonce(12) \|\| AES-256-GCM(audio)` — sealed (audio key) |
 | 0x20 | FLOOR_REQUEST | empty — sealed (control key) |
 | 0x21 | FLOOR_GRANT | `leaseMs(4)` — sealed (control key) |
@@ -88,24 +88,24 @@ AES-GCM associated data.
 ```
 A -> B: HELLO
 B -> A: HELLO
-A -> B: KEY_COMMIT       (commit to A's key, nonce, HELLO and random salt)
-B -> A: KEY_COMMIT       (commit to B's key, nonce, HELLO and random salt)
+A -> B: KEY_COMMIT       (commit to A's ephemeral key, nonce, HELLO, identity ID/key and random salt)
+B -> A: KEY_COMMIT       (commit to B's ephemeral key, nonce, HELLO, identity ID/key and random salt)
 A -> B: KEY_EXCHANGE     (reveal only after receiving B's commitment)
 B -> A: KEY_EXCHANGE     (reveal only after receiving A's commitment)
 A,B: verify reveals against commitments using constant-time digest comparison
 A,B: derive ECDH/HKDF keys; exchange sealed KEY_CONFIRM transcript hashes
-A,B: display SAS = HMAC(sasSeed,"HamSeda-v4/sas") mod 1e6
+A,B: display SAS = HMAC(sasSeed,"HamSeda-v5/sas") mod 1e6 (unknown identities only; a pinned identity skips SAS)
 A -> B: SAS_CONFIRM      (after local user confirms matching SAS)
 B -> A: SAS_CONFIRM      (after local user confirms matching SAS)
 => IN_SESSION (audio enabled)
 ```
 
-Commit/reveal: `KEY_COMMIT` is SHA-256 with domain `HamSeda-v4/key-commitment` over a length-prefixed public key, the 16-byte nonce, the exact two-byte HELLO payload and a fresh 32-byte random salt. The salt is revealed only in `KEY_EXCHANGE`. A reveal that fails constant-time commitment verification aborts as `AUTH_MISMATCH` before ECDH or SAS display.
+Commit/reveal: KEY_COMMIT is SHA-256 with domain HamSeda-v5/key-commitment over the ephemeral public key, 16-byte nonce, exact two-byte HELLO, 16-byte identity ID, length-prefixed identity-signing public key and fresh 32-byte random salt. The salt is revealed only in KEY_EXCHANGE. The reveal also carries an ECDSA/SHA-256 signature using HamSeda-v5/identity-proof, binding the identity to the full reveal. Commitment, signature and any existing TOFU pin are checked before ECDH or SAS display; mismatches abort as AUTH_MISMATCH.
 
 Codec negotiation: `codec = min(prefA, prefB)` from the two HELLOs
 (Opus=0x00 wins unless both prefer PCM).
 
-## Audio profile (protocol v4)
+## Audio profile (protocol v5)
 
 - Internal audio is 48 kHz, mono, signed 16-bit PCM.
 - Each frame spans 20 ms (960 samples/channel; 1920 bytes in PCM16 mode).
@@ -133,4 +133,4 @@ TRANSPORT_LOST / PEER_TIMEOUT). Session keys are wiped on teardown.
 
 ## Versioning
 
-`version` is checked strictly: any frame with `version != 4` is rejected. Protocol versions 1, 2, 3 and 4 are not wire-compatible; update both phones together. The v4 KEY_CONFIRM transcript includes both exact HELLO payloads (including codec preferences) and each peer's associated public key and nonce.
+`version` is checked strictly: any frame with `version != 5` is rejected. Protocol v5 is not wire-compatible with v1–v4; update both phones together. The v5 KEY_CONFIRM transcript includes both exact HELLO payloads (including codec preferences) and each peer's ephemeral public key and nonce. On first contact, both users compare and confirm the SAS before the peer public key is pinned. Later sessions verify the pinned signing key and may skip SAS; removing the pin restores first-contact verification.
