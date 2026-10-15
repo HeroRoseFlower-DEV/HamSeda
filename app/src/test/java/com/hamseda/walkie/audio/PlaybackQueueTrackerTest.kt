@@ -40,6 +40,34 @@ class PlaybackQueueTrackerTest {
     }
 
     @Test
+    fun accumulatesPartialAudioTrackWritesAsSampleFrames() {
+        val tracker = PlaybackQueueTracker()
+        tracker.reset(0)
+
+        // AudioTrack.WRITE_NON_BLOCKING may accept only part of a 20 ms mono PCM frame.
+        tracker.recordWrittenFrames(240)
+        tracker.recordWrittenFrames(360)
+        tracker.recordWrittenFrames(360)
+
+        assertEquals(960L, tracker.pendingFrames(0))
+        assertEquals(480L, tracker.pendingFrames(480))
+        tracker.recordWrittenFrames(480)
+        assertEquals(960L, tracker.pendingFrames(480))
+    }
+
+    @Test
+    fun doesNotCountPlaybackHeadProgressTwiceAcrossRepeatedPolls() {
+        val tracker = PlaybackQueueTracker()
+        tracker.reset(100)
+        tracker.recordWrittenFrames(1_920)
+
+        assertEquals(1_920L, tracker.pendingFrames(100))
+        assertEquals(1_440L, tracker.pendingFrames(580))
+        assertEquals(1_440L, tracker.pendingFrames(580))
+        assertEquals(960L, tracker.pendingFrames(1_060))
+    }
+
+    @Test
     fun handlesUnsignedPlaybackHeadWraparound() {
         val tracker = PlaybackQueueTracker()
         tracker.reset(-10) // unsigned 0xFFFFFFF6
