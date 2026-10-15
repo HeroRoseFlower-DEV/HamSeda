@@ -57,7 +57,8 @@ import java.util.concurrent.atomic.AtomicBoolean
  * 3. After receiving the peer commitment, KEY_EXCHANGE reveals the committed
  *    values. A mismatch aborts as AUTH_MISMATCH before ECDH or SAS display.
  * 4. Valid reveals feed ECDH/HKDF; sealed KEY_CONFIRM authenticates the transcript.
- *    Both users compare the six-digit SAS out-of-band and confirm before audio.
+ *    Both endpoints prove local TOFU state inside KEY_CONFIRM. If both pins exist,
+ *    SAS is skipped; otherwise both users compare the six-digit SAS before audio.
  * 5. IN_SESSION: half-duplex PTT, AES-256-GCM audio, replay protection, liveness.
  *
  * Codec negotiation: each HELLO carries a codec preference; the session
@@ -158,6 +159,7 @@ class SessionManager(
     private var peerIdentityId: ByteArray? = null
     private var peerIdentityPublicKey: ByteArray? = null
     private var peerIdentityWasTrusted = false
+    private var peerReportedIdentityTrusted: Boolean? = null
 
     private class KeyCommitmentMismatchException : Exception("KEY_EXCHANGE commitment mismatch")
     private class PeerIdentityMismatchException : Exception("peer identity signature or pin mismatch")
@@ -872,6 +874,7 @@ class SessionManager(
         peerIdentityId?.fill(0); peerIdentityId = null
         peerIdentityPublicKey?.fill(0); peerIdentityPublicKey = null
         peerIdentityWasTrusted = false
+        peerReportedIdentityTrusted = null
         _peerIdentityTrusted.value = false
         myIdentityId.fill(0); myIdentityId = ByteArray(0)
         myIdentityPublicKey.fill(0); myIdentityPublicKey = ByteArray(0)
@@ -922,6 +925,7 @@ class SessionManager(
         peerIdentityId?.fill(0); peerIdentityId = null
         peerIdentityPublicKey?.fill(0); peerIdentityPublicKey = null
         peerIdentityWasTrusted = false
+        peerReportedIdentityTrusted = null
         _peerIdentityTrusted.value = false
         myIdentityId.fill(0); myIdentityId = ByteArray(0)
         myIdentityPublicKey.fill(0); myIdentityPublicKey = ByteArray(0)
@@ -967,6 +971,7 @@ class SessionManager(
         peerIdentityId?.fill(0); peerIdentityId = null
         peerIdentityPublicKey?.fill(0); peerIdentityPublicKey = null
         peerIdentityWasTrusted = false
+        peerReportedIdentityTrusted = null
         _peerIdentityTrusted.value = false
         myIdentityId.fill(0); myIdentityId = ByteArray(0)
         myIdentityPublicKey.fill(0); myIdentityPublicKey = ByteArray(0)
@@ -1451,7 +1456,13 @@ class SessionManager(
             val transcript = currentTranscriptHash(peerPub, peerNc)
             if (!keyConfirmSent) {
                 keyConfirmSent = true
-                enqueueControl(MessageType.KEY_CONFIRM, transcript)
+                val confirmPayload = transcript + byteArrayOf(if (peerIdentityWasTrusted) 1 else 0)
+                try {
+                    enqueueControl(MessageType.KEY_CONFIRM, confirmPayload)
+                } finally {
+                    confirmPayload.fill(0)
+                    transcript.fill(0)
+                }
             } else {
                 transcript.fill(0)
             }
@@ -1567,10 +1578,32 @@ class SessionManager(
 
     private fun verifyKeyConfirmPayload(payload: ByteArray) {
         val expected = expectedTranscript()
-        val matches = try {
-            MessageDigest.isEqual(payload, expected)
+        try {
+            verifyKeyConfirm(payload, expected)
         } finally {
             expected.fill(0)
+        }
+    }
+
+    private fun verifyKeyConfirm(payload: ByteArray, expectedTranscript: ByteArray) {
+        if (payload.size != expectedTranscript.size + 1) {
+            Log.w(TAG, "KEY_CONFIRM payload length invalid")
+            endSession(SessionError.AUTH_MISMATCH, notifyPeer = true,
+                disconnectReason = DisconnectReason.AUTH_MISMATCH)
+            return
+        }
+        val trustByte = payload[payload.lastIndex].toInt() and 0xFF
+        if (trustByte !in 0..1) {
+            Log.w(TAG, "KEY_CONFIRM trust flag invalid")
+            endSession(SessionError.AUTH_MISMATCH, notifyPeer = true,
+                disconnectReason = DisconnectReason.AUTH_MISMATCH)
+            return
+        }
+        val receivedTranscript = payload.copyOfRange(0, expectedTranscript.size)
+        val matches = try {
+            MessageDigest.isEqual(receivedTranscript, expectedTranscript)
+        } finally {
+            receivedTranscript.fill(0)
         }
         if (!matches) {
             Log.w(TAG, "KEY_CONFIRM transcript mismatch — possible MITM")
@@ -1578,33 +1611,34 @@ class SessionManager(
                 disconnectReason = DisconnectReason.AUTH_MISMATCH)
             return
         }
-        onKeyConfirmAccepted()
-    }
 
-    private fun verifyKeyConfirm(payload: ByteArray, expectedTranscript: ByteArray) {
-        if (!MessageDigest.isEqual(payload, expectedTranscript)) {
-            Log.w(TAG, "KEY_CONFIRM transcript mismatch — possible MITM")
+        val reportedTrust = trustByte == 1
+        val priorReport = peerReportedIdentityTrusted
+        if (priorReport != null && priorReport != reportedTrust) {
+            Log.w(TAG, "KEY_CONFIRM peer trust flag changed during session")
             endSession(SessionError.AUTH_MISMATCH, notifyPeer = true,
                 disconnectReason = DisconnectReason.AUTH_MISMATCH)
             return
         }
+        peerReportedIdentityTrusted = reportedTrust
         onKeyConfirmAccepted()
     }
 
     private fun onKeyConfirmAccepted() {
         if (_phase.value != Phase.HANDSHAKE) return
         _phase.value = Phase.AWAITING_SAS_CONFIRM
-        // Always derive/display the SAS during the brief verification phase:
-        // the peer may have lost its local pin while this endpoint still trusts it.
-        // A known identity auto-confirms locally, but the code remains available
-        // for the peer to compare if its side is first-contact.
-        _sasCode.value = SessionCrypto.shortAuthString(keys!!.sasSeed)
-        if (peerIdentityWasTrusted) {
+        // Skip SAS only when both endpoints attest—inside authenticated
+        // KEY_CONFIRM frames—that each has already pinned the other's identity.
+        // If either pin is absent (e.g. local data loss), both show/compare SAS.
+        val mutuallyTrusted = peerIdentityWasTrusted && peerReportedIdentityTrusted == true
+        if (mutuallyTrusted) {
+            _sasCode.value = null
             selfSasConfirmed = true
             enqueueControl(MessageType.SAS_CONFIRM, ByteArray(0))
-            AppLog.log(TAG, "pinned peer identity verified; local SAS confirmation automatic")
+            AppLog.log(TAG, "both peer identities pinned; SAS skipped")
         } else {
-            AppLog.log(TAG, "new peer identity; awaiting SAS comparison")
+            _sasCode.value = SessionCrypto.shortAuthString(keys!!.sasSeed)
+            AppLog.log(TAG, "first contact or asymmetric trust; awaiting SAS comparison")
         }
         startSasDeadline()
         val pendingSas = pendingSasConfirmFrame
@@ -1875,7 +1909,7 @@ class SessionManager(
             MessageType.SAS_CONFIRM ->
                 if (plaintext.isEmpty()) null else "invalid SAS_CONFIRM payload"
             MessageType.KEY_CONFIRM ->
-                if (plaintext.size == 32) null else "invalid KEY_CONFIRM payload length"
+                if (plaintext.size == 33) null else "invalid KEY_CONFIRM payload length"
             MessageType.DISCONNECT -> {
                 if (plaintext.size != 1) {
                     "invalid DISCONNECT length"
