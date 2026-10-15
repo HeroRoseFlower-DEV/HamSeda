@@ -4,6 +4,12 @@
 
 ## 1. Automated tests (run in CI)
 
+- `SessionSequenceCounterTest`: monotonic sequence values, hard stop before the
+  configured safety limit, no wrap while exhausted, and reset for a fresh session.
+- Session sequence rollover is intentionally handled by ending the session
+  before uint32 exhaustion. This test uses a small injected limit; it does not
+  simulate a multi-year live session or physical radio teardown at the guard.
+
 `./gradlew :app:testDebugUnitTest` — pure JVM, no device needed:
 
 | Area | File | What's verified |
