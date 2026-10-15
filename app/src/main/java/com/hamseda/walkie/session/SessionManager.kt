@@ -1600,15 +1600,16 @@ class SessionManager(
     private fun onKeyConfirmAccepted() {
         if (_phase.value != Phase.HANDSHAKE) return
         _phase.value = Phase.AWAITING_SAS_CONFIRM
+        // Always derive/display the SAS during the brief verification phase:
+        // the peer may have lost its local pin while this endpoint still trusts it.
+        // A known identity auto-confirms locally, but the code remains available
+        // for the peer to compare if its side is first-contact.
+        _sasCode.value = SessionCrypto.shortAuthString(keys!!.sasSeed)
         if (peerIdentityWasTrusted) {
-            // Verify the pinned identity signature and automatically confirm this
-            // fresh exchange, but still wait for the peer's authenticated confirm.
-            _sasCode.value = null
             selfSasConfirmed = true
             enqueueControl(MessageType.SAS_CONFIRM, ByteArray(0))
-            AppLog.log(TAG, "pinned peer identity verified; SAS comparison skipped")
+            AppLog.log(TAG, "pinned peer identity verified; local SAS confirmation automatic")
         } else {
-            _sasCode.value = SessionCrypto.shortAuthString(keys!!.sasSeed)
             AppLog.log(TAG, "new peer identity; awaiting SAS comparison")
         }
         startSasDeadline()
