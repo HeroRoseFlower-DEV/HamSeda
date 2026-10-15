@@ -49,26 +49,26 @@ completed the in-app pairing flow, against:
 1. **Key exchange:** ephemeral ECDH on NIST P-256 (`KeyPairGenerator("EC")`,
    `ECGenParameterSpec("secp256r1")`, `KeyAgreement("ECDH")`). Keys are
    generated per session and never persisted.
-2. **Commitment/reveal (wire protocol v4):** before either public key or nonce is
+2. **Commitment/reveal (wire protocol v5):** before either public key or nonce is
    revealed, each side sends a domain-separated SHA-256 commitment to its public
    key, nonce, exact HELLO payload and independent 32-byte random salt. KEY_EXCHANGE
    reveals those values only after the peer's commitment arrives. Each reveal is
    verified in constant time before ECDH; mismatch aborts before SAS display.
    This blocks adaptive share selection after observing the other endpoint's reveal.
 3. **Key derivation:** HKDF-SHA-256 (RFC 5869, over platform HMAC-SHA-256)
-   with salt = SHA-256(ordered nonces), info = `HamSeda-v4/session-keys`,
+   with salt = SHA-256(ordered nonces), info = `HamSeda-v5/session-keys`,
    output = 32-byte audio key + 32-byte control key + 8-byte session id +
    32-byte SAS seed. Key separation is structural, not by convention.
 4. **Encryption:** AES-256-GCM (`AES/GCM/NoPadding`, 128-bit tag), random
    96-bit nonce per frame, header+role as AAD.
-5. **Authentication of the exchange (wire protocol v4):** KEY_CONFIRM
+5. **Authentication of the exchange (wire protocol v5):** KEY_CONFIRM
    authenticates a SHA-256 transcript with domain separator
-   `HamSeda-v4/key-confirm`. The canonical, length-prefixed transcript binds
+   `HamSeda-v5/key-confirm`. The canonical, length-prefixed transcript binds
    each peer's exact two-byte HELLO payload (protocol version + codec preference),
    16-byte nonce, and encoded ECDH public key, ordered deterministically by
    public-key role. Changing the key, nonce, protocol version, or codec
    preference changes the transcript and causes authentication to fail.
-6. **SAS:** 6 digits = `HMAC-SHA256(sasSeed, "HamSeda-v4/sas") mod 1_000_000`,
+6. **SAS:** 6 digits = `HMAC-SHA256(sasSeed, "HamSeda-v5/sas") mod 1_000_000`,
    displayed on both phones. The SAS is a short equality check, not key material.
    Users must compare it out-of-band and each confirm. A six-digit value gives
    about 20 bits of manual verification; commitment/reveal prevents adaptive
@@ -88,9 +88,10 @@ separator is intentionally changed.
 
 | Source constant | Value |
 |---|---|
-| `SessionCrypto.INFO` | `HamSeda-v4/session-keys` |
-| `SessionCrypto.SAS_INFO` | `HamSeda-v4/sas` |
-| `SessionCrypto.COMMIT_INFO` | `HamSeda-v4/key-commitment` |
+| `SessionCrypto.INFO` | `HamSeda-v5/session-keys` |
+| `SessionCrypto.SAS_INFO` | `HamSeda-v5/sas` |
+| `SessionCrypto.COMMIT_INFO` | `HamSeda-v5/key-commitment` |
+| `SessionCrypto.IDENTITY_PROOF_INFO` | `HamSeda-v5/identity-proof` |
 
 ## What is NOT protected / limitations
 
@@ -116,8 +117,7 @@ separator is intentionally changed.
 - No account, no analytics, no ads, no cloud crash reporting, no remote config.
 - No audio is recorded, stored, or transmitted except to the authenticated
   peer during an active session.
-- Persistent storage holds only non-sensitive UI preferences
-  (theme, transport preference, codec choice). No identities, no contact lists.
+- Persistent storage holds non-sensitive UI preferences and local TOFU pins. The device identity-signing private key is managed by Android Keystore; peer public-key pins are stored locally. No display names or contact lists are collected.
 - The `INTERNET` manifest permission exists solely because Android requires
   it to open local TCP sockets; the app never opens a socket to a public IP.
 
@@ -130,15 +130,15 @@ separator is intentionally changed.
 - Diagnostic text is capped before normalization and address-redaction regexes run.
 - The checked-in Gradle Wrapper JAR is SHA-256 checked in CI against the pinned Gradle 9.8.1 checksum (`3b8a25775a69158b5ad2b1d17a80a88dc7b40a352a73eb27d06c612a7ce68e98`). The wrapper distribution is pinned to Gradle 9.8.1 and its ZIP checksum is recorded in `gradle/wrapper/gradle-wrapper.properties` (`dce76f55f8e251a3a1f130eb120f30b3d271de2b76c9b0729d316b5a1b6dc01f`). CI verifies the JAR checksum and validates the pinned distribution before building. Dependabot monitors Gradle and GitHub Actions updates.
 
-## Trust-on-first-use (TOFU) status
+## Trust-on-first-use (TOFU) identity pinning
 
-TOFU identity pinning is **not implemented**. The current handshake uses
-ephemeral session keys and requires users to compare the SAS on every session.
-A safe TOFU implementation requires a persistent device identity-signing key,
-a local store of peer identity public keys pinned only after a fully
-SAS-confirmed session, signature verification on subsequent handshakes, and UI
-to identify and reset trusted peers. Pinning the existing ephemeral ECDH key
-alone would not provide a stable identity and must not be presented as TOFU.
+Protocol v5 implements TOFU with a persistent P-256 identity-signing key. On Android, the private signing key is generated and retained by Android Keystore and is not exported by the app. A random 128-bit identity ID and peer public-key pins are kept in app-private preferences; the manifest disables app backup.
+
+The commitment/reveal exchange remains mandatory. Each KEY_COMMIT binds the ephemeral ECDH public key, nonce, exact HELLO and salt to the identity ID and identity-signing public key. KEY_EXCHANGE reveals those values with an ECDSA/SHA-256 signature over a domain-separated identity proof. The receiver verifies the commitment, signature and any existing pin before running ECDH or entering SAS verification. A changed public key for an already-known identity ID is rejected; it is never silently overwritten.
+
+An unknown peer still requires users to compare the six-digit SAS out of band and both confirm it. A peer pin is saved only after both confirmations and successful playback initialization. Later sessions with the same pinned identity verify the signature and automatically skip SAS, while still requiring an authenticated peer confirmation. A pin can be removed in Settings; removing it makes the next connection require SAS again.
+
+If app-local data or the Keystore identity is lost, the device presents a new identity and peers must repeat SAS verification. Protocol v5 changes the KEY_EXCHANGE wire layout and is not compatible with v4: install the same v5 build on both phones.
 
 ## Reporting
 
@@ -148,4 +148,6 @@ Vulnerability Reporting in **Settings → Security and quality → Advanced
 Security → Private vulnerability reporting**. Once enabled, use the repository's
 **Security → Advisories → Report a vulnerability** flow to send a private report.
 Do not include exploit details or sensitive reproduction material in a public
-issue while the private channel is unavailable.
+issue while the private channel is unavailable. The private-reporting toggle is a GitHub
+repository setting; this file cannot enable or verify it. The repository owner must
+confirm that the private report form is available in the Security tab.
