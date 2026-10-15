@@ -15,6 +15,12 @@ or vendor AGC implementation.
 
 ## 1. Automated tests (run in CI)
 
+- `SessionSequenceCounterTest`: monotonic sequence values, hard stop before the
+  configured safety limit, no wrap while exhausted, and reset for a fresh session.
+- Session sequence rollover is intentionally handled by ending the session
+  before uint32 exhaustion. This test uses a small injected limit; it does not
+  simulate a multi-year live session or physical radio teardown at the guard.
+
 `./gradlew :app:testDebugUnitTest` — pure JVM, no device needed:
 
 | Area | File | What's verified |
@@ -27,6 +33,7 @@ or vendor AGC implementation.
 | Playback queue tracker | `PlaybackQueueTrackerTest` | pending PCM accounting, underrun clamp, unsigned playback-head wrap, implausible position jump, and queue-limit rounding to the AudioTrack start threshold |
 | Codecs (JVM) | `CodecTest` | PCM bit-exact roundtrip, Opus profile defaults, codec factory and bad-input checks that do not require native audio I/O |
 | Microphone level control (JVM) | `CaptureGainControllerTest` | boosts quiet active frames, leaves near-silence unamplified, reduces gain on loud transients immediately, and respects the peak ceiling |
+| Platform routing and Bluetooth discovery | `ModernizationTest` | deterministic API 31+ audio route priority and expiration of discovered non-bonded peers after the 120 s freshness TTL; bonded devices remain listed |
 | Native Opus | `OpusCodecInstrumentedTest` | Actual Android JNI load, runtime libopus version, 20 ms encode/decode, signal correlation/energy, silence, reset and bad-input rejection |
 | Framed socket | `FramedSocketTest` | delimiting, clean EOF → Closed, oversized envelope rejected, truncated frame → Error, oversized write rejected |
 | Full session | `SessionHandshakeTest` | handshake→SAS→IN_SESSION over loopback transport, matching SAS, PTT→grant→audio frames→release, SAS-mismatch abort, **MITM tamper → AUTH_MISMATCH**, abrupt transport loss → clean teardown |
@@ -97,6 +104,9 @@ procedure and its device variations).
 3. Verify the 6-digit SAS, then test PTT in both directions. Note any audio
    artifacts vs Wi-Fi Direct; ordinary audio accessories (e.g., headphones)
    must not appear as phone candidates.
+4. During repeated discovery cycles, a non-bonded peer not re-seen for 120 s
+   disappears from results; a bonded peer remains listed. Seeing a peer again
+   refreshes its TTL.
 
 ### 2.4 Interruptions & lifecycle
 - Incoming phone call during transmission → TX stops instantly (audio focus).
