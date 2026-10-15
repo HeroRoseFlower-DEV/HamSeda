@@ -22,6 +22,17 @@ class CaptureGainControllerTest {
     }
 
     @Test
+    fun `first active PTT frame gets fast gain attack`() {
+        val controller = CaptureGainController()
+        val frame = constantFrame(500)
+
+        controller.processInPlace(frame)
+
+        assertTrue("first active frame should not be left quiet", controller.currentGain > 6f)
+        assertTrue("first active frame should be audible", abs(frame[0].toInt()) > 3_000)
+    }
+
+    @Test
     fun `silence and low-level noise are not amplified`() {
         val controller = CaptureGainController()
         val silence = ShortArray(960)
