@@ -101,6 +101,14 @@ class AudioEngine(private val context: Context) : AudioPipeline {
         private set
 
     @Volatile
+    private var softwareGainEnabled: Boolean = true
+
+    /** Updates the software microphone leveler without restarting capture. */
+    fun setSoftwareGainEnabled(enabled: Boolean) {
+        softwareGainEnabled = enabled
+    }
+
+    @Volatile
     var currentRoute: AudioRoute = AudioRoute.SPEAKER
         private set
 
@@ -324,7 +332,7 @@ class AudioEngine(private val context: Context) : AudioPipeline {
 
                 // Raise quiet active speech before encoding. This complements (rather
                 // than relies solely on) optional vendor AGC and limits output peaks.
-                val appliedGain = gainController.processInPlace(frame)
+                val appliedGain = gainController.processInPlace(frame, enabled = softwareGainEnabled)
                 gainWindowInputRmsTotal += gainController.lastInputRms.toDouble()
                 gainWindowAppliedTotal += appliedGain.toDouble()
                 gainWindowMaxApplied = maxOf(gainWindowMaxApplied, appliedGain)
@@ -351,7 +359,7 @@ class AudioEngine(private val context: Context) : AudioPipeline {
                                 "avgInputRms=${String.format(Locale.ROOT, "%.0f", gainWindowInputRmsTotal / encodeWindowFrames)}, " +
                                 "avgGain=${String.format(Locale.ROOT, "%.2f", gainWindowAppliedTotal / encodeWindowFrames)}, " +
                                 "maxGain=${String.format(Locale.ROOT, "%.2f", gainWindowMaxApplied)}, " +
-                                "nearSilenceFrames=$gainWindowNearSilenceFrames",
+                                "nearSilenceFrames=$gainWindowNearSilenceFrames, gainEnabled=$softwareGainEnabled",
                         )
                         encodeWindowFrames = 0
                         encodeWindowTotalNanos = 0L

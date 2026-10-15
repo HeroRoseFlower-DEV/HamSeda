@@ -66,6 +66,7 @@ fun SettingsScreen(
     val codecPref by vm.codecPref.collectAsStateWithLifecycle()
     val speakerphone by vm.speakerphone.collectAsStateWithLifecycle()
     val vibration by vm.vibration.collectAsStateWithLifecycle()
+    val softwareGain by vm.softwareGain.collectAsStateWithLifecycle()
     val theme by vm.theme.collectAsStateWithLifecycle()
     val language by vm.language.collectAsStateWithLifecycle()
 
@@ -135,6 +136,15 @@ fun SettingsScreen(
                     title = stringResource(R.string.codec_pcm),
                     subtitle = stringResource(R.string.codec_pcm_desc),
                     onClick = { vm.setCodec(CodecId.PCM16) },
+                )
+            }
+
+            SettingSection(title = stringResource(R.string.settings_audio_processing)) {
+                SwitchRow(
+                    title = stringResource(R.string.settings_software_gain),
+                    subtitle = stringResource(R.string.settings_software_gain_desc),
+                    checked = softwareGain,
+                    onChecked = vm::setSoftwareGain,
                 )
             }
 
@@ -311,6 +321,7 @@ private fun RadioOption(
 @Composable
 private fun SwitchRow(
     title: String,
+    subtitle: String? = null,
     checked: Boolean,
     onChecked: (Boolean) -> Unit,
 ) {
@@ -320,11 +331,20 @@ private fun SwitchRow(
             .padding(horizontal = 16.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(
-            text = title,
-            style = MaterialTheme.typography.bodyLarge,
-            modifier = Modifier.weight(1f),
-        )
+        Column(Modifier.weight(1f)) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.bodyLarge,
+            )
+            subtitle?.let {
+                Text(
+                    text = it,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        Spacer(Modifier.width(12.dp))
         Switch(checked = checked, onCheckedChange = onChecked)
     }
 }
