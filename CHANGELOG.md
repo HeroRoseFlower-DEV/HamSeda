@@ -1,5 +1,12 @@
 # HamSeda Changelog
 
+## 2026-10-15 — Stop sessions before wire-sequence rollover
+
+- Replace silent uint32 sequence wrap with a per-session monotonic counter.
+- End the session at `0xFFFF0000`, before counter exhaustion; a new authenticated
+  session starts a new sequence space. No wire-format change is made.
+- Add unit tests for monotonic allocation, exhaustion, reset and invalid limits.
+
 ## 2026-10-15 — Add gated, optional microphone leveler
 
 - Add a stateful PCM leveler with a 5,500 RMS target, maximum 8× gain,
