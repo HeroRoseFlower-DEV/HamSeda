@@ -90,7 +90,11 @@ jobs:
           ANDROID_HOME="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
           export ANDROID_HOME
           export PATH="$ANDROID_HOME/platform-tools:$ANDROID_HOME/emulator:$PATH"
-          CT="$(find "$ANDROID_HOME/cmdline-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n1)"
+          if [ -d "$ANDROID_HOME/cmdline-tools/latest" ]; then
+            CT="$ANDROID_HOME/cmdline-tools/latest"
+          else
+            CT="$(ls -d "$ANDROID_HOME"/cmdline-tools/*/ | sort -V | tail -n1)"
+          fi
           echo "no" | "$CT/bin/avdmanager" create avd \
             --name hamseda-api35 \
             --package "system-images;android-35;google_apis;x86_64" \
