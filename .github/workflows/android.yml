@@ -84,7 +84,7 @@ jobs:
         run: ./gradlew :app:assembleAndroidTest --no-daemon --stacktrace
 
       - name: Start Android Emulator (API 35, x86_64)
-        timeout-minutes: 10
+        timeout-minutes: 20
         run: |
           set -euo pipefail
           ANDROID_HOME="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
@@ -124,11 +124,11 @@ jobs:
           # Pre-grant only runtime permissions needed to let the app reach its
           # normal UI in instrumentation tests. This is test setup, not an app
           # permission-policy change; no radio hardware behavior is simulated.
+          adb install app/build/outputs/apk/debug/app-debug.apk
           adb shell pm grant com.hamseda.walkie android.permission.RECORD_AUDIO
           adb shell pm grant com.hamseda.walkie android.permission.NEARBY_WIFI_DEVICES
           adb shell pm grant com.hamseda.walkie android.permission.BLUETOOTH_SCAN
           adb shell pm grant com.hamseda.walkie android.permission.BLUETOOTH_CONNECT
-          adb install app/build/outputs/apk/debug/app-debug.apk
           adb devices -l
 
       - name: Execute instrumented tests on Android Emulator
