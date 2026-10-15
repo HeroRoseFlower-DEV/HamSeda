@@ -74,7 +74,7 @@ class BluetoothTransport(private val context: Context) : Transport {
     private val _discoverable = MutableStateFlow(false)
     override val discoverable: StateFlow<Boolean> = _discoverable.asStateFlow()
 
-    private val _incomingFrames = MutableSharedFlow<ByteArray>(extraBufferCapacity = 64)
+    private val _incomingFrames = MutableSharedFlow<ByteArray>()
     override val incomingFrames: SharedFlow<ByteArray> = _incomingFrames.asSharedFlow()
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -798,14 +798,8 @@ class BluetoothTransport(private val context: Context) : Transport {
                 }
                 when (r) {
                     is FramedSocket.ReadResult.Frame -> {
-                        when (publishIncomingFrame(source, r.frame)) {
-                            0 -> return@launch // socket was replaced or closed
-                            1 -> Unit
-                            else -> {
-                                AppLog.log(TAG, "incoming frame queue overflow; closing RFCOMM connection")
-                                handleLost("incoming frame queue overflow", source)
-                                return@launch
-                            }
+                        if (!publishIncomingFrame(source, r.frame)) {
+                            return@launch // socket was replaced or closed
                         }
                     }
                     is FramedSocket.ReadResult.Closed -> {
@@ -822,20 +816,22 @@ class BluetoothTransport(private val context: Context) : Transport {
     }
 
     /**
-     * Returns 0 for a stale socket, 1 for a published frame, and 2 if the
-     * bounded SharedFlow buffer is saturated. tryEmit inside the gate makes
-     * the current-socket check and publication atomic with respect to cleanup.
+     * Publish with backpressure rather than buffering up to 64 stale media
+     * frames. The stream reader stops reading while the session collector
+     * processes a frame, allowing the socket/peer's bounded send queue to
+     * absorb congestion instead of replaying a long burst later.
+     *
+     * The reader job is cancelled when this socket is replaced; emit is
+     * cancellable, so a suspended old reader cannot publish into a new session.
      */
-    private fun publishIncomingFrame(source: FramedSocket, frame: ByteArray): Int =
-        synchronized(readerGate) {
-            if (framed !== source || _state.value != TransportState.CONNECTED) {
-                0
-            } else if (_incomingFrames.tryEmit(frame)) {
-                1
-            } else {
-                2
-            }
+    private suspend fun publishIncomingFrame(source: FramedSocket, frame: ByteArray): Boolean {
+        val current = synchronized(readerGate) {
+            framed === source && _state.value == TransportState.CONNECTED
         }
+        if (!current) return false
+        _incomingFrames.emit(frame)
+        return true
+    }
 
     private fun isCurrentSocketConnected(source: FramedSocket): Boolean =
         synchronized(readerGate) {

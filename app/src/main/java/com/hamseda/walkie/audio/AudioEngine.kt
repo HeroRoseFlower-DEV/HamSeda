@@ -76,6 +76,10 @@ class AudioEngine(private val context: Context) : AudioPipeline {
     private var playbackWriteWindowOver20Ms = 0
     private var playbackWriteWindowTotalNanos = 0L
     private var playbackWriteWindowMaxNanos = 0L
+    private var playbackWriteWindowWaitedFrames = 0
+    private var playbackWriteWindowTotalWaitNanos = 0L
+    private var playbackWriteWindowMaxWaitNanos = 0L
+    private var playbackWriteWindowDeadlineTimeouts = 0
 
     // Bounds the application-fed PCM backlog in AudioTrack. Pacing waits are
     // measured separately from time spent inside the native AudioTrack.write().
@@ -228,7 +232,12 @@ class AudioEngine(private val context: Context) : AudioPipeline {
             .build()
         // Note: AudioRecord.Builder has no setAudioAttributes — routing and
         // usage are driven by the VOICE_COMMUNICATION audio source.
-        val requestedBufferBytes = maxOf(minBuf, AudioCodec.FRAME_BYTES_PCM * 3)
+        // Request 100 ms capacity up front. configurePlaybackBuffer() will use
+        // a 60 ms application queue only when LOW_LATENCY mode is actually active.
+        val requestedBufferBytes = maxOf(
+            minBuf,
+            AudioCodec.FRAME_BYTES_PCM * MAX_TRACKED_PLAYBACK_QUEUE_FRAMES,
+        )
         val captureRecorder = buildCaptureRecorder(format, requestedBufferBytes)
         if (captureRecorder == null) {
             abandonFocus()
@@ -244,6 +253,8 @@ class AudioEngine(private val context: Context) : AudioPipeline {
             TAG,
             "capture initialized: sampleRate=${AudioCodec.SAMPLE_RATE}, frameMs=20, " +
                 "bufferBytes=$requestedBufferBytes, source=${captureRecorder.sourceName}, " +
+                "softwareGainTargetRms=${CaptureGainController.DEFAULT_TARGET_RMS.toInt()}, " +
+                "softwareGainMax=${CaptureGainController.DEFAULT_MAX_GAIN}, " +
                 "opusComplexity=${(codec as? OpusCodec)?.encoderComplexityInUse ?: -1}",
         )
         captureThread = Thread({
@@ -268,6 +279,11 @@ class AudioEngine(private val context: Context) : AudioPipeline {
             var encodeWindowFrames = 0
             var encodeWindowTotalNanos = 0L
             var encodeWindowMaxNanos = 0L
+            val gainController = CaptureGainController()
+            var gainWindowInputRmsTotal = 0.0
+            var gainWindowAppliedTotal = 0.0
+            var gainWindowMaxApplied = 1f
+            var gainWindowNearSilenceFrames = 0
             while (captureRunning.get()) {
                 val read = rec.read(frame, 0, frame.size)
                 if (read < 0) {
@@ -305,6 +321,17 @@ class AudioEngine(private val context: Context) : AudioPipeline {
                 }
                 consecutiveErrors = 0
                 if (read != frame.size) continue // wait for a full 20 ms frame
+
+                // Raise quiet active speech before encoding. This complements (rather
+                // than relies solely on) optional vendor AGC and limits output peaks.
+                val appliedGain = gainController.processInPlace(frame)
+                gainWindowInputRmsTotal += gainController.lastInputRms.toDouble()
+                gainWindowAppliedTotal += appliedGain.toDouble()
+                gainWindowMaxApplied = maxOf(gainWindowMaxApplied, appliedGain)
+                if (gainController.lastInputRms < CaptureGainController.MINIMUM_ACTIVE_RMS) {
+                    gainWindowNearSilenceFrames++
+                }
+
                 var peak = 0
                 for (s in frame) peak = maxOf(peak, abs(s.toInt()))
                 val level = min(1f, peak / 32768f)
@@ -320,11 +347,19 @@ class AudioEngine(private val context: Context) : AudioPipeline {
                             TAG,
                             "capture encode timing: frames=$encodeWindowFrames, " +
                                 "avgMs=${String.format(Locale.ROOT, "%.2f", encodeWindowTotalNanos / encodeWindowFrames / 1_000_000.0)}, " +
-                                "maxMs=${String.format(Locale.ROOT, "%.2f", encodeWindowMaxNanos / 1_000_000.0)}",
+                                "maxMs=${String.format(Locale.ROOT, "%.2f", encodeWindowMaxNanos / 1_000_000.0)}, " +
+                                "avgInputRms=${String.format(Locale.ROOT, "%.0f", gainWindowInputRmsTotal / encodeWindowFrames)}, " +
+                                "avgGain=${String.format(Locale.ROOT, "%.2f", gainWindowAppliedTotal / encodeWindowFrames)}, " +
+                                "maxGain=${String.format(Locale.ROOT, "%.2f", gainWindowMaxApplied)}, " +
+                                "nearSilenceFrames=$gainWindowNearSilenceFrames",
                         )
                         encodeWindowFrames = 0
                         encodeWindowTotalNanos = 0L
                         encodeWindowMaxNanos = 0L
+                        gainWindowInputRmsTotal = 0.0
+                        gainWindowAppliedTotal = 0.0
+                        gainWindowMaxApplied = 1f
+                        gainWindowNearSilenceFrames = 0
                     }
                     try {
                         onFrame(encoded, level)
@@ -381,7 +416,13 @@ class AudioEngine(private val context: Context) : AudioPipeline {
     )
 
     private fun configurePlaybackBuffer(at: AudioTrack): PlaybackBufferConfiguration {
-        val desiredQueueFrames = AudioCodec.FRAME_SAMPLES * MAX_TRACKED_PLAYBACK_QUEUE_FRAMES
+        // On devices where LOW_LATENCY was requested but not granted, use a
+        // larger PCM headroom to absorb short scheduler/HAL stalls. Only use the
+        // small queue when the track actually reports LOW_LATENCY mode.
+        val trackedQueueFrames = if (
+            at.performanceMode == AudioTrack.PERFORMANCE_MODE_LOW_LATENCY
+        ) LOW_LATENCY_PLAYBACK_QUEUE_FRAMES else MAX_TRACKED_PLAYBACK_QUEUE_FRAMES
+        val desiredQueueFrames = AudioCodec.FRAME_SAMPLES * trackedQueueFrames
         val capacityFrames = at.bufferCapacityInFrames.coerceAtLeast(1)
         val requestedBufferFrames = minOf(desiredQueueFrames, capacityFrames)
         val resizeResult = try {
@@ -517,6 +558,10 @@ class AudioEngine(private val context: Context) : AudioPipeline {
         playbackWriteWindowOver20Ms = 0
         playbackWriteWindowTotalNanos = 0L
         playbackWriteWindowMaxNanos = 0L
+        playbackWriteWindowWaitedFrames = 0
+        playbackWriteWindowTotalWaitNanos = 0L
+        playbackWriteWindowMaxWaitNanos = 0L
+        playbackWriteWindowDeadlineTimeouts = 0
         playbackQueueWindowFrames = 0
         playbackQueueWindowWaitedFrames = 0
         playbackQueueWindowTotalWaitNanos = 0L
@@ -626,10 +671,12 @@ class AudioEngine(private val context: Context) : AudioPipeline {
     }
 
     /**
-     * Keep at most three 20 ms PCM frames pending in AudioTrack. The track may
-     * have a larger OEM-selected capacity, but accepting a burst into that
-     * capacity can turn transport jitter into delayed speech. Audio frames
-     * waiting here remain subject to the bounded, freshness-first jitter queue.
+     * Keep a bounded PCM backlog in AudioTrack: three 20 ms frames when the
+     * platform actually grants LOW_LATENCY mode, or five frames (100 ms) when it
+     * falls back to the default mode. This gives ordinary output a little more
+     * headroom for observed scheduler/HAL stalls while retaining the lower-latency
+     * limit on devices that support it. Audio frames waiting here remain subject
+     * to the bounded, freshness-first jitter queue.
      */
     private fun writePcm(
         at: AudioTrack,
@@ -661,7 +708,7 @@ class AudioEngine(private val context: Context) : AudioPipeline {
         }
 
         val queueWaitNanos = (System.nanoTime() - queueWaitStartedNanos).coerceAtLeast(0L)
-        recordPlaybackQueueTiming(queueWaitNanos, maxObservedQueuedFrames)
+        recordPlaybackQueueTiming(queueWaitNanos, maxObservedQueuedFrames, queueLimitFrames)
         if (!readyForWrite) {
             if (queueWaitTimedOut && playbackRunning.get()) {
                 AppLog.log(
@@ -673,36 +720,81 @@ class AudioEngine(private val context: Context) : AudioPipeline {
             return false
         }
 
-        // Exclude queue-pacing wait from this metric; it measures actual time
-        // spent inside Android AudioTrack.write() calls only.
-        val startedAtNanos = System.nanoTime()
+        // Never let a blocking AudioTrack.write() pin the playback worker for
+        // tens of milliseconds. NON_BLOCKING writes are retried with a small
+        // bounded backoff; native-call time and submission wait are measured
+        // separately so the diagnostics identify which side is stalling.
+        var nativeWriteNanos = 0L
+        var submissionWaitNanos = 0L
+        var timedOut = false
         var succeeded = false
         try {
+            val writeDeadlineNanos =
+                System.nanoTime() + MAX_AUDIO_TRACK_WRITE_WAIT_MS * 1_000_000L
             var offset = 0
             while (offset < pcm.size && playbackRunning.get()) {
-                val written = at.write(
-                    pcm,
-                    offset,
-                    pcm.size - offset,
-                    AudioTrack.WRITE_BLOCKING,
-                )
-                if (written <= 0) {
+                val callStartedAtNanos = System.nanoTime()
+                val written = try {
+                    at.write(
+                        pcm,
+                        offset,
+                        pcm.size - offset,
+                        AudioTrack.WRITE_NON_BLOCKING,
+                    )
+                } finally {
+                    nativeWriteNanos += (System.nanoTime() - callStartedAtNanos).coerceAtLeast(0L)
+                }
+
+                if (written < 0) {
                     if (playbackRunning.get()) {
-                        AppLog.log(TAG, "AudioTrack write failed: result=$written, offset=$offset, samples=${pcm.size}")
+                        AppLog.log(
+                            TAG,
+                            "AudioTrack write failed: result=$written, offset=$offset, samples=${pcm.size}",
+                        )
                     }
                     return false
                 }
-                queueTracker.recordWrittenFrames(written)
-                offset += written
+                if (written > 0) {
+                    queueTracker.recordWrittenFrames(written)
+                    offset += written
+                }
+                // Check the deadline even if the platform keeps returning small
+                // positive writes; a partial-progress loop must remain bounded too.
+                if (offset < pcm.size && System.nanoTime() >= writeDeadlineNanos) {
+                    timedOut = true
+                    AppLog.log(
+                        TAG,
+                        "AudioTrack non-blocking write deadline exceeded: offset=$offset, " +
+                            "samples=${pcm.size}, waitLimitMs=$MAX_AUDIO_TRACK_WRITE_WAIT_MS",
+                    )
+                    return false
+                }
+                if (offset < pcm.size) {
+                    // Yield after both no-progress and partial writes so a
+                    // vendor AudioTrack that returns tiny chunks cannot spin.
+                    val waitStartedAtNanos = System.nanoTime()
+                    try {
+                        Thread.sleep(1)
+                    } catch (_: InterruptedException) {
+                        Thread.currentThread().interrupt()
+                        return false
+                    } finally {
+                        submissionWaitNanos += (System.nanoTime() - waitStartedAtNanos).coerceAtLeast(0L)
+                    }
+                }
             }
             succeeded = offset == pcm.size
             return succeeded
         } finally {
-            recordPlaybackWriteTiming(System.nanoTime() - startedAtNanos, succeeded)
+            recordPlaybackWriteTiming(nativeWriteNanos, submissionWaitNanos, timedOut, succeeded)
         }
     }
 
-    private fun recordPlaybackQueueTiming(waitNanos: Long, maxObservedQueuedFrames: Long) {
+    private fun recordPlaybackQueueTiming(
+        waitNanos: Long,
+        maxObservedQueuedFrames: Long,
+        queueLimitFrames: Int,
+    ) {
         playbackQueueWindowFrames++
         if (waitNanos >= 1_000_000L) playbackQueueWindowWaitedFrames++
         playbackQueueWindowTotalWaitNanos += waitNanos.coerceAtLeast(0L)
@@ -719,7 +811,7 @@ class AudioEngine(private val context: Context) : AudioPipeline {
                 "avgWaitMs=" + ms(playbackQueueWindowTotalWaitNanos / playbackQueueWindowFrames) + ", " +
                 "maxWaitMs=" + ms(playbackQueueWindowMaxWaitNanos) + ", " +
                 "maxObservedQueuedFrames=$playbackQueueWindowMaxObservedFrames, " +
-                "queueLimitFrames=${AudioCodec.FRAME_SAMPLES * MAX_TRACKED_PLAYBACK_QUEUE_FRAMES}",
+                "queueLimitFrames=$queueLimitFrames",
         )
         playbackQueueWindowFrames = 0
         playbackQueueWindowWaitedFrames = 0
@@ -728,13 +820,22 @@ class AudioEngine(private val context: Context) : AudioPipeline {
         playbackQueueWindowMaxObservedFrames = 0L
     }
 
-    private fun recordPlaybackWriteTiming(elapsedNanos: Long, succeeded: Boolean) {
+    private fun recordPlaybackWriteTiming(
+        nativeWriteNanos: Long,
+        submissionWaitNanos: Long,
+        timedOut: Boolean,
+        succeeded: Boolean,
+    ) {
         playbackWriteWindowFrames++
         if (succeeded) playbackWriteWindowSucceeded++ else playbackWriteWindowFailed++
-        playbackWriteWindowTotalNanos += elapsedNanos.coerceAtLeast(0L)
-        playbackWriteWindowMaxNanos = maxOf(playbackWriteWindowMaxNanos, elapsedNanos)
-        if (elapsedNanos >= 5_000_000L) playbackWriteWindowOver5Ms++
-        if (elapsedNanos >= 20_000_000L) playbackWriteWindowOver20Ms++
+        playbackWriteWindowTotalNanos += nativeWriteNanos.coerceAtLeast(0L)
+        playbackWriteWindowMaxNanos = maxOf(playbackWriteWindowMaxNanos, nativeWriteNanos)
+        if (nativeWriteNanos >= 5_000_000L) playbackWriteWindowOver5Ms++
+        if (nativeWriteNanos >= 20_000_000L) playbackWriteWindowOver20Ms++
+        if (submissionWaitNanos >= 1_000_000L) playbackWriteWindowWaitedFrames++
+        playbackWriteWindowTotalWaitNanos += submissionWaitNanos.coerceAtLeast(0L)
+        playbackWriteWindowMaxWaitNanos = maxOf(playbackWriteWindowMaxWaitNanos, submissionWaitNanos)
+        if (timedOut) playbackWriteWindowDeadlineTimeouts++
         if (playbackWriteWindowFrames < PLAYBACK_WRITE_DIAGNOSTIC_INTERVAL) return
 
         fun ms(nanos: Long) = String.format(Locale.ROOT, "%.2f", nanos / 1_000_000.0)
@@ -742,9 +843,13 @@ class AudioEngine(private val context: Context) : AudioPipeline {
             TAG,
             "AudioTrack write timing: frames=$playbackWriteWindowFrames, " +
                 "succeeded=$playbackWriteWindowSucceeded, failed=$playbackWriteWindowFailed, " +
-                "avgMs=" + ms(playbackWriteWindowTotalNanos / playbackWriteWindowFrames) + ", " +
-                "maxMs=" + ms(playbackWriteWindowMaxNanos) + ", " +
-                "over5Ms=$playbackWriteWindowOver5Ms, over20Ms=$playbackWriteWindowOver20Ms",
+                "nativeAvgMs=" + ms(playbackWriteWindowTotalNanos / playbackWriteWindowFrames) + ", " +
+                "nativeMaxMs=" + ms(playbackWriteWindowMaxNanos) + ", " +
+                "nativeOver5Ms=$playbackWriteWindowOver5Ms, nativeOver20Ms=$playbackWriteWindowOver20Ms, " +
+                "waitedFrames=$playbackWriteWindowWaitedFrames, " +
+                "avgWaitMs=" + ms(playbackWriteWindowTotalWaitNanos / playbackWriteWindowFrames) + ", " +
+                "maxWaitMs=" + ms(playbackWriteWindowMaxWaitNanos) + ", " +
+                "deadlineTimeouts=$playbackWriteWindowDeadlineTimeouts",
         )
         playbackWriteWindowFrames = 0
         playbackWriteWindowSucceeded = 0
@@ -753,6 +858,10 @@ class AudioEngine(private val context: Context) : AudioPipeline {
         playbackWriteWindowOver20Ms = 0
         playbackWriteWindowTotalNanos = 0L
         playbackWriteWindowMaxNanos = 0L
+        playbackWriteWindowWaitedFrames = 0
+        playbackWriteWindowTotalWaitNanos = 0L
+        playbackWriteWindowMaxWaitNanos = 0L
+        playbackWriteWindowDeadlineTimeouts = 0
     }
 
     private fun reportPlaybackWriteFailure() {
@@ -1046,10 +1155,14 @@ class AudioEngine(private val context: Context) : AudioPipeline {
         private const val ENCODE_DIAGNOSTIC_INTERVAL = 50
         private const val PLAYBACK_DIAGNOSTIC_INTERVAL_MS = 5_000L
         private const val PLAYBACK_WRITE_DIAGNOSTIC_INTERVAL = 50
-        /** At most three 20 ms PCM frames in the application-fed track queue. */
-        private const val MAX_TRACKED_PLAYBACK_QUEUE_FRAMES = 3
+        /** Three frames only when LOW_LATENCY is actually granted by Android. */
+        private const val LOW_LATENCY_PLAYBACK_QUEUE_FRAMES = 3
+        /** 100 ms PCM headroom when Android declines AudioTrack LOW_LATENCY mode. */
+        private const val MAX_TRACKED_PLAYBACK_QUEUE_FRAMES = 5
         /** A stuck output head is a playback failure, not an infinite wait. */
-        private const val MAX_PLAYBACK_QUEUE_WAIT_MS = 1_000L
+        private const val MAX_PLAYBACK_QUEUE_WAIT_MS = 500L
+        /** Bound time spent retrying a full/no-progress non-blocking AudioTrack write. */
+        private const val MAX_AUDIO_TRACK_WRITE_WAIT_MS = 250L
         /** HS-09: bounded retries for transient AudioRecord.read errors. */
         private const val MAX_CONSECUTIVE_READ_ERRORS = 10
         private const val READ_ERROR_BACKOFF_MS = 20L

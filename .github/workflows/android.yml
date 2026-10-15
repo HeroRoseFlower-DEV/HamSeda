@@ -84,7 +84,7 @@ jobs:
             exit 1
           fi
           grep -Fq -- "48 kHz" README.md
-          grep -Fq -- "40 kbps" README.md
+          grep -Fq -- "32 kbps" README.md
 
       - name: Run unit tests
         run: ./gradlew :app:testDebugUnitTest --no-daemon --stacktrace

@@ -51,10 +51,14 @@ have been ignored anyway (e.g. audio from a non-floor-holder).
 
 ## Outbound ordering (HS-02)
 
-All outgoing messages flow through a single bounded channel (capacity 256)
-with one consumer coroutine. The consumer allocates the uint32 sequence,
-seals, and writes in FIFO order. Audio frames are dropped (counted) on a
-full queue to bound latency; control frames are never expected to overflow.
+All outgoing messages pass through one bounded FIFO (maximum 64 total
+messages) and one sender coroutine. A conflated signal wakes the consumer; it
+allocates the uint32 sequence, seals, and writes frames in FIFO order. Audio has
+a separate three-frame queue budget (about 60 ms at 20 ms/frame); when full, the
+oldest queued audio is evicted. Before encryption/serialization, audio already
+older than 120 ms is discarded and counted as a freshness drop. This avoids
+replaying stale speech after a blocked/slow socket write. Control messages are
+retained where possible and can displace queued audio at the total queue cap.
 
 ## Message types
 
@@ -100,9 +104,9 @@ Codec negotiation: `codec = min(prefA, prefB)` from the two HELLOs
 
 - Internal audio is 48 kHz, mono, signed 16-bit PCM.
 - Each frame spans 20 ms (960 samples/channel; 1920 bytes in PCM16 mode).
-- Opus uses official libopus 1.6.1, 40 kbps target, voice mode, full-band
-  maximum bandwidth, and unconstrained VBR. Encoder complexity is device-profile
-  dependent: 6 on Android 8/9 (API 26–28), 8 on Android 10+ (API 29+).
+- Opus uses official libopus 1.6.1, a 32 kbps target, voice mode, full-band
+  maximum bandwidth, and constrained VBR. Encoder complexity is device-profile
+  dependent: 4 on Android 8/9 (API 26–28), 8 on Android 10+ (API 29+).
 - PCM16 is diagnostic-only at 768 kbps; prefer Opus for Bluetooth Classic.
 
 Both HELLO payloads are included in a domain-separated KEY_CONFIRM transcript, canonicalized together with the corresponding public key and nonce. A modified codec preference or reassigned nonce changes the transcript and causes the session to fail closed.

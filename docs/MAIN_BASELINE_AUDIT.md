@@ -225,10 +225,11 @@ The absence of the APK identity means these results cannot yet be attributed con
 ### Android 8/9 compatibility pass (source changes, device validation pending)
 
 - minSdk=26 continues to support Android 8.0 and later; no minSdk increase was made.
-- On API 26–28, the native Opus encoder uses complexity 6; API 29+ uses
-  complexity 8. The 40 kbps target, mono 48 kHz PCM, 20 ms frame duration, and
-  wire protocol remain unchanged. This is a CPU-efficiency tradeoff, not a
-  measured performance result yet; test intelligibility and encode timing.
+- The follow-up real-time profile uses Opus complexity 4 on API 26–28 and
+  complexity 8 on API 29+, with a 32 kbps target and constrained VBR. Mono
+  48 kHz PCM, 20 ms frame duration, and wire protocol remain unchanged. This is
+  intended to reduce legacy encoder load and payload bursts; intelligibility and
+  performance still require validation on the target devices.
 - If constructing or initializing an AudioRecord with VOICE_COMMUNICATION fails,
   the engine makes one bounded attempt with MIC. The primary source remains
   preferred. The fallback path has not been validated on a real OEM audio HAL
@@ -286,7 +287,7 @@ The next log must contain these new lines to establish that the instrumented bui
 - high **capture encode** points to encoder/CPU cost on the transmitting device;
 - rising **underruns** or jitter losses points to the receiving/playback path.
 
-The codec profile, Opus bitrate, negotiated protocol, and AudioTrack capacity/performance-mode selection remain unchanged. A conservative playback experiment caps the application-fed PCM backlog at three 20 ms frames (2,880 mono samples / about 60 ms at 48 kHz); playback-head pacing is logged separately from native write duration, with a 1-second playback-head stall limit.
+The codec profile and wire protocol remain unchanged. Playback now requests 100 ms native output capacity and adapts the app-fed PCM backlog to the actual AudioTrack performance mode: three 20 ms frames (60 ms) only when LOW_LATENCY is granted, otherwise up to five frames (100 ms). Playback-head pacing is logged separately from native write duration; the output-head stall limit is 500 ms and each non-blocking frame submission is bounded to 250 ms.
 
 The Bluetooth Classic output path now has a separate **350 ms RFCOMM write watchdog**. A blocking Java stream write cannot be safely cancelled by coroutine timeout alone, so the watchdog closes the *currently matching socket* if the write remains blocked past the limit; a late return cannot be counted as a successful write. Cancellation also tears down the matching connection rather than leaving a blocked write behind. This deliberately favors a clean connection loss/re-authentication over playing stale speech indefinitely. The threshold is a conservative experimental limit and must be checked on the two physical phones; it is not a guaranteed audio-latency figure.
 
@@ -294,4 +295,4 @@ A new **HS-12 session-level regression test** drives a secure PTT session, simul
 
 ### Current conclusion and next gate
 
-The reconnect fixes remain **not reproduced** in the latest supplied logs, but the full physical-device baseline and audio quality are still unverified. Build/install the latest successful CI artifact, record its SHA-256, and test both transports in both directions. Specifically inspect `AudioTrack queue pacing`, `AudioTrack write timing`, `audio receive timing`, playback underruns, and RFCOMM write timing. On Bluetooth, confirm the new watchdog only fires when a write exceeds 350 ms; if it fires repeatedly at close range, reconsider the threshold only after correlating it with audible gaps and queue drops. Compare the same speech passage before/after under the same route and phone pair; do not mark either performance change successful until the logs and audible result support it.
+The reconnect fixes remain **not reproduced** in the latest supplied logs, but the full physical-device baseline and audio quality are still unverified. Build/install the latest successful CI artifact, record its SHA-256, and test both transports in both directions. Specifically inspect `AudioTrack queue pacing`, `AudioTrack write timing` (native-call time separately from submission wait), `audio receive timing` (within-burst cadence separately from inter-burst gaps), playback underruns, and RFCOMM write timing. On Bluetooth, confirm the new watchdog only fires when a write exceeds 350 ms; if it fires repeatedly at close range, reconsider the threshold only after correlating it with audible gaps and queue drops. Compare the same speech passage before/after under the same route and phone pair; do not mark either performance change successful until the logs and audible result support it.

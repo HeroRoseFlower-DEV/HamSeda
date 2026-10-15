@@ -1,5 +1,61 @@
 # HamSeda Changelog
 
+## 2026-10-14 — Adaptive microphone input level
+- **Software gain control:** normalize low-level active PCM speech before encoding,
+  complementing Android's optional vendor AGC rather than relying on it alone.
+- **Bounded gain:** gradual gain increases target about 5,500 RMS samples with an
+  8x maximum (+18 dB); sudden loud input reduces gain immediately and output
+  peaks are held below 30,000 to leave headroom.
+- **Near-silence guard:** frames below the configured RMS floor are not amplified
+  to avoid making electronic/background noise dominate quiet moments.
+- **Diagnostics:** every 50 captured frames report mean input RMS, mean/max
+  applied gain, and near-silence frame count, without logging audio content.
+- **Validation caveat:** deterministic JVM tests cover gain-up, silence guard,
+  rapid reduction and peak safety. Input sensitivity and intelligibility still
+  need confirmation on the two physical phones; digital gain cannot recover
+  speech that is buried below the microphone's noise floor.
+
+
+## 2026-10-14 — Adaptive playback headroom
+- **Default AudioTrack mode:** request 100 ms native output capacity and permit
+  up to five PCM frames (100 ms) in the app-fed queue when LOW_LATENCY mode is
+  unavailable. This provides headroom for the 80–90 ms scheduling/HAL spikes
+  observed in the logs.
+- **Real low-latency mode:** retain a three-frame (60 ms) cap if the platform
+  actually reports LOW_LATENCY. Queue-pacing logs now report the effective cap,
+  rather than the maximum profile for every device.
+- **Trade-off:** default-mode playback can add up to about 40 ms of queued output
+  versus the former 60 ms profile. This is intended to reduce underruns; it is
+  not a measured claim of end-to-end latency or audible improvement.
+
+## 2026-10-14 — PTT audio backpressure and timing diagnostics
+- **Bluetooth freshness under congestion:** limit queued outbound audio from six
+  frames to three (about 60 ms). When a socket write stalls, the queue now keeps
+  newer speech instead of allowing a long stale backlog to accumulate.
+- **Inbound media backpressure:** remove the 64-frame SharedFlow receive backlog
+  from both transports. Socket readers now wait for the session collector to
+  process each frame, propagating pressure to the peer's bounded sender queue
+  rather than allowing up to about 1.28 seconds of stale frames to pile up.
+- **Stale-frame guard:** before encryption/serialization, drop any dequeued
+  audio frame already older than 120 ms and count it with the existing freshness
+  drops. This prevents a delayed RFCOMM write from replaying old queued speech.
+- **Opus transport profile:** target 32 kbps instead of 40 kbps and enable
+  constrained VBR to reduce packet bursts. Android API 26–28 use encoder
+  complexity 4 (from 6) to leave more CPU headroom; API 29+ retain complexity 8.
+- **Receive diagnostics:** average cadence now excludes intervals longer than
+  250 ms and reports those separately as inter-burst gaps. The maximum raw
+  interval remains visible, so true long stalls are not hidden.
+- **Playback writer:** replace potentially long blocking AudioTrack writes with
+  bounded non-blocking submissions. Native write-call time and time waiting for
+  output capacity are logged independently; a write submission that misses its deadline fails within
+  250 ms rather than pinning the audio worker indefinitely.
+- **Playback queue timeout:** reduce the output-head pacing timeout from 1 s to
+  500 ms so an unhealthy output path does not keep stale speech queued for too long.
+- **Validation status:** code and regression-test expectations are updated.
+  CI must pass before the change is considered build-verified; audible latency,
+  intelligibility, and hardware-specific Bluetooth behavior are not claimed
+  without physical-device evidence.
+
 ## 2026-10-14 — AudioTrack startup-threshold deadlock fix
 - **Playback startup:** the queue previously capped at 60 ms even when an
   AudioTrack's default streaming start threshold was its full 64–80 ms buffer.
