@@ -7,6 +7,7 @@ import android.content.ServiceConnection
 import android.os.Bundle
 import android.os.IBinder
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.Box
@@ -142,6 +143,18 @@ private enum class Screen { HOME, DISCOVERY, PAIRING, SETTINGS, PRIVACY, DIAGNOS
 private fun HamSedaRoot(deps: VmDeps, onLanguageChanged: () -> Unit) {
     var screen by remember { mutableStateOf(Screen.HOME) }
     val phase by deps.manager.phase.collectAsStateWithLifecycle()
+
+    // Compose navigation is state-driven, so consume system Back while a
+    // secondary screen is visible instead of letting the Activity finish.
+    // Keep the SAS confirmation screen in place until the handshake resolves.
+    BackHandler(enabled = screen != Screen.HOME) {
+        when (screen) {
+            Screen.DISCOVERY, Screen.SETTINGS -> screen = Screen.HOME
+            Screen.PRIVACY, Screen.DIAGNOSTICS -> screen = Screen.SETTINGS
+            Screen.PAIRING -> Unit
+            Screen.HOME -> Unit
+        }
+    }
 
     // Genuine state-driven navigation: the SAS screen appears exactly while
     // the session waits for code comparison, and leaves when it resolves.
