@@ -556,7 +556,13 @@ class AudioEngine(private val context: Context) : AudioPipeline {
         val nativeOutputRate =
             AudioTrack.getNativeOutputSampleRate(AudioManager.STREAM_VOICE_CALL)
         val canRequestLowLatency = nativeOutputRate == AudioCodec.SAMPLE_RATE
-        val requestedBufferBytes = maxOf(minBuf, AudioCodec.FRAME_BYTES_PCM * 3)
+        // Keep the native capacity consistent with the five-frame (100 ms)
+        // fallback queue. configurePlaybackBuffer() shrinks it to 60 ms only
+        // when Android actually grants LOW_LATENCY mode.
+        val requestedBufferBytes = maxOf(
+            minBuf,
+            AudioCodec.FRAME_BYTES_PCM * MAX_TRACKED_PLAYBACK_QUEUE_FRAMES,
+        )
         fun buildTrack(performanceMode: Int): AudioTrack? = try {
             AudioTrack.Builder()
                 .setAudioAttributes(attrs)

@@ -66,6 +66,23 @@ import java.util.concurrent.atomic.AtomicLong
  * No internet, no access point, no router: the group is negotiated directly
  * between the two phones over the Wi-Fi radio.
  */
+/**
+ * Android reports BUSY when a previous P2P radio transition has not completed.
+ * Retry only that transient condition; all other failures remain fail-fast.
+ */
+internal object P2pListenRetryPolicy {
+    const val MAX_ATTEMPTS = 3
+
+    fun delayBeforeRetryMs(reasonCode: Int, failedAttempt: Int): Long? {
+        if (reasonCode != WifiP2pManager.BUSY) return null
+        return when (failedAttempt) {
+            1 -> 250L
+            2 -> 500L
+            else -> null
+        }
+    }
+}
+
 class WifiDirectTransport(private val context: Context) : Transport {
 
     override val type = TransportType.WIFI_DIRECT
@@ -569,7 +586,7 @@ class WifiDirectTransport(private val context: Context) : Transport {
             return
         }
 
-        val listenFailure = startP2pListenMode()
+        val listenFailure = startP2pListenMode(attempt)
         if (attempt != operationGeneration.get() || !listeningRequested) return
         if (listenFailure != null) {
             AppLog.log(TAG, "p2p wait/listen mode failed: $listenFailure")
@@ -631,45 +648,77 @@ class WifiDirectTransport(private val context: Context) : Transport {
      * Returns null on success or a diagnostic reason on failure.
      */
     @SuppressLint("MissingPermission")
-    private suspend fun startP2pListenMode(): String? {
+    private suspend fun startP2pListenMode(expectedGeneration: Long): String? {
         val mgr = manager ?: return "manager unavailable"
         val ch = channel ?: return "channel unavailable"
-        val result = CompletableDeferred<String?>()
-        val listener = object : WifiP2pManager.ActionListener {
-            override fun onSuccess() {
-                if (Build.VERSION.SDK_INT >= 33) {
-                    p2pListenModeActive = true
-                    p2pDiscoveryActive = false
-                } else {
-                    p2pDiscoveryActive = true
-                    p2pListenModeActive = false
-                }
-                result.complete(null)
+
+        for (failedAttempt in 1..P2pListenRetryPolicy.MAX_ATTEMPTS) {
+            // A new connect/stop operation invalidates this listener request.
+            // Do not retry a stale operation after the radio has been repurposed.
+            if (operationGeneration.get() != expectedGeneration || !listeningRequested) {
+                return "listen request superseded"
             }
 
-            override fun onFailure(reason: Int) {
-                p2pListenModeActive = false
-                p2pDiscoveryActive = false
-                val detail = "${reasonName(reason)} (code=$reason)"
-                result.complete(detail)
+            val result = CompletableDeferred<Int?>()
+            val listener = object : WifiP2pManager.ActionListener {
+                override fun onSuccess() {
+                    if (operationGeneration.get() == expectedGeneration && listeningRequested) {
+                        if (Build.VERSION.SDK_INT >= 33) {
+                            p2pListenModeActive = true
+                            p2pDiscoveryActive = false
+                        } else {
+                            p2pDiscoveryActive = true
+                            p2pListenModeActive = false
+                        }
+                    }
+                    result.complete(null)
+                }
+
+                override fun onFailure(reason: Int) {
+                    if (operationGeneration.get() == expectedGeneration) {
+                        p2pListenModeActive = false
+                        p2pDiscoveryActive = false
+                    }
+                    result.complete(reason)
+                }
+            }
+
+            try {
+                if (Build.VERSION.SDK_INT >= 33) {
+                    mgr.startListening(ch, listener)
+                } else {
+                    mgr.discoverPeers(ch, listener)
+                }
+
+                val failureCode = withTimeout(5_000L) { result.await() }
+                if (failureCode == null) return null
+
+                val retryDelayMs = P2pListenRetryPolicy.delayBeforeRetryMs(
+                    reasonCode = failureCode,
+                    failedAttempt = failedAttempt,
+                )
+                if (retryDelayMs != null) {
+                    AppLog.log(
+                        TAG,
+                        "p2p listen framework busy (code=$failureCode); " +
+                            "retrying attempt=${failedAttempt + 1}/${P2pListenRetryPolicy.MAX_ATTEMPTS} " +
+                            "after ${retryDelayMs}ms",
+                    )
+                    delay(retryDelayMs)
+                    continue
+                }
+                return "${reasonName(failureCode)} (code=$failureCode)"
+            } catch (e: TimeoutCancellationException) {
+                return "framework callback timed out"
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: SecurityException) {
+                return "permission denied: ${e.message}"
+            } catch (e: Exception) {
+                return "${e.javaClass.simpleName}: ${e.message}"
             }
         }
-        return try {
-            if (Build.VERSION.SDK_INT >= 33) {
-                mgr.startListening(ch, listener)
-            } else {
-                mgr.discoverPeers(ch, listener)
-            }
-            withTimeout(5_000L) { result.await() }
-        } catch (e: TimeoutCancellationException) {
-            "framework callback timed out"
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: SecurityException) {
-            "permission denied: ${e.message}"
-        } catch (e: Exception) {
-            "${e.javaClass.simpleName}: ${e.message}"
-        }
+        return "listen mode failed after ${P2pListenRetryPolicy.MAX_ATTEMPTS} attempts"
     }
 
     /**
