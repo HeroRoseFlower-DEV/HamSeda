@@ -1,18 +1,16 @@
 package com.hamseda.walkie.audio
 
+import kotlin.math.abs
 import kotlin.math.min
 import kotlin.math.sqrt
 
 /**
- * Bounded, stateful microphone leveler applied to PCM before encoding.
+ * Bounded software microphone leveler applied to PCM after AudioRecord returns
+ * samples (and therefore after platform capture effects, when they are active).
  *
- * Android's hardware/vendor AGC remains enabled when available, but its behavior
- * is not consistent across devices. This software stage brings quiet active
- * speech toward a useful RMS level while limiting maximum gain and peak level.
- * It deliberately does not amplify frames at the near-silence noise floor.
- *
- * This cannot improve signal-to-noise ratio: speech that is physically buried
- * under microphone noise still requires a closer source or a better microphone.
+ * The RMS gate avoids boosting low-level background noise. This cannot recover
+ * speech already buried in the microphone noise floor; the threshold must be
+ * validated with real recordings on supported devices.
  */
 internal class CaptureGainController(
     private val targetRms: Float = DEFAULT_TARGET_RMS,
@@ -27,62 +25,75 @@ internal class CaptureGainController(
     var lastInputRms: Float = 0f
         private set
 
+    init {
+        require(targetRms > 0f)
+        require(maxGain >= 1f)
+        require(maxOutputPeak in 1f..Short.MAX_VALUE.toFloat())
+        require(minimumActiveRms >= 0f)
+        require(gainRiseSmoothing in 0f..1f)
+    }
+
     /**
-     * Adjusts samples in place and returns the applied linear gain.
-     * Gain reduction is immediate for loud transients; gain increases are
-     * smoothed over several 20 ms frames to avoid audible pumping.
+     * Measures the input and adjusts samples in place when enabled. Gain
+     * reduction is immediate; gain increases are smoothed to reduce pumping.
+     * When disabled, PCM is unchanged and the applied gain returns to unity.
      */
-    fun processInPlace(samples: ShortArray): Float {
-        if (samples.isEmpty()) return currentGain
+    fun processInPlace(samples: ShortArray, enabled: Boolean = true): Float {
+        if (samples.isEmpty()) {
+            lastInputRms = 0f
+            if (!enabled) currentGain = 1f
+            return currentGain
+        }
 
         var sumSquares = 0.0
         var peak = 0
         for (sample in samples) {
             val value = sample.toInt()
             sumSquares += value.toDouble() * value.toDouble()
-            peak = maxOf(peak, kotlin.math.abs(value))
+            peak = maxOf(peak, abs(value))
         }
 
-        val rms = sqrt(sumSquares / samples.size).toFloat()
-        lastInputRms = rms
+        lastInputRms = sqrt(sumSquares / samples.size).toFloat()
+        if (!enabled) {
+            currentGain = 1f
+            return currentGain
+        }
 
-        // Do not lift the near-silence floor: otherwise quiet-room electronic
-        // noise can become as loud as speech when the PTT button is held.
-        var desiredGain = if (rms < minimumActiveRms) {
+        // Below this voice threshold, do not lift the noise floor.
+        var desiredGain = if (lastInputRms < minimumActiveRms) {
             1f
         } else {
-            min(maxGain, targetRms / rms.coerceAtLeast(1f))
+            min(maxGain, targetRms / lastInputRms.coerceAtLeast(1f))
         }
 
-        // Preserve headroom for transient consonants and clicks. This ceiling
-        // is applied before multiplication, so samples never wrap on conversion.
+        // Preserve headroom based on each frame's actual input peak.
         if (peak > 0) {
             desiredGain = min(desiredGain, maxOutputPeak / peak.toFloat())
         }
         desiredGain = desiredGain.coerceAtLeast(0f)
 
         currentGain = if (desiredGain < currentGain) {
-            // Fast gain reduction limits clipping and sudden loud bursts.
             desiredGain
         } else {
-            // Slow upward adaptation helps quiet or distant speech without
-            // magnifying every frame-to-frame fluctuation.
             (currentGain + (desiredGain - currentGain) * gainRiseSmoothing)
                 .coerceAtMost(maxGain)
         }
 
         for (i in samples.indices) {
             val amplified = (samples[i].toInt() * currentGain).toInt()
-            samples[i] = amplified.coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()
+            samples[i] = amplified
+                .coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
+                .toShort()
         }
         return currentGain
     }
 
     companion object {
         const val DEFAULT_TARGET_RMS = 5_500f
-        const val DEFAULT_MAX_GAIN = 8f // +18.1 dB maximum software gain
+        const val DEFAULT_MAX_GAIN = 8f
         const val DEFAULT_MAX_OUTPUT_PEAK = 30_000f
-        const val MINIMUM_ACTIVE_RMS = 24f
+        /** Samples below this RMS stay at unity gain; tune against device recordings. */
+        const val MINIMUM_ACTIVE_RMS = 160f
         const val GAIN_RISE_SMOOTHING = 0.55f
     }
 }
