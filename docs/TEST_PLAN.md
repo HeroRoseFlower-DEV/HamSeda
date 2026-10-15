@@ -240,17 +240,18 @@ runs cannot validate Wi-Fi Direct/Bluetooth audio — they only compile.
 - Wi-Fi Direct group-owner negotiation across vendors.
 
 
-### Microphone level and distant speech (physical-device check)
+### Raw microphone capture and distant speech (physical-device check)
 
-Use the same two phones, transport, room and receiver volume for each run. Hold
-PTT and speak the same phrase first at roughly 15–20 cm and then at 60–100 cm
-from the transmitting phone; repeat on both devices and both transports. Compare
-intelligibility, background-noise pumping, clipping, and the sender's
-`capture encode timing` fields: `avgInputRms`, `avgGain`, `maxGain`, and
-`nearSilenceFrames`. Also verify quiet-room silence does not become a loud hiss.
-This is a comparative manual check, not a calibrated microphone-sensitivity
-measurement. A gain increase cannot recover speech whose signal is below the
-microphone/noise-suppression floor.
+The application must not add software gain, normalization, filtering, noise
+suppression, echo cancellation, or other PCM transforms. On the same two phones,
+transport, room, and receiver volume, speak the same phrase at roughly 15–20 cm
+and then 60–100 cm from the transmitting phone; repeat on both devices and both
+transports. Compare intelligibility, clipping, dropouts, and room silence without
+changing software gain or enabling an app-level audio effect. Record the selected
+capture source (`UNPROCESSED` or `MIC_FALLBACK`), device model/API, transport,
+and observations. Source selection alone does not prove that the OEM microphone
+path or audio HAL applies no processing; Opus is also lossy compression. This is
+a qualitative device check, not a calibrated microphone-sensitivity measurement.
 
 
 ## Phase 3 — Transport receive freshness and stale-session isolation
