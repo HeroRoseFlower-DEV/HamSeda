@@ -68,9 +68,6 @@
     <string name="settings_title">تنظیمات</string>
     <string name="settings_transport">حالت اتصال</string>
     <string name="transport_locked_hint">در زمان فعال بودن نشست، حالت اتصال قابل تغییر نیست.</string>
-    <string name="settings_audio_processing">پردازش میکروفون</string>
-    <string name="settings_software_gain">تنظیم نرم‌افزاری بلندی صدا</string>
-    <string name="settings_software_gain_desc">بلندی گفتار آرام را حداکثر تا ۸ برابر افزایش می‌دهد. برای مقایسهٔ صدای خام میکروفون یا جلوگیری از تقویت صدای پس‌زمینه، آن را خاموش کنید.</string>
     <string name="settings_codec">کدک صوتی</string>
     <string name="codec_opus">اپوس (پیش‌فرض، کیفیت بالا)</string>
     <string name="codec_opus_desc">نرخ هدف ۳۲ کیلوبیت‌برثانیه؛ صدای ۴۸ کیلوهرتز تک‌کاناله.</string>
