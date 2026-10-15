@@ -1,0 +1,158 @@
+name: Release HamSeda
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: hamseda-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout tagged source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 17 (Temurin)
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
+
+      - name: Set up Android SDK packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          ANDROID_HOME="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          if [ -d "$ANDROID_HOME/cmdline-tools/latest" ]; then
+            CT="$ANDROID_HOME/cmdline-tools/latest"
+          else
+            CT="$(ls -d "$ANDROID_HOME"/cmdline-tools/*/ | sort -V | tail -n1)"
+          fi
+          export PATH="$CT/bin:$PATH"
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager "platform-tools" "platforms;android-37" "build-tools;36.0.0" \
+            "ndk;30.0.16248370" "cmake;3.31.6" \
+            || sdkmanager "platform-tools" "platforms;android-37.0" "build-tools;36.0.0" \
+              "ndk;30.0.16248370" "cmake;3.31.6"
+
+      - name: Validate tag, version metadata, and signing secrets
+        id: release
+        shell: bash
+        env:
+          HAMSEDA_KEYSTORE_BASE64: ${{ secrets.HAMSEDA_KEYSTORE_BASE64 }}
+          HAMSEDA_KEYSTORE_PASSWORD: ${{ secrets.HAMSEDA_KEYSTORE_PASSWORD }}
+          HAMSEDA_KEY_ALIAS: ${{ secrets.HAMSEDA_KEY_ALIAS }}
+          HAMSEDA_KEY_PASSWORD: ${{ secrets.HAMSEDA_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          for name in HAMSEDA_KEYSTORE_BASE64 HAMSEDA_KEYSTORE_PASSWORD HAMSEDA_KEY_ALIAS HAMSEDA_KEY_PASSWORD; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::Required repository secret $name is not configured."
+              exit 1
+            fi
+          done
+
+          metadata="$(./gradlew -q printReleaseMetadata --no-daemon)"
+          IFS='|' read -r app_version app_code <<< "$metadata"
+          tag_version="${GITHUB_REF_NAME#v}"
+          if [[ ! "$app_version" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
+            echo "::error::Unexpected app versionName: $app_version"
+            exit 1
+          fi
+          if [[ ! "$app_code" =~ ^[0-9]+$ ]] || [ "$app_code" -lt 1 ]; then
+            echo "::error::versionCode must be a positive integer; got: $app_code"
+            exit 1
+          fi
+          if [ "$tag_version" != "$app_version" ] && [ "$tag_version" != "${app_version}.0" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match app versionName $app_version."
+            exit 1
+          fi
+          echo "Validated release tag $GITHUB_REF_NAME (versionName=$app_version, versionCode=$app_code)."
+          echo "version_name=$app_version" >> "$GITHUB_OUTPUT"
+          echo "version_code=$app_code" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare temporary signing key
+        shell: bash
+        env:
+          HAMSEDA_KEYSTORE_BASE64: ${{ secrets.HAMSEDA_KEYSTORE_BASE64 }}
+        run: |
+          set -euo pipefail
+          umask 077
+          key_file="$RUNNER_TEMP/hamseda-release.jks"
+          printf '%s' "$HAMSEDA_KEYSTORE_BASE64" | base64 --decode > "$key_file"
+          test -s "$key_file"
+          chmod 600 "$key_file"
+          echo "HAMSEDA_KEYSTORE_PATH=$key_file" >> "$GITHUB_ENV"
+
+      - name: Build signed release APK and Android App Bundle
+        shell: bash
+        env:
+          HAMSEDA_KEYSTORE_PASSWORD: ${{ secrets.HAMSEDA_KEYSTORE_PASSWORD }}
+          HAMSEDA_KEY_ALIAS: ${{ secrets.HAMSEDA_KEY_ALIAS }}
+          HAMSEDA_KEY_PASSWORD: ${{ secrets.HAMSEDA_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          ./gradlew :app:assembleRelease :app:bundleRelease --no-daemon --stacktrace
+
+      - name: Verify release signatures and generate checksums
+        id: artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="$(find app/build/outputs/apk/release -maxdepth 1 -type f -name '*.apk' -print -quit)"
+          AAB="$(find app/build/outputs/bundle/release -maxdepth 1 -type f -name '*.aab' -print -quit)"
+          test -n "$APK" && test -s "$APK"
+          test -n "$AAB" && test -s "$AAB"
+
+          ANDROID_HOME="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          APKSIGNER="$ANDROID_HOME/build-tools/36.0.0/apksigner"
+          test -x "$APKSIGNER"
+          "$APKSIGNER" verify --verbose --print-certs "$APK"
+          jarsigner -verify "$AAB"
+
+          mkdir -p release-assets
+          cp "$APK" release-assets/
+          cp "$AAB" release-assets/
+          (
+            cd release-assets
+            sha256sum *.apk *.aab > SHA256SUMS
+            sha256sum --check SHA256SUMS
+          )
+          echo "Release artifacts verified; SHA-256 manifest generated."
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release create "$GITHUB_REF_NAME" \
+            release-assets/*.apk release-assets/*.aab release-assets/SHA256SUMS \
+            --verify-tag \
+            --title "HamSeda $GITHUB_REF_NAME" \
+            --generate-notes
+
+      - name: Remove temporary signing material
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          if [ -n "${HAMSEDA_KEYSTORE_PATH:-}" ]; then
+            rm -f "$HAMSEDA_KEYSTORE_PATH"
+          else
+            rm -f "$RUNNER_TEMP/hamseda-release.jks"
+          fi
