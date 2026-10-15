@@ -67,6 +67,8 @@ class AudioEngine(private val context: Context) : AudioPipeline {
     private var recorder: AudioRecord? = null
 
     private val playbackRunning = AtomicBoolean(false)
+    /** Serializes AudioTrack creation/start/stop so teardown cannot race a late startup. */
+    private val playbackLifecycleLock = Any()
     private var playbackThread: Thread? = null
     private var track: AudioTrack? = null
 
@@ -533,7 +535,8 @@ class AudioEngine(private val context: Context) : AudioPipeline {
         )
     }
 
-    override fun startPlayback(codec: AudioCodec, buffer: JitterBuffer): Boolean {
+    override fun startPlayback(codec: AudioCodec, buffer: JitterBuffer): Boolean =
+        synchronized(playbackLifecycleLock) {
         if (playbackRunning.get()) return true
         val minBuf = AudioTrack.getMinBufferSize(
             AudioCodec.SAMPLE_RATE,
@@ -985,16 +988,18 @@ class AudioEngine(private val context: Context) : AudioPipeline {
     }
 
     override fun stopPlayback() {
-        playbackRunning.set(false)
-        val worker = playbackThread
-        if (worker != null && worker !== Thread.currentThread()) {
-            try { worker.join(500) } catch (_: InterruptedException) {}
+        synchronized(playbackLifecycleLock) {
+            playbackRunning.set(false)
+            val worker = playbackThread
+            if (worker != null && worker !== Thread.currentThread()) {
+                try { worker.join(500) } catch (_: InterruptedException) {}
+            }
+            playbackThread = null
+            try { track?.stop() } catch (_: IllegalStateException) {}
+            track?.release()
+            track = null
+            restoreAudioModeIfIdle()
         }
-        playbackThread = null
-        try { track?.stop() } catch (_: IllegalStateException) {}
-        track?.release()
-        track = null
-        restoreAudioModeIfIdle()
     }
 
     val isPlaying: Boolean get() = playbackRunning.get()
