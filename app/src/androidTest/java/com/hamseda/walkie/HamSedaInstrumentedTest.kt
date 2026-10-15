@@ -3,11 +3,13 @@ package com.hamseda.walkie
 import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import androidx.test.rule.GrantPermissionRule
 import com.hamseda.walkie.audio.OpusCodec
 import com.hamseda.walkie.crypto.SessionCrypto
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 
@@ -19,6 +21,14 @@ import org.junit.runner.RunWith
  */
 @RunWith(AndroidJUnit4::class)
 class HamSedaInstrumentedTest {
+
+    @get:Rule
+    val runtimePermissionRule: GrantPermissionRule = GrantPermissionRule.grant(
+        android.Manifest.permission.RECORD_AUDIO,
+        android.Manifest.permission.NEARBY_WIFI_DEVICES,
+        android.Manifest.permission.BLUETOOTH_SCAN,
+        android.Manifest.permission.BLUETOOTH_CONNECT,
+    )
 
     @Test
     fun appContext_isCorrect() {
