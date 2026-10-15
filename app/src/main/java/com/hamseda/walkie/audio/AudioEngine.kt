@@ -15,9 +15,6 @@ import android.media.AudioManager
 import android.media.AudioRecord
 import android.media.AudioTrack
 import android.media.MediaRecorder
-import android.media.audiofx.AcousticEchoCanceler
-import android.media.audiofx.AutomaticGainControl
-import android.media.audiofx.NoiseSuppressor
 import android.os.Build
 import android.os.Process
 import android.util.Log
@@ -40,8 +37,7 @@ import java.util.Locale
  *   (max 5), then silence.
  * - Audio focus: transient focus is requested when capture starts; a focus
  *   loss (e.g. an incoming call) stops transmission via [Listener].
- * - Effects: AcousticEchoCanceler / NoiseSuppressor / AutomaticGainControl
- *   are enabled only when the platform reports them available.
+ * - Capture is kept unprocessed by the app: no software gain or attached audio effects.
  * - Routing: `MODE_IN_COMMUNICATION`; speakerphone on by default
  *   (walkie-talkie style), toggleable; headset plug/unplug is observed.
  *
@@ -99,23 +95,9 @@ class AudioEngine(private val context: Context) : AudioPipeline {
     private var previousAudioMode: Int? = null
     private var previousSpeakerphoneOn: Boolean? = null
     private var previousCommunicationDevice: AudioDeviceInfo? = null
-    private var effects = mutableListOf<android.media.audiofx.AudioEffect>()
-
     @Volatile
     var speakerphoneOn: Boolean = true
         private set
-
-    @Volatile
-    // Match SettingsRepository's default immediately. The DataStore collector
-    // is asynchronous; a user can press PTT before its first emission arrives.
-    // Without this safe default, the first capture burst may be encoded at raw
-    // microphone level even when the persisted preference defaults to enabled.
-    private var softwareGainEnabled: Boolean = true
-
-    /** Updates the software microphone leveler without restarting capture. */
-    fun setSoftwareGainEnabled(enabled: Boolean) {
-        softwareGainEnabled = enabled
-    }
 
     @Volatile
     var currentRoute: AudioRoute = AudioRoute.SPEAKER
@@ -170,19 +152,21 @@ class AudioEngine(private val context: Context) : AudioPipeline {
 
     /**
      * Some older OEM audio HALs reject VOICE_COMMUNICATION during construction
-     * even though microphone capture via MIC works. Keep VOICE_COMMUNICATION as
-     * the preferred source (for voice-processing effects), then make one bounded
-     * compatibility attempt with MIC instead of failing the whole PTT session.
+     * even though microphone capture via MIC works. Prefer UNPROCESSED capture
+     * when the device supports it, then fall back to MIC. Never request the
+     * VOICE_COMMUNICATION source because it may select a voice-processed path.
      */
     // startCapture checks RECORD_AUDIO before calling this helper. Keep this annotation
     // scoped to the guarded platform-builder calls rather than suppressing permission
     // diagnostics across the whole AudioEngine.
     @SuppressLint("MissingPermission")
     private fun buildCaptureRecorder(format: AudioFormat, bufferBytes: Int): CaptureRecorder? {
-        val sources = listOf(
-            MediaRecorder.AudioSource.VOICE_COMMUNICATION to "VOICE_COMMUNICATION",
-            MediaRecorder.AudioSource.MIC to "MIC_FALLBACK",
-        )
+        val sources = buildList {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                add(MediaRecorder.AudioSource.UNPROCESSED to "UNPROCESSED")
+            }
+            add(MediaRecorder.AudioSource.MIC to "MIC_FALLBACK")
+        }
         for ((source, sourceName) in sources) {
             val candidate = try {
                 AudioRecord.Builder()
@@ -201,9 +185,7 @@ class AudioEngine(private val context: Context) : AudioPipeline {
                 false
             }
             if (initialized) {
-                if (source != MediaRecorder.AudioSource.VOICE_COMMUNICATION) {
-                    AppLog.log(TAG, "legacy audio-source fallback selected: MIC")
-                }
+                AppLog.log(TAG, "raw capture source selected: $sourceName")
                 return CaptureRecorder(candidate, sourceName)
             }
             try { candidate.release() } catch (_: Exception) {}
@@ -271,7 +253,6 @@ class AudioEngine(private val context: Context) : AudioPipeline {
             return false
         }
         val rec = captureRecorder.recorder
-        attachEffects(rec.audioSessionId)
         recorder = rec
         captureRunning.set(true)
         val generation = ++captureGeneration
@@ -280,9 +261,7 @@ class AudioEngine(private val context: Context) : AudioPipeline {
             TAG,
             "capture initialized: sampleRate=${AudioCodec.SAMPLE_RATE}, frameMs=20, " +
                 "bufferBytes=$requestedBufferBytes, source=${captureRecorder.sourceName}, " +
-                "softwareGainTargetRms=${CaptureGainController.DEFAULT_TARGET_RMS.toInt()}, " +
-                "softwareGainMax=${CaptureGainController.DEFAULT_MAX_GAIN}, " +
-                "softwareGainEnabled=$softwareGainEnabled, " +
+                "audioProcessing=disabled, " +
                 "opusComplexity=${(codec as? OpusCodec)?.encoderComplexityInUse ?: -1}",
         )
         val worker = Thread({
@@ -326,11 +305,9 @@ class AudioEngine(private val context: Context) : AudioPipeline {
             var encodeWindowFrames = 0
             var encodeWindowTotalNanos = 0L
             var encodeWindowMaxNanos = 0L
-            val gainController = CaptureGainController()
-            var gainWindowInputRmsTotal = 0.0
-            var gainWindowAppliedTotal = 0.0
-            var gainWindowMaxApplied = 1f
-            var gainWindowNearSilenceFrames = 0
+            var encodeWindowFrames = 0
+            var encodeWindowTotalNanos = 0L
+            var encodeWindowMaxNanos = 0L
             while (captureRunning.get() && captureGeneration == generation) {
                 val read = rec.read(frame, 0, frame.size)
                 if (read < 0) {
@@ -364,18 +341,9 @@ class AudioEngine(private val context: Context) : AudioPipeline {
                 consecutiveErrors = 0
                 if (read != frame.size) continue // wait for a full 20 ms frame
 
-                // Raise quiet active speech before encoding. This complements (rather
-                // than relies solely on) optional vendor AGC and limits output peaks.
-                val appliedGain = gainController.processInPlace(frame, enabled = softwareGainEnabled)
-                gainWindowInputRmsTotal += gainController.lastInputRms.toDouble()
-                gainWindowAppliedTotal += appliedGain.toDouble()
-                gainWindowMaxApplied = maxOf(gainWindowMaxApplied, appliedGain)
-                if (gainController.lastInputRms < CaptureGainController.MINIMUM_ACTIVE_RMS) {
-                    gainWindowNearSilenceFrames++
-                }
-
+                // Do not modify PCM samples between AudioRecord.read() and the codec.
                 var peak = 0
-                for (s in frame) peak = maxOf(peak, abs(s.toInt()))
+                for (sample in frame) peak = maxOf(peak, abs(sample.toInt()))
                 val level = min(1f, peak / 32768f)
                 try {
                     val encodeStartedAt = System.nanoTime()
@@ -390,18 +358,11 @@ class AudioEngine(private val context: Context) : AudioPipeline {
                             "capture encode timing: frames=$encodeWindowFrames, " +
                                 "avgMs=${String.format(Locale.ROOT, "%.2f", encodeWindowTotalNanos / encodeWindowFrames / 1_000_000.0)}, " +
                                 "maxMs=${String.format(Locale.ROOT, "%.2f", encodeWindowMaxNanos / 1_000_000.0)}, " +
-                                "avgInputRms=${String.format(Locale.ROOT, "%.0f", gainWindowInputRmsTotal / encodeWindowFrames)}, " +
-                                "avgGain=${String.format(Locale.ROOT, "%.2f", gainWindowAppliedTotal / encodeWindowFrames)}, " +
-                                "maxGain=${String.format(Locale.ROOT, "%.2f", gainWindowMaxApplied)}, " +
-                                "nearSilenceFrames=$gainWindowNearSilenceFrames, gainEnabled=$softwareGainEnabled",
+                                "audioProcessing=disabled",
                         )
                         encodeWindowFrames = 0
                         encodeWindowTotalNanos = 0L
                         encodeWindowMaxNanos = 0L
-                        gainWindowInputRmsTotal = 0.0
-                        gainWindowAppliedTotal = 0.0
-                        gainWindowMaxApplied = 1f
-                        gainWindowNearSilenceFrames = 0
                     }
                     try {
                         onFrame(encoded, level)
@@ -1175,69 +1136,6 @@ class AudioEngine(private val context: Context) : AudioPipeline {
     private fun abandonFocus() {
         focusRequest?.let { audioManager.abandonAudioFocusRequest(it) }
         focusRequest = null
-    }
-
-    private fun attachEffects(sessionId: Int) {
-        releaseEffects()
-        val status = mutableListOf<String>()
-
-        // Isolate each effect: a vendor failure while creating AEC must not
-        // silently prevent NS and AGC from being attempted on this device.
-        fun attach(
-            name: String,
-            available: () -> Boolean,
-            create: () -> android.media.audiofx.AudioEffect?,
-        ) {
-            var candidate: android.media.audiofx.AudioEffect? = null
-            try {
-                if (!available()) {
-                    status += "$name=unavailable"
-                    return
-                }
-                candidate = create()
-                if (candidate == null) {
-                    status += "$name=create-null"
-                    return
-                }
-                candidate.enabled = true
-                if (!candidate.enabled) {
-                    status += "$name=not-enabled"
-                    candidate.release()
-                    candidate = null
-                    return
-                }
-                effects.add(candidate)
-                status += "$name=on"
-                candidate = null
-            } catch (e: Exception) {
-                try {
-                    candidate?.enabled = false
-                    candidate?.release()
-                } catch (_: Exception) {}
-                status += "$name=error:${e.javaClass.simpleName}"
-            }
-        }
-
-        attach("aec", { AcousticEchoCanceler.isAvailable() }) {
-            AcousticEchoCanceler.create(sessionId)
-        }
-        attach("ns", { NoiseSuppressor.isAvailable() }) {
-            NoiseSuppressor.create(sessionId)
-        }
-        attach("agc", { AutomaticGainControl.isAvailable() }) {
-            AutomaticGainControl.create(sessionId)
-        }
-        AppLog.log(TAG, "capture input effects: ${status.joinToString()}")
-    }
-
-    private fun releaseEffects() {
-        effects.forEach {
-            try {
-                it.enabled = false
-                it.release()
-            } catch (_: Exception) {}
-        }
-        effects.clear()
     }
 
     fun release() {
