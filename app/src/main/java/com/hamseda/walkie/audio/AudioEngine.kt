@@ -8,6 +8,7 @@ import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.Manifest
 import android.media.AudioAttributes
+import android.media.AudioDeviceCallback
 import android.media.AudioDeviceInfo
 import android.media.AudioFocusRequest
 import android.media.AudioFormat
@@ -16,6 +17,8 @@ import android.media.AudioRecord
 import android.media.AudioTrack
 import android.media.MediaRecorder
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.Process
 import android.util.Log
 import androidx.annotation.RequiresApi
@@ -126,6 +129,17 @@ class AudioEngine(private val context: Context) : AudioPipeline {
         }
     }
 
+    /** Covers route changes not consistently delivered as headset-plug broadcasts. */
+    private val audioDeviceCallback = object : AudioDeviceCallback() {
+        override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>) {
+            updateRoute(guessRoute())
+        }
+
+        override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>) {
+            updateRoute(guessRoute())
+        }
+    }
+
     init {
         val filter = IntentFilter().apply {
             addAction(AudioManager.ACTION_HEADSET_PLUG)
@@ -140,6 +154,14 @@ class AudioEngine(private val context: Context) : AudioPipeline {
             }
         } catch (e: SecurityException) {
             Log.w(TAG, "route receiver registration rejected: ${e.javaClass.simpleName}")
+        }
+        try {
+            audioManager.registerAudioDeviceCallback(
+                audioDeviceCallback,
+                Handler(Looper.getMainLooper()),
+            )
+        } catch (e: Exception) {
+            Log.w(TAG, "audio device callback registration rejected: ${e.javaClass.simpleName}")
         }
     }
 
@@ -586,6 +608,20 @@ class AudioEngine(private val context: Context) : AudioPipeline {
     override fun startPlayback(codec: AudioCodec, buffer: JitterBuffer): Boolean =
         synchronized(playbackLifecycleLock) {
         if (playbackRunning.get()) return true
+        // A failed worker may have stopped playback without going through the
+        // normal session teardown. Never overlap workers or reuse a live track.
+        val previousWorker = playbackThread
+        if (previousWorker?.isAlive == true) {
+            AppLog.log(TAG, "playback start rejected: previous worker is still terminating")
+            return false
+        }
+        playbackThread = null
+        track?.let { previousTrack ->
+            try { previousTrack.stop() } catch (_: Exception) {}
+            try { previousTrack.release() } catch (_: Exception) {}
+        }
+        track = null
+
         val minBuf = AudioTrack.getMinBufferSize(
             AudioCodec.SAMPLE_RATE,
             AudioFormat.CHANNEL_OUT_MONO,
@@ -657,9 +693,9 @@ class AudioEngine(private val context: Context) : AudioPipeline {
         // after startPlayback() had already returned true.
         try {
             at.play()
-        } catch (e: IllegalStateException) {
-            Log.w(TAG, "AudioTrack play failed: ${e.message}")
-            at.release()
+        } catch (e: Exception) {
+            Log.w(TAG, "AudioTrack play failed: ${e.javaClass.simpleName}")
+            try { at.release() } catch (_: Exception) {}
             restoreAudioModeIfIdle()
             return false
         }
@@ -803,7 +839,13 @@ class AudioEngine(private val context: Context) : AudioPipeline {
                         }
                     }
                 }
+            } catch (e: Exception) {
+                // Do not leave isPlaying=true if a vendor AudioTrack/codec throws
+                // outside the normal write-error return path.
+                Log.e(TAG, "playback worker terminated unexpectedly: ${e.javaClass.simpleName}", e)
+                reportPlaybackWriteFailure()
             } finally {
+                playbackRunning.set(false)
                 last?.fill(0)
                 silence.fill(0)
                 buffer.reset()
@@ -1039,14 +1081,46 @@ class AudioEngine(private val context: Context) : AudioPipeline {
         synchronized(playbackLifecycleLock) {
             playbackRunning.set(false)
             val worker = playbackThread
+            val activeTrack = track
+            var interrupted = false
+
+            // Interrupt pacing sleeps first so the worker can exit without waiting
+            // for its normal polling interval. AudioTrack is released only after
+            // the first join unless the worker appears stuck.
             if (worker != null && worker !== Thread.currentThread()) {
-                try { worker.join(500) } catch (_: InterruptedException) {}
+                worker.interrupt()
+                try {
+                    worker.join(500)
+                } catch (_: InterruptedException) {
+                    interrupted = true
+                }
             }
-            playbackThread = null
-            try { track?.stop() } catch (_: IllegalStateException) {}
-            track?.release()
-            track = null
+
+            if (worker?.isAlive == true && worker !== Thread.currentThread()) {
+                AppLog.log(TAG, "playback worker did not stop promptly; releasing AudioTrack to unblock it")
+                try { activeTrack?.stop() } catch (_: Exception) {}
+                try { activeTrack?.release() } catch (_: Exception) {}
+                if (track === activeTrack) track = null
+                try {
+                    worker.join(250)
+                } catch (_: InterruptedException) {
+                    interrupted = true
+                }
+            } else {
+                try { activeTrack?.stop() } catch (_: Exception) {}
+                try { activeTrack?.release() } catch (_: Exception) {}
+                if (track === activeTrack) track = null
+            }
+
+            // Keep the reference if a vendor call still has the worker alive; a
+            // subsequent start must not overlap it or race its final buffer reset.
+            if (worker == null || worker === Thread.currentThread() || !worker.isAlive) {
+                playbackThread = null
+            } else {
+                AppLog.log(TAG, "playback worker remains alive after forced AudioTrack release")
+            }
             restoreAudioModeIfIdle()
+            if (interrupted) Thread.currentThread().interrupt()
         }
     }
 
@@ -1226,6 +1300,11 @@ class AudioEngine(private val context: Context) : AudioPipeline {
         try {
             context.unregisterReceiver(routeReceiver)
         } catch (_: IllegalArgumentException) {}
+        try {
+            audioManager.unregisterAudioDeviceCallback(audioDeviceCallback)
+        } catch (e: Exception) {
+            Log.w(TAG, "audio device callback unregister rejected: ${e.javaClass.simpleName}")
+        }
     }
 
     companion object {
