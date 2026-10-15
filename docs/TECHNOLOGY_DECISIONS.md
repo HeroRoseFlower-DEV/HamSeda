@@ -165,8 +165,12 @@ one-to-one push-to-talk, APK built by GitHub Actions.
   6-digit SAS is compared by both users before audio flows.
 - No custom ciphers, no invented protocols, no network/cloud identity.
   Threat model and frame layout: `docs/PROTOCOL.md`, `SECURITY.md`.
-- **Vendored codec:** pure-Java Concentus Opus, byte-identical to upstream
-  (verified 2026-10-09, see `org/concentus/VENDORED_FROM.md`).
+- **Production codec:** upstream Xiph `libopus 1.6.1`, built from the pinned
+  source archive with NDK/CMake and loaded through the app's JNI bridge. The
+  legacy pure-Java Concentus files under `org/concentus` are retained for
+  provenance only and are excluded from the Android production source set;
+  they are not the active audio backend. The native source hash and license
+  details are recorded alongside `app/src/main/cpp/CMakeLists.txt`.
 
 ---
 
