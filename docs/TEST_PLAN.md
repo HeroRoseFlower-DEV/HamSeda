@@ -34,7 +34,6 @@ a software leveler can amplify noise after hardware AGC/noise suppression.
 | Jitter buffer | `JitterBufferTest` | priming, in-order playout, gap→Lost after wait, in-time gap fill, stale drop, queue cap, stats; **HS-10: stale/duplicate at full buffer does not evict useful frames** |
 | Playback queue tracker | `PlaybackQueueTrackerTest` | pending PCM accounting, underrun clamp, unsigned playback-head wrap, implausible position jump, and queue-limit rounding to the AudioTrack start threshold |
 | Codecs (JVM) | `CodecTest` | PCM bit-exact roundtrip, Opus profile defaults, codec factory and bad-input checks that do not require native audio I/O |
-| Microphone level control (JVM) | `CaptureGainControllerTest` | boosts quiet active frames, leaves near-silence unamplified, reduces gain on loud transients immediately, and respects the peak ceiling |
 | Platform routing and Bluetooth discovery | `ModernizationTest` | deterministic API 31+ audio route priority and expiration of discovered non-bonded peers after the 120 s freshness TTL; bonded devices remain listed |
 | Native Opus | `OpusCodecInstrumentedTest` | Actual Android JNI load, runtime libopus version, 20 ms encode/decode, signal correlation/energy, DTX compaction during sustained silence, LBRR packet detection and prior-frame FEC decode, reset and bad-input rejection |
 | Framed socket | `FramedSocketTest` | delimiting, clean EOF → Closed, oversized envelope rejected, truncated frame → Error, oversized write rejected |
