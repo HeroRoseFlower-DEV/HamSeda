@@ -913,9 +913,11 @@ class BluetoothTransport(private val context: Context) : Transport {
         var succeeded = false
 
         // Socket stream writes are blocking platform calls: coroutine timeout
-        // alone cannot interrupt one. The watchdog closes the *same* active
-        // socket if the write stalls, which unblocks the native write and
-        // prevents a growing stale-audio backlog from surviving indefinitely.
+        // alone cannot interrupt one. SessionManager already bounds its audio
+        // queue and drops stale frames while this writer is blocked; allow that
+        // freshness policy to absorb short RF pauses before declaring the link lost.
+        // The watchdog still closes this exact socket after a sustained stall so
+        // a native write cannot remain blocked indefinitely.
         val watchdog = scope.launch {
             delay(RFCOMM_WRITE_STALL_TIMEOUT_MS)
             if (!writeGuard.tryTimeout()) return@launch
@@ -926,7 +928,7 @@ class BluetoothTransport(private val context: Context) : Transport {
                     return@withLock
                 }
                 val reason = "Bluetooth send stalled (>${RFCOMM_WRITE_STALL_TIMEOUT_MS} ms)"
-                AppLog.log(TAG, "$reason; closing socket to avoid delayed voice")
+                AppLog.log(TAG, "$reason; sustained stall, closing socket after audio freshness drops")
                 _error.value = TransportError.ConnectionLost(reason)
                 closeSocketLocked()
                 _state.value = TransportState.IDLE
@@ -1155,8 +1157,8 @@ class BluetoothTransport(private val context: Context) : Transport {
 
     companion object {
         private const val RFCOMM_WRITE_DIAGNOSTIC_INTERVAL = 50
-        /** Long stalls are worse than a clean reconnect for real-time speech. */
-        private const val RFCOMM_WRITE_STALL_TIMEOUT_MS = 350L
+        /** Let bounded outbound audio freshness drops absorb brief RF/backpressure pauses. */
+        private const val RFCOMM_WRITE_STALL_TIMEOUT_MS = 2_000L
         private const val TAG = "HamSedaBluetooth"
         private const val MAX_DISCOVERED_PEERS = 128
         private const val MAX_VISIBLE_PEERS = 192
