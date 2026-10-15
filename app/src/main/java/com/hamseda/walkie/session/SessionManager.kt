@@ -182,9 +182,14 @@ class SessionManager(
     // Inter-arrival telemetry after authentication/replay checks, before jitter insertion.
     private var lastAudioReceiveAtNanos = 0L
     private var audioReceiveWindowFrames = 0
+    // Intervals within a continuous speech burst measure transport cadence.
+    // Gaps >250 ms are tracked separately, since they may be ordinary PTT
+    // silence/turn changes and must not inflate the cadence average.
     private var audioReceiveIntervalSamples = 0
     private var audioReceiveIntervalTotalNanos = 0L
     private var audioReceiveIntervalMaxNanos = 0L
+    private var audioReceiveCadenceMaxNanos = 0L
+    private var audioReceiveLongGaps = 0
     private var audioReceiveGapsOver30Ms = 0
     private var audioReceiveGapsOver60Ms = 0
     private var audioReceiveGapsOver100Ms = 0
@@ -318,6 +323,17 @@ class SessionManager(
         var delivered = false
         try {
             for ((index, message) in messages.withIndex()) {
+                // A prior blocked socket write may make queued voice obsolete.
+                // Drop it before assigning a sequence or serializing a frame.
+                if (isAudioMessage(message)) {
+                    val audio = message as OutboundMsg.Sealed
+                    val ageNanos = (System.nanoTime() - audio.enqueuedAtNanos).coerceAtLeast(0L)
+                    queuedAtWaitNanos[index] = maxOf(queuedAtWaitNanos[index], ageNanos)
+                    if (isAudioFrameExpired(ageNanos, MAX_OUTBOUND_AUDIO_AGE_MS * 1_000_000L)) {
+                        outboundQueue.recordDroppedAudioFrame()
+                        continue
+                    }
+                }
                 val buildStartedAt = System.nanoTime()
                 try {
                     val bytes = when (message) {
@@ -386,6 +402,8 @@ class SessionManager(
         audioReceiveIntervalSamples = 0
         audioReceiveIntervalTotalNanos = 0L
         audioReceiveIntervalMaxNanos = 0L
+        audioReceiveCadenceMaxNanos = 0L
+        audioReceiveLongGaps = 0
         audioReceiveGapsOver30Ms = 0
         audioReceiveGapsOver60Ms = 0
         audioReceiveGapsOver100Ms = 0
@@ -398,12 +416,20 @@ class SessionManager(
         audioReceiveWindowFrames++
         if (previous > 0L) {
             val interval = (now - previous).coerceAtLeast(0L)
-            audioReceiveIntervalSamples++
-            audioReceiveIntervalTotalNanos += interval
             audioReceiveIntervalMaxNanos = maxOf(audioReceiveIntervalMaxNanos, interval)
-            if (interval >= 30_000_000L) audioReceiveGapsOver30Ms++
-            if (interval >= 60_000_000L) audioReceiveGapsOver60Ms++
-            if (interval >= 100_000_000L) audioReceiveGapsOver100Ms++
+            if (interval > AUDIO_BURST_GAP_THRESHOLD_MS * 1_000_000L) {
+                // Preserve the longest interval, but do not call idle time
+                // between speech bursts network jitter or include it in the
+                // within-burst mean.
+                audioReceiveLongGaps++
+            } else {
+                audioReceiveIntervalSamples++
+                audioReceiveIntervalTotalNanos += interval
+                audioReceiveCadenceMaxNanos = maxOf(audioReceiveCadenceMaxNanos, interval)
+                if (interval >= 30_000_000L) audioReceiveGapsOver30Ms++
+                if (interval >= 60_000_000L) audioReceiveGapsOver60Ms++
+                if (interval >= 100_000_000L) audioReceiveGapsOver100Ms++
+            }
         }
         if (audioReceiveWindowFrames < AUDIO_RECEIVE_TIMING_LOG_INTERVAL) return
 
@@ -414,8 +440,11 @@ class SessionManager(
         } else 0L
         AppLog.log(
             TAG,
-            "audio receive timing: frames=$audioReceiveWindowFrames, intervals=$intervalSamples, " +
-                "avgIntervalMs=" + ms(avgIntervalNanos) + ", maxIntervalMs=" + ms(audioReceiveIntervalMaxNanos) + ", " +
+            "audio receive timing: frames=$audioReceiveWindowFrames, cadenceIntervals=$intervalSamples, " +
+                "avgIntervalMs=" + ms(avgIntervalNanos) +
+                ", maxIntervalMs=" + ms(audioReceiveIntervalMaxNanos) +
+                ", maxCadenceIntervalMs=" + ms(audioReceiveCadenceMaxNanos) +
+                ", interBurstGapsOver${AUDIO_BURST_GAP_THRESHOLD_MS}Ms=$audioReceiveLongGaps, " +
                 "gapsOver30Ms=$audioReceiveGapsOver30Ms, gapsOver60Ms=$audioReceiveGapsOver60Ms, " +
                 "gapsOver100Ms=$audioReceiveGapsOver100Ms, jitterBuffered=" + jitter.bufferedFrames() + ", " +
                 "jitterStaleDropped=" + jitter.droppedStale + ", jitterLost=" + jitter.lost,
@@ -425,6 +454,8 @@ class SessionManager(
         audioReceiveIntervalSamples = 0
         audioReceiveIntervalTotalNanos = 0L
         audioReceiveIntervalMaxNanos = 0L
+        audioReceiveCadenceMaxNanos = 0L
+        audioReceiveLongGaps = 0
         audioReceiveGapsOver30Ms = 0
         audioReceiveGapsOver60Ms = 0
         audioReceiveGapsOver100Ms = 0
@@ -646,9 +677,10 @@ class SessionManager(
         _error.value = null
         transportWasConnected = false
         AppLog.log(TAG, "session attempt=$sessionGeneration started (transport=${t.type})")
-        // SharedFlow(extraBufferCapacity) does NOT retain emissions when there are
-        // zero subscribers. Subscribe synchronously before the state watcher can
-        // begin the handshake and before connect()/listen() can produce frames.
+        // The transport's inbound SharedFlow is intentionally unbuffered so
+        // slow frame processing backpressures the reader rather than queueing a
+        // second's worth of stale voice. Subscribe synchronously before the state
+        // watcher starts the handshake or connect()/listen() can produce frames.
         collectJob = scope.launch(start = CoroutineStart.UNDISPATCHED) {
             t.incomingFrames.collect { bytes -> onRawFrame(bytes) }
         }
@@ -1582,10 +1614,16 @@ class SessionManager(
     // ------------------------------------------------------- frame builders
     //
     // Called ONLY from the single outbound sender coroutine, so sequence
-    // allocation is deterministic and race-free. Do not wrap uint32 sequence
-    // numbers within one session: replay-window serial arithmetic and a random
-    // AEAD nonce do not make a sequence rollover safe at the protocol layer.
-    // End the session at a guarded limit and establish a fresh key/session.
+    // allocation is deterministic and race-free. Sequence numbers are uint32
+    // and wrap after 2^32 frames; the wrap is safe because every frame is
+    // AEAD-authenticated with a fresh random nonce (no nonce reuse) and the
+    // replay window treats the wrap as a far jump (documented in
+    // ReplayProtection).
+
+    // Called only from the single outbound sender coroutine, so allocation is deterministic.
+    // Do not wrap uint32 sequence numbers within one session: replay-window serial arithmetic
+    // and a random AEAD nonce do not make rollover safe at the protocol layer.
+    // End before the guarded limit and establish a fresh authenticated session.
     private fun nextSeq(): Long = sendSequence.next()
 
     private fun buildPlainFrame(type: Byte, payload: ByteArray): ByteArray {
@@ -1667,12 +1705,18 @@ class SessionManager(
     }
 
     companion object {
-        private const val MAX_QUEUED_AUDIO_FRAMES = 6
+        // Bound stale voice waiting behind a blocked/slow socket to about 60 ms.
+        // Fresh frames replace old ones during congestion instead of building latency.
+        private const val MAX_QUEUED_AUDIO_FRAMES = 3
+        /** Discard dequeued speech already stale before encryption/serialization. */
+        private const val MAX_OUTBOUND_AUDIO_AGE_MS = 120L
         private const val MAX_BLUETOOTH_AUDIO_BATCH_FRAMES = 3
         private const val MAX_PENDING_OUTBOUND_MESSAGES = 64
         private const val AUDIO_DROP_LOG_INTERVAL = 50L
         private const val AUDIO_TIMING_LOG_INTERVAL = 50
         private const val AUDIO_RECEIVE_TIMING_LOG_INTERVAL = 50
+        /** Intervals beyond this are reported separately from continuous speech cadence. */
+        private const val AUDIO_BURST_GAP_THRESHOLD_MS = 250L
         private const val TAG = "HamSedaSession"
     }
 }
