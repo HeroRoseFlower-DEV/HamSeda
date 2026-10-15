@@ -15,6 +15,15 @@ values. This is defense in depth: callers must still never log raw keys, SAS
 seeds, plaintext audio, or protocol payloads. Unlabeled arbitrary binary or
 encoded secret data cannot be reliably identified by generic text redaction.
 
+## Session sequence exhaustion
+
+Each authenticated session uses a monotonic uint32 wire-sequence counter and
+ends before `0xFFFF0000`. It does not wrap sequence values within a session.
+A new handshake establishes a fresh session sequence space and fresh session
+keys. If the guard is reached, the local endpoint closes the session without
+relying on a final encrypted DISCONNECT frame; the transport teardown is the
+fallback. This is a defensive boundary, not a rekey protocol.
+
 ## What is protected
 
 Voice and control traffic between two nearby Android phones that have
