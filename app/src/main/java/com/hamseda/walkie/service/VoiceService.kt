@@ -68,9 +68,6 @@ class VoiceService : Service() {
             settings.speakerphoneFlow.collect { audioEngine.setSpeakerphone(it) }
         }
         serviceScope.launch {
-            settings.softwareGainFlow.collect { audioEngine.setSoftwareGainEnabled(it) }
-        }
-        serviceScope.launch {
             sessionManager.phase.collect { phase ->
                 if (phase == SessionManager.Phase.IDLE) {
                     setSessionCpuAwake(false)
