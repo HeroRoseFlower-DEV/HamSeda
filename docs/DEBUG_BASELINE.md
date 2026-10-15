@@ -96,7 +96,7 @@ For each defect, record: **ID, exact file/symbol, reproduction steps, expected b
 ## Phase 4 progress — emulator-backed instrumentation
 
 - [x] Add an API 35 Google APIs x86_64 emulator to the CI workflow and wait for full boot before tests.
-- [x] Install the debug APK and grant only the runtime permissions needed for deterministic startup-gate traversal in the test environment.
+- [x] Use AndroidX `GrantPermissionRule` to grant only the runtime permissions needed for deterministic startup-gate traversal in the test environment.
 - [x] Execute `:app:connectedDebugAndroidTest` rather than stopping at `:app:assembleAndroidTest`.
 - [x] Add instrumentation coverage for core manifest permissions and `MainActivity` lifecycle recreation; retain native Opus JNI and platform crypto tests.
 - [x] Upload connected-test reports and emulator diagnostics on success or failure.
