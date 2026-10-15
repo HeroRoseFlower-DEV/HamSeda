@@ -121,14 +121,8 @@ jobs:
           adb shell settings put global window_animation_scale 0
           adb shell settings put global transition_animation_scale 0
           adb shell settings put global animator_duration_scale 0
-          # Pre-grant only runtime permissions needed to let the app reach its
-          # normal UI in instrumentation tests. This is test setup, not an app
-          # permission-policy change; no radio hardware behavior is simulated.
-          adb install app/build/outputs/apk/debug/app-debug.apk
-          adb shell pm grant com.hamseda.walkie android.permission.RECORD_AUDIO
-          adb shell pm grant com.hamseda.walkie android.permission.NEARBY_WIFI_DEVICES
-          adb shell pm grant com.hamseda.walkie android.permission.BLUETOOTH_SCAN
-          adb shell pm grant com.hamseda.walkie android.permission.BLUETOOTH_CONNECT
+          # GrantPermissionRule in the instrumentation suite grants the app's
+          # declared runtime permissions immediately before each test that needs them.
           adb devices -l
 
       - name: Execute instrumented tests on Android Emulator
