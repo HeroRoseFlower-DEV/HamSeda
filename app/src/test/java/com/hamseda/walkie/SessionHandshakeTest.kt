@@ -429,8 +429,8 @@ class SessionHandshakeTest {
                 second.a.phase.value == SessionManager.Phase.IN_SESSION &&
                     second.b.phase.value == SessionManager.Phase.IN_SESSION
             }
-            assertNull(second.a.sasCode.value)
-            assertNull(second.b.sasCode.value)
+            assertNotNull(second.a.sasCode.value)
+            assertNotNull(second.b.sasCode.value)
         } finally {
             second.close()
         }
