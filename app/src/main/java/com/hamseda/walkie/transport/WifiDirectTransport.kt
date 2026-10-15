@@ -775,13 +775,13 @@ class WifiDirectTransport(private val context: Context) : Transport {
      * when the query itself fails (missing permission, dead channel…).
      */
     @SuppressLint("MissingPermission")
-    private suspend fun requestConnectionInfoSync(): WifiP2pInfo? {
+    private suspend fun requestConnectionInfoSync(timeoutMs: Long = 5_000L): WifiP2pInfo? {
         val mgr = manager
         val ch = channel
         if (mgr == null || ch == null) return null
         if (PermissionHelper.missingWifiDirectPermissions(context).isNotEmpty()) return null
         return try {
-            withTimeout(5_000) {
+            withTimeout(timeoutMs) {
                 val deferred = CompletableDeferred<WifiP2pInfo?>()
                 try {
                     mgr.requestConnectionInfo(ch) { info ->
@@ -822,7 +822,15 @@ class WifiDirectTransport(private val context: Context) : Transport {
             if (operationGeneration.get() != expectedGeneration) {
                 throw CancellationException("Wi-Fi Direct socket attempt superseded")
             }
-            val current = requestConnectionInfoSync()
+            val remainingNanos = deadlineNanos - System.nanoTime()
+            if (remainingNanos <= 0L) {
+                throw IOException(
+                    "group owner address unavailable after ${GROUP_OWNER_ADDRESS_WAIT_MS}ms " +
+                        "(lastGroupFormed=$lastGroupFormed)",
+                )
+            }
+            val queryTimeoutMs = minOf(500L, (remainingNanos / 1_000_000L).coerceAtLeast(1L))
+            val current = requestConnectionInfoSync(queryTimeoutMs)
             if (current != null) {
                 lastGroupFormed = current.groupFormed
                 val address = current.groupOwnerAddress
@@ -832,14 +840,12 @@ class WifiDirectTransport(private val context: Context) : Transport {
                     return current
                 }
             }
-            val remainingNanos = deadlineNanos - System.nanoTime()
-            if (remainingNanos <= 0L) {
-                throw IOException(
-                    "group owner address unavailable after ${GROUP_OWNER_ADDRESS_WAIT_MS}ms " +
-                        "(lastGroupFormed=$lastGroupFormed)",
-                )
-            }
-            delay(minOf(GROUP_OWNER_ADDRESS_RETRY_DELAY_MS, (remainingNanos / 1_000_000L).coerceAtLeast(1L)))
+            val remainingNanosAfterQuery = deadlineNanos - System.nanoTime()
+            if (remainingNanosAfterQuery <= 0L) continue
+            delay(minOf(
+                GROUP_OWNER_ADDRESS_RETRY_DELAY_MS,
+                (remainingNanosAfterQuery / 1_000_000L).coerceAtLeast(1L),
+            ))
         }
     }
 
