@@ -1588,13 +1588,7 @@ class SessionManager(
                 disconnectReason = DisconnectReason.AUTH_MISMATCH)
             return
         }
-        if (_phase.value == Phase.HANDSHAKE) {
-            _phase.value = Phase.AWAITING_SAS_CONFIRM
-            _sasCode.value = SessionCrypto.shortAuthString(keys!!.sasSeed)
-            // SAS confirmation deadline (HS-07): the peer must confirm.
-            startSasDeadline()
-            Log.i(TAG, "key exchange verified; awaiting SAS comparison")
-        }
+        onKeyConfirmAccepted()
     }
 
     private fun onKeyConfirmAccepted() {
