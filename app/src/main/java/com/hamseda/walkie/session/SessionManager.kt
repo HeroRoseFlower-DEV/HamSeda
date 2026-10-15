@@ -5,6 +5,8 @@ import com.hamseda.walkie.audio.AudioCodec
 import com.hamseda.walkie.audio.AudioPipeline
 import com.hamseda.walkie.audio.JitterBuffer
 import com.hamseda.walkie.audio.OpusCodec
+import com.hamseda.walkie.crypto.MemoryPeerIdentityStore
+import com.hamseda.walkie.crypto.PeerIdentityStore
 import com.hamseda.walkie.crypto.ReplayProtection
 import com.hamseda.walkie.crypto.SessionCrypto
 import com.hamseda.walkie.crypto.SessionKeys
@@ -71,6 +73,7 @@ class SessionManager(
     /** Wall clock is used only for wire timestamps; elapsed durations use a monotonic clock. */
     private val clock: () -> Long = System::currentTimeMillis,
     private val elapsedClock: () -> Long = { System.nanoTime() / 1_000_000L },
+    private val peerIdentityStore: PeerIdentityStore = MemoryPeerIdentityStore(),
 ) : FloorController.Listener, AudioPipeline.PipelineListener {
 
     enum class Phase {
@@ -110,6 +113,10 @@ class SessionManager(
     private val _peerSasConfirmed = MutableStateFlow(false)
     val peerSasConfirmed: StateFlow<Boolean> = _peerSasConfirmed.asStateFlow()
 
+    private val _peerIdentityTrusted = MutableStateFlow(false)
+    /** True only when this session's peer identity matches a persisted pin. */
+    val peerIdentityTrusted: StateFlow<Boolean> = _peerIdentityTrusted.asStateFlow()
+
     private val _isTransmitting = MutableStateFlow(false)
     val isTransmitting: StateFlow<Boolean> = _isTransmitting.asStateFlow()
 
@@ -146,8 +153,14 @@ class SessionManager(
     private var keyConfirmSent = false
     private var myCommitSalt = ByteArray(0)
     private var peerKeyCommitment: ByteArray? = null
+    private var myIdentityId = ByteArray(0)
+    private var myIdentityPublicKey = ByteArray(0)
+    private var peerIdentityId: ByteArray? = null
+    private var peerIdentityPublicKey: ByteArray? = null
+    private var peerIdentityWasTrusted = false
 
     private class KeyCommitmentMismatchException : Exception("KEY_EXCHANGE commitment mismatch")
+    private class PeerIdentityMismatchException : Exception("peer identity signature or pin mismatch")
     private var peerHelloReceived = false
     private var peerCodecPref: Byte? = null
     /** True once beginHandshake ran for the current attempt (re-entrancy guard). */
@@ -856,6 +869,12 @@ class SessionManager(
         peerPubBytes?.fill(0); peerPubBytes = null
         peerNonce?.fill(0); peerNonce = null
         peerKeyCommitment?.fill(0); peerKeyCommitment = null
+        peerIdentityId?.fill(0); peerIdentityId = null
+        peerIdentityPublicKey?.fill(0); peerIdentityPublicKey = null
+        peerIdentityWasTrusted = false
+        _peerIdentityTrusted.value = false
+        myIdentityId.fill(0); myIdentityId = ByteArray(0)
+        myIdentityPublicKey.fill(0); myIdentityPublicKey = ByteArray(0)
         keyCommitSent = false; keyExchangeSent = false; keyConfirmSent = false
         peerHelloReceived = false
         peerCodecPref = null
@@ -899,6 +918,12 @@ class SessionManager(
         peerPubBytes?.fill(0); peerPubBytes = null
         peerNonce?.fill(0); peerNonce = null
         peerKeyCommitment?.fill(0); peerKeyCommitment = null
+        peerIdentityId?.fill(0); peerIdentityId = null
+        peerIdentityPublicKey?.fill(0); peerIdentityPublicKey = null
+        peerIdentityWasTrusted = false
+        _peerIdentityTrusted.value = false
+        myIdentityId.fill(0); myIdentityId = ByteArray(0)
+        myIdentityPublicKey.fill(0); myIdentityPublicKey = ByteArray(0)
         peerCodecPref = null
         keyCommitSent = false; keyExchangeSent = false; keyConfirmSent = false
         pendingKeyConfirmFrame = null
@@ -937,6 +962,12 @@ class SessionManager(
         peerPubBytes?.fill(0); peerPubBytes = null
         peerNonce?.fill(0); peerNonce = null
         peerKeyCommitment?.fill(0); peerKeyCommitment = null
+        peerIdentityId?.fill(0); peerIdentityId = null
+        peerIdentityPublicKey?.fill(0); peerIdentityPublicKey = null
+        peerIdentityWasTrusted = false
+        _peerIdentityTrusted.value = false
+        myIdentityId.fill(0); myIdentityId = ByteArray(0)
+        myIdentityPublicKey.fill(0); myIdentityPublicKey = ByteArray(0)
         myCommitSalt.fill(0); myCommitSalt = ByteArray(0)
         keyCommitSent = false
         keyExchangeSent = false
@@ -944,6 +975,18 @@ class SessionManager(
         pendingKeyConfirmFrame = null
         _phase.value = Phase.HANDSHAKE
         startHandshakeDeadline()
+        try {
+            myIdentityId = peerIdentityStore.localIdentityId()
+            myIdentityPublicKey = peerIdentityStore.localPublicKey()
+            require(myIdentityId.size == SessionCrypto.IDENTITY_ID_BYTES) {
+                "local identity ID must be 16 bytes"
+            }
+            SessionCrypto.decodePublicKey(myIdentityPublicKey)
+        } catch (e: Exception) {
+            Log.e(TAG, "local identity key unavailable: ${e.javaClass.simpleName}")
+            fail(SessionError.PROTOCOL_ERROR, "local identity key unavailable")
+            return@synchronized
+        }
         myKeyPair = SessionCrypto.generateEphemeralKeyPair()
         myPubBytes = SessionCrypto.encodePublicKey(myKeyPair!!.public)
         myNonce = SessionCrypto.newNonce16()
@@ -1135,6 +1178,10 @@ class SessionManager(
                     onKeyExchange(frame.payload)
                     deriveAndConfirm()
                     AppLog.log(TAG, "KEY_EXCHANGE commitment verified; key derivation completed")
+                } catch (e: PeerIdentityMismatchException) {
+                    Log.w(TAG, "KEY_EXCHANGE identity proof or TOFU pin mismatch")
+                    fail(SessionError.AUTH_MISMATCH, "peer identity verification failed")
+                    return
                 } catch (e: KeyCommitmentMismatchException) {
                     Log.w(TAG, "KEY_EXCHANGE does not match prior commitment")
                     fail(SessionError.AUTH_MISMATCH, "KEY_EXCHANGE commitment mismatch")
@@ -1205,7 +1252,9 @@ class SessionManager(
         if (keyCommitSent) return
         val hello = byteArrayOf(Protocol.VERSION, myCodecPref)
         val commitment = try {
-            SessionCrypto.keyCommitment(myPubBytes, myNonce, hello, myCommitSalt)
+            SessionCrypto.keyCommitment(
+                myPubBytes, myNonce, hello, myCommitSalt, myIdentityId, myIdentityPublicKey,
+            )
         } finally {
             hello.fill(0)
         }
@@ -1227,38 +1276,98 @@ class SessionManager(
             fail(SessionError.PROTOCOL_ERROR, "local commitment salt unavailable")
             return
         }
-        val buf = ByteBuffer.allocate(2 + pub.size + 16 + SessionCrypto.COMMITMENT_SALT_BYTES)
-            .order(ByteOrder.BIG_ENDIAN)
-        buf.putShort(pub.size.toShort()).put(pub).put(myNonce).put(salt)
+        if (myIdentityId.size != SessionCrypto.IDENTITY_ID_BYTES || myIdentityPublicKey.isEmpty()) {
+            fail(SessionError.PROTOCOL_ERROR, "local identity material unavailable")
+            return
+        }
+
+        val hello = byteArrayOf(Protocol.VERSION, myCodecPref)
+        val proofInput = try {
+            SessionCrypto.identityProofInput(
+                myIdentityId, myIdentityPublicKey, pub, myNonce, hello, salt,
+            )
+        } finally {
+            hello.fill(0)
+        }
+        val signature = try {
+            peerIdentityStore.signIdentity(proofInput)
+        } finally {
+            proofInput.fill(0)
+        }
+        if (signature.isEmpty() || signature.size > SessionCrypto.MAX_IDENTITY_SIGNATURE_BYTES) {
+            signature.fill(0)
+            salt.fill(0)
+            myCommitSalt = ByteArray(0)
+            fail(SessionError.PROTOCOL_ERROR, "local identity signature size invalid")
+            return
+        }
+
+        // v5 wire layout: ephLen(2)||ephKey||nonce16||salt32||identityId16||
+        // identityKeyLen(2)||identityKey||signatureLen(2)||ECDSA signature.
+        val payload = ByteBuffer.allocate(
+            2 + pub.size + myNonce.size + salt.size +
+                myIdentityId.size + 2 + myIdentityPublicKey.size + 2 + signature.size,
+        ).order(ByteOrder.BIG_ENDIAN)
+            .putShort(pub.size.toShort()).put(pub)
+            .put(myNonce).put(salt)
+            .put(myIdentityId)
+            .putShort(myIdentityPublicKey.size.toShort()).put(myIdentityPublicKey)
+            .putShort(signature.size.toShort()).put(signature)
+            .array()
+
         keyExchangeSent = true
         val enqueued = try {
-            enqueuePlain(MessageType.KEY_EXCHANGE, buf.array())
+            enqueuePlain(MessageType.KEY_EXCHANGE, payload)
         } finally {
             salt.fill(0)
             myCommitSalt = ByteArray(0)
+            signature.fill(0)
         }
         if (!enqueued) fail(SessionError.PROTOCOL_ERROR, "could not enqueue KEY_EXCHANGE")
     }
 
     private fun onKeyExchange(payload: ByteArray) {
-        require(payload.size >= 2 + 16 + SessionCrypto.COMMITMENT_SALT_BYTES) {
-            "KEY_EXCHANGE too short"
-        }
+        val minimum = 2 + 1 + 16 + SessionCrypto.COMMITMENT_SALT_BYTES +
+            SessionCrypto.IDENTITY_ID_BYTES + 2 + 1 + 2 + 1
+        require(payload.size >= minimum) { "KEY_EXCHANGE too short" }
+        require(payload.size <= Protocol.MAX_PAYLOAD) { "KEY_EXCHANGE exceeds maximum payload" }
+
         val buf = ByteBuffer.wrap(payload).order(ByteOrder.BIG_ENDIAN)
         val pubLen = buf.short.toInt() and 0xFFFF
-        require(pubLen in 1..SessionCrypto.MAX_PUBKEY_BYTES) { "pubkey len $pubLen" }
-        require(payload.size == 2 + pubLen + 16 + SessionCrypto.COMMITMENT_SALT_BYTES) {
-            "KEY_EXCHANGE size mismatch"
+        require(pubLen in 1..SessionCrypto.MAX_PUBKEY_BYTES) {
+            "ephemeral public key length out of bounds"
         }
+        require(buf.remaining() >= pubLen + 16 + SessionCrypto.COMMITMENT_SALT_BYTES +
+            SessionCrypto.IDENTITY_ID_BYTES + 2 + 1 + 2 + 1) { "KEY_EXCHANGE truncated" }
+
         val pub = ByteArray(pubLen).also { buf.get(it) }
         val nonce = ByteArray(16).also { buf.get(it) }
         val salt = ByteArray(SessionCrypto.COMMITMENT_SALT_BYTES).also { buf.get(it) }
+        val identityId = ByteArray(SessionCrypto.IDENTITY_ID_BYTES).also { buf.get(it) }
+        val identityPubLen = buf.short.toInt() and 0xFFFF
+        require(identityPubLen in 1..SessionCrypto.MAX_PUBKEY_BYTES) {
+            "identity public key length out of bounds"
+        }
+        require(buf.remaining() >= identityPubLen + 2 + 1) { "identity public key truncated" }
+        val identityPublicKey = ByteArray(identityPubLen).also { buf.get(it) }
+        val signatureLength = buf.short.toInt() and 0xFFFF
+        require(
+            signatureLength in 1..SessionCrypto.MAX_IDENTITY_SIGNATURE_BYTES &&
+                buf.remaining() == signatureLength,
+        ) { "identity signature length invalid" }
+        val signature = ByteArray(signatureLength).also { buf.get(it) }
+
+        var accepted = false
+        var pinnedKey: ByteArray? = null
         try {
             SessionCrypto.decodePublicKey(pub)
+            SessionCrypto.decodePublicKey(identityPublicKey)
             val peerPref = peerCodecPref ?: error("peer HELLO codec preference absent")
             val peerHello = byteArrayOf(Protocol.VERSION, peerPref)
             val expectedCommitment = try {
-                SessionCrypto.keyCommitment(pub, nonce, peerHello, salt)
+                SessionCrypto.keyCommitment(
+                    pub, nonce, peerHello, salt, identityId, identityPublicKey,
+                )
             } finally {
                 peerHello.fill(0)
             }
@@ -1270,14 +1379,45 @@ class SessionManager(
             } finally {
                 expectedCommitment.fill(0)
             }
+
+            val helloForProof = byteArrayOf(Protocol.VERSION, peerPref)
+            val proofInput = try {
+                SessionCrypto.identityProofInput(
+                    identityId, identityPublicKey, pub, nonce, helloForProof, salt,
+                )
+            } finally {
+                helloForProof.fill(0)
+            }
+            val validSignature = try {
+                SessionCrypto.verifyIdentitySignature(identityPublicKey, proofInput, signature)
+            } finally {
+                proofInput.fill(0)
+            }
+            if (!validSignature) throw PeerIdentityMismatchException()
+
+            pinnedKey = peerIdentityStore.trustedPublicKey(identityId)
+            if (pinnedKey != null && !MessageDigest.isEqual(pinnedKey, identityPublicKey)) {
+                // A known identity ID can never silently rotate to a different key.
+                throw PeerIdentityMismatchException()
+            }
+
+            peerIdentityWasTrusted = pinnedKey != null
+            _peerIdentityTrusted.value = peerIdentityWasTrusted
             peerPubBytes = pub
             peerNonce = nonce
-        } catch (e: Exception) {
-            pub.fill(0)
-            nonce.fill(0)
-            throw e
+            peerIdentityId = identityId
+            peerIdentityPublicKey = identityPublicKey
+            accepted = true
         } finally {
             salt.fill(0)
+            signature.fill(0)
+            pinnedKey?.fill(0)
+            if (!accepted) {
+                pub.fill(0)
+                nonce.fill(0)
+                identityId.fill(0)
+                identityPublicKey.fill(0)
+            }
         }
     }
 
@@ -1419,13 +1559,7 @@ class SessionManager(
                 disconnectReason = DisconnectReason.AUTH_MISMATCH)
             return
         }
-        if (_phase.value == Phase.HANDSHAKE) {
-            _phase.value = Phase.AWAITING_SAS_CONFIRM
-            _sasCode.value = SessionCrypto.shortAuthString(keys!!.sasSeed)
-            // SAS confirmation deadline (HS-07): the peer must confirm.
-            startSasDeadline()
-            Log.i(TAG, "key exchange verified; awaiting SAS comparison")
-        }
+        onKeyConfirmAccepted()
     }
 
     private fun verifyKeyConfirm(payload: ByteArray, expectedTranscript: ByteArray) {
@@ -1442,6 +1576,23 @@ class SessionManager(
             startSasDeadline()
             Log.i(TAG, "key exchange verified; awaiting SAS comparison")
         }
+    }
+
+    private fun onKeyConfirmAccepted() {
+        if (_phase.value != Phase.HANDSHAKE) return
+        _phase.value = Phase.AWAITING_SAS_CONFIRM
+        if (peerIdentityWasTrusted) {
+            // Verify the pinned identity signature and automatically confirm this
+            // fresh exchange, but still wait for the peer's authenticated confirm.
+            _sasCode.value = null
+            selfSasConfirmed = true
+            enqueueControl(MessageType.SAS_CONFIRM, ByteArray(0))
+            AppLog.log(TAG, "pinned peer identity verified; SAS comparison skipped")
+        } else {
+            _sasCode.value = SessionCrypto.shortAuthString(keys!!.sasSeed)
+            AppLog.log(TAG, "new peer identity; awaiting SAS comparison")
+        }
+        startSasDeadline()
     }
 
     private fun maybeEnterSession() {
@@ -1498,6 +1649,26 @@ class SessionManager(
                 disconnectReason = DisconnectReason.PROTOCOL_ERROR,
             )
             return@synchronized
+        }
+        // Pin a new peer only after mutual SAS confirmation and successful playback setup.
+        if (!peerIdentityWasTrusted) {
+            val peerId = peerIdentityId
+            val peerKey = peerIdentityPublicKey
+            if (peerId != null && peerKey != null) {
+                val stored = try {
+                    peerIdentityStore.pinPeer(peerId, peerKey)
+                } catch (e: Exception) {
+                    Log.w(TAG, "could not persist peer identity pin: ${e.javaClass.simpleName}")
+                    false
+                }
+                if (stored) {
+                    peerIdentityWasTrusted = true
+                    _peerIdentityTrusted.value = true
+                    AppLog.log(TAG, "peer identity pinned after mutual SAS confirmation")
+                } else {
+                    AppLog.log(TAG, "peer identity pin was not stored; SAS will be required next time")
+                }
+            }
         }
         _phase.value = Phase.IN_SESSION
         val establishedAt = elapsedClock()
