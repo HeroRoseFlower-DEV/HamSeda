@@ -2,7 +2,7 @@
 
 ## Raw microphone capture validation
 
-The application capture path must not apply software gain, level normalization, filtering, noise suppression, echo cancellation, or other PCM transformations. `AudioEngine` requests Android's `UNPROCESSED` input only when the device advertises `PROPERTY_SUPPORT_AUDIO_SOURCE_UNPROCESSED` and the recorder initializes successfully; otherwise it uses `MIC_FALLBACK`. A selected source name is not proof that the OEM/HAL signal path is free of processing. If the selected recorder fails at `startRecording()`, current code reports capture failure rather than trying the other source; this remains a known follow-up.
+The application capture path must not apply software gain, level normalization, filtering, noise suppression, echo cancellation, or other PCM transformations. `AudioEngine` requests Android's `UNPROCESSED` input only when the device advertises `PROPERTY_SUPPORT_AUDIO_SOURCE_UNPROCESSED` and the recorder initializes successfully; otherwise it uses `MIC_FALLBACK`. A selected source name is not proof that the OEM/HAL signal path is free of processing. If `UNPROCESSED` initializes but fails at `startRecording()`, the engine retries with `MIC_FALLBACK`; device-specific behavior still needs physical testing.
 
 Opus encoding remains lossy compression: decoded audio is not bit-identical to the PCM read from `AudioRecord`. Do not describe the transmitted stream as uncompressed or bit-exact raw audio.
 
