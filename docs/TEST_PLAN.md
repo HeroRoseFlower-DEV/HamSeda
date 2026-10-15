@@ -271,3 +271,17 @@ Physical-device acceptance (NOT RUN until evidence is recorded):
 - [ ] Stop during handshake/authentication and immediately reconnect; no prior-session frame is processed by the new session.
 - [ ] Repeat after abrupt peer shutdown; verify the next session starts cleanly.
 - [ ] Confirm Bluetooth Classic behavior and existing session-handshake regression tests remain unchanged.
+
+
+## Phase 5 — Startup permission policy / Android 17 local network
+
+Automated JVM regression coverage verifies the startup runtime-permission policy at API 26, 29, 31, 33, 36, and 37 boundaries. API 37+ must include `ACCESS_LOCAL_NETWORK` before the startup gate can expose the main UI; API 26–36 must not request this newer permission. The policy test is intentionally pure so it can run on API 35 CI without pretending that API 35 enforces Android 17 behavior.
+
+The Android instrumentation suite also asserts that `ACCESS_LOCAL_NETWORK` is present in the merged app manifest. This declaration assertion does **not** prove Android 17's system prompt, denial handling, grant persistence, or TCP enforcement.
+
+Physical/API 37 acceptance remains **NOT RUN** until verified on an API 37 emulator or real phone:
+- [ ] Fresh install: nearby-device permissions are requested, then local-network permission, then microphone; main UI stays gated until all required permissions are granted.
+- [ ] Deny local-network permission: no Wi-Fi Direct TCP connection is attempted and the user sees a clear recovery path without a repeated prompt loop.
+- [ ] Retry and grant from the system prompt; confirm the gate advances and Wi-Fi Direct can open the local socket.
+- [ ] Revoke local-network permission in system Settings during/after a session; verify connection failure and cleanup are bounded and no stale session is resurrected.
+- [ ] Confirm Bluetooth Classic permission/discoverability behavior remains independent of local-network permission.
