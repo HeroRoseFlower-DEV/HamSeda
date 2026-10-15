@@ -653,6 +653,8 @@ class AudioEngine(private val context: Context) : AudioPipeline {
             val silence = ShortArray(AudioCodec.FRAME_SAMPLES)
             var last: ShortArray? = null
             var plcCount = 0
+            var fecRecoveredFrames = 0L
+            var fecFallbackFrames = 0L
             var lastHealthLogNanos = System.nanoTime()
             try {
                 playback@ while (playbackRunning.get()) {
@@ -664,7 +666,8 @@ class AudioEngine(private val context: Context) : AudioPipeline {
                             "playback health: underruns=$underruns, " +
                                 "bufferFrames=${at.bufferSizeInFrames}, capacityFrames=${at.bufferCapacityInFrames}, " +
                                 "jitterLost=${buffer.lost}, jitterStaleDropped=${buffer.droppedStale}, " +
-                                "jitterBuffered=${buffer.bufferedFrames()}",
+                                "jitterBuffered=${buffer.bufferedFrames()}, " +
+                                "fecRecovered=$fecRecoveredFrames, fecFallbacks=$fecFallbackFrames",
                         )
                         lastHealthLogNanos = healthNowNanos
                     }
@@ -697,12 +700,38 @@ class AudioEngine(private val context: Context) : AudioPipeline {
                             }
                         }
                         is JitterBuffer.TakeResult.Lost -> {
-                            val next = conceal(at, queueTracker, last, silence, plcCount, playbackBuffer.queueLimitFrames)
-                            if (next == null) {
-                                reportPlaybackWriteFailure()
-                                break@playback
+                            val fecPayload = r.nextPacketForFec
+                            val recovered = try {
+                                fecPayload?.let { codec.decodePreviousFrameFec(it) }
+                            } catch (e: Exception) {
+                                Log.w(TAG, "Opus FEC recovery failed; using concealment")
+                                null
+                            } finally {
+                                fecPayload?.fill(0)
                             }
-                            plcCount = next
+
+                            if (recovered != null) {
+                                if (!writePcm(at, recovered, queueTracker, playbackBuffer.queueLimitFrames)) {
+                                    recovered.fill(0)
+                                    reportPlaybackWriteFailure()
+                                    break@playback
+                                }
+                                last?.fill(0)
+                                last = recovered
+                                plcCount = 0
+                                fecRecoveredFrames++
+                            } else {
+                                if (fecPayload != null) fecFallbackFrames++
+                                val next = conceal(
+                                    at, queueTracker, last, silence, plcCount,
+                                    playbackBuffer.queueLimitFrames,
+                                )
+                                if (next == null) {
+                                    reportPlaybackWriteFailure()
+                                    break@playback
+                                }
+                                plcCount = next
+                            }
                             if (buffer.lost % JITTER_DIAGNOSTIC_INTERVAL == 0L) {
                                 AppLog.log(
                                     TAG,

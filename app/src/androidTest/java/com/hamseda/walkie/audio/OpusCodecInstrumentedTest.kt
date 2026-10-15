@@ -67,6 +67,43 @@ class OpusCodecInstrumentedTest {
     }
 
     @Test
+    fun inBandFecCanRecoverOnePriorFrameWhenPresent() {
+        OpusCodec().use { codec ->
+            // Feed speech-like voiced frames until libopus emits LBRR. The
+            // test intentionally exercises the real packaged JNI implementation.
+            fun voicedFrame(frameIndex: Int): ShortArray = ShortArray(AudioCodec.FRAME_SAMPLES) { i ->
+                val sampleIndex = frameIndex * AudioCodec.FRAME_SAMPLES + i
+                val t = sampleIndex.toDouble() / AudioCodec.SAMPLE_RATE
+                val value =
+                    sin(2.0 * Math.PI * 130.0 * t) * 9_000.0 +
+                    sin(2.0 * Math.PI * 260.0 * t) * 5_000.0 +
+                    sin(2.0 * Math.PI * 520.0 * t) * 2_500.0
+                value.toInt().toShort()
+            }
+
+            var foundFec = false
+            for (index in 0..80) {
+                val pcm = voicedFrame(index)
+                val packet = codec.encode(pcm)
+                pcm.fill(0)
+                val recovered = codec.decodePreviousFrameFec(packet)
+                if (recovered != null) {
+                    assertEquals(AudioCodec.FRAME_SAMPLES, recovered.size)
+                    recovered.fill(0)
+                    val current = codec.decode(packet)
+                    assertEquals(AudioCodec.FRAME_SAMPLES, current.size)
+                    current.fill(0)
+                    foundFec = true
+                    packet.fill(0)
+                    break
+                }
+                packet.fill(0)
+            }
+            assertTrue("no Opus packet exposed in-band LBRR in the test speech stream", foundFec)
+        }
+    }
+
+    @Test
     fun silenceResetAndInputValidationRemainStable() {
         OpusCodec().use { codec ->
             val silence = ShortArray(AudioCodec.FRAME_SAMPLES)

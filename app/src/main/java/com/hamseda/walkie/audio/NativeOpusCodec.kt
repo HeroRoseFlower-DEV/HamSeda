@@ -42,6 +42,11 @@ internal class NativeOpusCodec {
         return nativeDecode(decoder, packet, output, frameSamples, decodeFec)
     }
 
+    fun hasInbandFec(packet: ByteArray): Boolean {
+        check(isAvailable) { "Native libopus is only available on Android." }
+        return nativeHasInbandFec(packet)
+    }
+
     fun destroyEncoder(encoder: Long) {
         if (isAvailable && encoder != 0L) nativeDestroyEncoder(encoder)
     }
@@ -78,6 +83,8 @@ internal class NativeOpusCodec {
         frameSamples: Int,
         decodeFec: Boolean,
     ): Int
+
+    private external fun nativeHasInbandFec(packet: ByteArray): Boolean
 
     private external fun nativeDestroyEncoder(encoder: Long)
     private external fun nativeDestroyDecoder(decoder: Long)

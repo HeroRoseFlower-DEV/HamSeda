@@ -43,7 +43,10 @@ class JitterBufferTest {
         clock.now += 1
         val lost = jb.takeNext()
         assertTrue(lost is JitterBuffer.TakeResult.Lost)
-        assertEquals(1L, (lost as JitterBuffer.TakeResult.Lost).skippedSeq)
+        val lostResult = lost as JitterBuffer.TakeResult.Lost
+        assertEquals(1L, lostResult.skippedSeq)
+        assertTrue(lostResult.nextPacketForFec?.contentEquals(payload(2)) == true)
+        lostResult.nextPacketForFec?.fill(0) // copy is independent; queued packet remains intact
         assertEquals(2L, (jb.takeNext() as JitterBuffer.TakeResult.Frame).packet.seq)
     }
 
@@ -58,7 +61,10 @@ class JitterBufferTest {
         clock.now += 150
         val lost = jb.takeNext()
         assertTrue(lost is JitterBuffer.TakeResult.Lost)
-        assertEquals(1L, (lost as JitterBuffer.TakeResult.Lost).skippedSeq)
+        val lostResult = lost as JitterBuffer.TakeResult.Lost
+        assertEquals(1L, lostResult.skippedSeq)
+        assertTrue(lostResult.nextPacketForFec?.contentEquals(payload(2)) == true)
+        lostResult.nextPacketForFec?.fill(0)
         // Stream continues with seq 2 afterwards.
         assertEquals(2L, (jb.takeNext() as JitterBuffer.TakeResult.Frame).packet.seq)
         assertEquals(1L, jb.lost)

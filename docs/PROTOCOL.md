@@ -114,11 +114,12 @@ Codec negotiation: `codec = min(prefA, prefB)` from the two HELLOs
   payload bitrate while preserving the existing 20 ms packet cadence. Encoder
   complexity is device-profile dependent: 4 on Android 8/9 (API 26–28), 8 on
   Android 10+ (API 29+).
-- In-band FEC is not enabled in the current reliable TCP/RFCOMM transport: useful
-  recovery requires the jitter/playout layer to decode the next packet in FEC
-  mode when a preceding media frame is missing. Do not enable the encoder flag
-  alone; pair a later FEC change with explicit receiver recovery and instrumented
-  tests.
+- In-band FEC is enabled with a 10% expected-loss hint. TCP/RFCOMM itself is
+  reliable, but the app may intentionally discard queued stale audio frames to
+  protect latency. When the jitter buffer detects exactly one missing sequence,
+  it attempts recovery only if the immediate next packet advertises LBRR; that
+  packet is then decoded normally on its own turn. Larger gaps and packets without
+  redundancy fall back to the existing concealment path.
 - PCM16 is diagnostic-only at 768 kbps; prefer Opus for Bluetooth Classic.
 
 Both HELLO payloads are included in a domain-separated KEY_CONFIRM transcript, canonicalized together with the corresponding public key and nonce. A modified codec preference or reassigned nonce changes the transcript and causes the session to fail closed.
