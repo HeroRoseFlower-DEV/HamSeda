@@ -160,7 +160,11 @@ class AudioEngine(private val context: Context) : AudioPipeline {
     // scoped to the guarded platform-builder calls rather than suppressing permission
     // diagnostics across the whole AudioEngine.
     @SuppressLint("MissingPermission")
-    private fun buildCaptureRecorder(format: AudioFormat, bufferBytes: Int): CaptureRecorder? {
+    private fun buildCaptureRecorder(
+        format: AudioFormat,
+        bufferBytes: Int,
+        allowUnprocessed: Boolean = true,
+    ): CaptureRecorder? {
         // Android documents UNPROCESSED as a reliable request only when the device
         // advertises support. Requesting it unconditionally can silently behave like
         // DEFAULT/MIC on unsupported devices, so do not label that path "raw".
@@ -176,7 +180,7 @@ class AudioEngine(private val context: Context) : AudioPipeline {
             false
         }
         val sources = buildList {
-            if (unprocessedAdvertised) {
+            if (allowUnprocessed && unprocessedAdvertised) {
                 add(MediaRecorder.AudioSource.UNPROCESSED to "UNPROCESSED")
             }
             add(MediaRecorder.AudioSource.MIC to "MIC_FALLBACK")
@@ -291,6 +295,10 @@ class AudioEngine(private val context: Context) : AudioPipeline {
             val frame = ShortArray(AudioCodec.FRAME_SAMPLES)
             // The stop path can win immediately after Thread.start(). Check the
             // generation and start the recorder under the same lifecycle lock.
+            // If a recorder initializes but refuses to start, retry MIC when the
+            // preferred UNPROCESSED source was selected. Keep the fallback inside
+            // the lifecycle lock so stop/release cannot race recorder replacement.
+            var activeRecorder = rec
             val startedRecording = synchronized(captureLifecycleLock) {
                 if (!captureRunning.get() || captureGeneration != generation || recorder !== rec) {
                     false
@@ -298,9 +306,39 @@ class AudioEngine(private val context: Context) : AudioPipeline {
                     try {
                         rec.startRecording()
                         true
-                    } catch (e: IllegalStateException) {
-                        Log.w(TAG, "microphone start failed: ${e.javaClass.simpleName}")
-                        false
+                    } catch (e: Exception) {
+                        Log.w(TAG, "microphone start failed for ${captureRecorder.sourceName}: ${e.javaClass.simpleName}")
+                        if (captureRecorder.sourceName != "UNPROCESSED") {
+                            false
+                        } else {
+                            val fallback = buildCaptureRecorder(
+                                format,
+                                requestedBufferBytes,
+                                allowUnprocessed = false,
+                            )
+                            if (fallback == null) {
+                                false
+                            } else {
+                                try {
+                                    fallback.recorder.startRecording()
+                                    recorder = fallback.recorder
+                                    activeRecorder = fallback.recorder
+                                    try { rec.release() } catch (_: Exception) {}
+                                    AppLog.log(
+                                        TAG,
+                                        "capture source switched to MIC_FALLBACK after UNPROCESSED start failure",
+                                    )
+                                    true
+                                } catch (fallbackError: Exception) {
+                                    try { fallback.recorder.release() } catch (_: Exception) {}
+                                    Log.w(
+                                        TAG,
+                                        "MIC_FALLBACK start failed: ${fallbackError.javaClass.simpleName}",
+                                    )
+                                    false
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -330,7 +368,7 @@ class AudioEngine(private val context: Context) : AudioPipeline {
                 while (frameSamplesRead < frame.size &&
                     captureRunning.get() && captureGeneration == generation
                 ) {
-                    val read = rec.read(
+                    val read = activeRecorder.read(
                         frame,
                         frameSamplesRead,
                         frame.size - frameSamplesRead,
