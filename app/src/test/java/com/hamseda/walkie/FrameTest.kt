@@ -120,7 +120,7 @@ class FrameTest {
     fun `all message types are known`() {
         listOf(
             MessageType.HELLO, MessageType.KEY_EXCHANGE, MessageType.KEY_CONFIRM,
-            MessageType.SAS_CONFIRM, MessageType.AUDIO, MessageType.FLOOR_REQUEST,
+            MessageType.SAS_CONFIRM, MessageType.KEY_COMMIT, MessageType.AUDIO, MessageType.FLOOR_REQUEST,
             MessageType.FLOOR_GRANT, MessageType.FLOOR_RELEASE, MessageType.FLOOR_DENY,
             MessageType.PING, MessageType.PONG, MessageType.DISCONNECT, MessageType.ERROR,
         ).forEach { assertTrue(MessageType.isKnown(it)) }

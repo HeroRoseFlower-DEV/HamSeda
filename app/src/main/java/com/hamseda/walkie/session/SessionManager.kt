@@ -48,17 +48,15 @@ import java.util.concurrent.atomic.AtomicBoolean
  * Authenticated one-to-one voice session over an attached [Transport].
  *
  * Session establishment (both sides run the same symmetric logic):
- * 1. Transport reports CONNECTED → ephemeral P-256 keypair + 16-byte nonce
- *    are generated and HELLO (protocol version + codec preference) is sent.
- * 2. On HELLO → KEY_EXCHANGE (X.509 public key + nonce) is sent (once).
- * 3. Once both public keys are known → ECDH → HKDF-SHA-256 →
- *    [SessionKeys]; the transcript hash is sealed with the control key as
- *    KEY_CONFIRM. A mismatch aborts with AUTH_MISMATCH.
- * 4. Both sides display the 6-digit SAS. The users compare out-of-band and
- *    each taps confirm → SAS_CONFIRM is exchanged. Audio is enabled only
- *    after **mutual** confirmation.
- * 5. IN_SESSION: half-duplex PTT via [FloorController], AES-256-GCM audio
- *    frames with replay protection, ping/pong liveness.
+ * 1. Each endpoint generates ephemeral P-256 keys, a nonce and a random salt,
+ *    then sends HELLO.
+ * 2. Each sends KEY_COMMIT over its public key, nonce, HELLO and salt before
+ *    either endpoint reveals its key share.
+ * 3. After receiving the peer commitment, KEY_EXCHANGE reveals the committed
+ *    values. A mismatch aborts as AUTH_MISMATCH before ECDH or SAS display.
+ * 4. Valid reveals feed ECDH/HKDF; sealed KEY_CONFIRM authenticates the transcript.
+ *    Both users compare the six-digit SAS out-of-band and confirm before audio.
+ * 5. IN_SESSION: half-duplex PTT, AES-256-GCM audio, replay protection, liveness.
  *
  * Codec negotiation: each HELLO carries a codec preference; the session
  * uses min(preferenceA, preferenceB) — Opus (0x00) wins unless both sides
@@ -143,8 +141,13 @@ class SessionManager(
     private var peerNonce: ByteArray? = null
     private var keys: SessionKeys? = null
     private var myRole: Byte = 0
+    private var keyCommitSent = false
     private var keyExchangeSent = false
     private var keyConfirmSent = false
+    private var myCommitSalt = ByteArray(0)
+    private var peerKeyCommitment: ByteArray? = null
+
+    private class KeyCommitmentMismatchException : Exception("KEY_EXCHANGE commitment mismatch")
     private var peerHelloReceived = false
     private var peerCodecPref: Byte? = null
     /** True once beginHandshake ran for the current attempt (re-entrancy guard). */
@@ -522,10 +525,13 @@ class SessionManager(
         drainOutbound()
     }
 
-    private fun enqueuePlain(type: Byte, payload: ByteArray) {
+    private fun enqueuePlain(type: Byte, payload: ByteArray): Boolean {
         if (!enqueueOutbound(OutboundMsg.Plain(type, payload))) {
+            payload.fill(0)
             Log.w(TAG, "outbound queue full; dropping plain frame type=$type")
+            return false
         }
+        return true
     }
 
     /** Takes ownership of the input buffer, which is cleared after copying. */
@@ -845,10 +851,12 @@ class SessionManager(
         codec?.close(); codec = null
         myKeyPair = null
         myNonce.fill(0); myNonce = ByteArray(0)
+        myCommitSalt.fill(0); myCommitSalt = ByteArray(0)
         myPubBytes.fill(0); myPubBytes = ByteArray(0)
         peerPubBytes?.fill(0); peerPubBytes = null
         peerNonce?.fill(0); peerNonce = null
-        keyExchangeSent = false; keyConfirmSent = false
+        peerKeyCommitment?.fill(0); peerKeyCommitment = null
+        keyCommitSent = false; keyExchangeSent = false; keyConfirmSent = false
         peerHelloReceived = false
         peerCodecPref = null
         pendingKeyConfirmFrame = null
@@ -886,10 +894,13 @@ class SessionManager(
         replay.reset()
         myKeyPair = null
         myNonce.fill(0); myNonce = ByteArray(0)
+        myCommitSalt.fill(0); myCommitSalt = ByteArray(0)
         myPubBytes.fill(0); myPubBytes = ByteArray(0)
         peerPubBytes?.fill(0); peerPubBytes = null
         peerNonce?.fill(0); peerNonce = null
+        peerKeyCommitment?.fill(0); peerKeyCommitment = null
         peerCodecPref = null
+        keyCommitSent = false; keyExchangeSent = false; keyConfirmSent = false
         pendingKeyConfirmFrame = null
         _sasCode.value = null
         _peerSasConfirmed.value = false
@@ -923,12 +934,21 @@ class SessionManager(
         handshakeStarted = true
         peerHelloReceived = false
         peerCodecPref = null
+        peerPubBytes?.fill(0); peerPubBytes = null
+        peerNonce?.fill(0); peerNonce = null
+        peerKeyCommitment?.fill(0); peerKeyCommitment = null
+        peerKeyCommitment?.fill(0); peerKeyCommitment = null
+        myCommitSalt.fill(0); myCommitSalt = ByteArray(0)
+        keyCommitSent = false
+        keyExchangeSent = false
+        keyConfirmSent = false
         pendingKeyConfirmFrame = null
         _phase.value = Phase.HANDSHAKE
         startHandshakeDeadline()
         myKeyPair = SessionCrypto.generateEphemeralKeyPair()
         myPubBytes = SessionCrypto.encodePublicKey(myKeyPair!!.public)
         myNonce = SessionCrypto.newNonce16()
+        myCommitSalt = SessionCrypto.newCommitmentSalt()
         sendSequence.reset()
         sequenceExhaustionTriggered.set(false)
         lastPeerSeen = elapsedClock()
@@ -1034,6 +1054,12 @@ class SessionManager(
     }
 
     private fun handleHandshakeFrame(frame: Frame) {
+        if (MessageType.isPlaintext(frame.type) &&
+            (frame.codecId != 0xFF.toByte() || frame.sessionId.any { it != 0.toByte() })
+        ) {
+            fail(SessionError.PROTOCOL_ERROR, "invalid plaintext handshake frame header")
+            return
+        }
         // A valid HELLO is the protocol preamble. TCP preserves send order, so
         // accepting KEY_EXCHANGE first would mean the peer skipped validation
         // of protocol version and codec negotiation.
@@ -1078,15 +1104,42 @@ class SessionManager(
                     "received compatible HELLO (protocolVersion=$peerVersion, codecPreference=$peerPrefValue)",
                 )
                 activeCodecId = minOf(myCodecPref, peerPref)
+                if (!keyCommitSent) sendKeyCommit()
+            }
+            MessageType.KEY_COMMIT -> {
+                if (frame.payload.size != SessionCrypto.COMMITMENT_BYTES) {
+                    fail(SessionError.PROTOCOL_ERROR, "invalid KEY_COMMIT length")
+                    return
+                }
+                if (peerKeyCommitment != null) {
+                    fail(SessionError.PROTOCOL_ERROR, "duplicate KEY_COMMIT")
+                    return
+                }
+                if (!keyCommitSent) {
+                    fail(SessionError.PROTOCOL_ERROR, "peer KEY_COMMIT arrived before local commitment")
+                    return
+                }
+                peerKeyCommitment = frame.payload.copyOf()
                 if (!keyExchangeSent) sendKeyExchange()
             }
             MessageType.KEY_EXCHANGE -> {
                 if (peerPubBytes != null) return // duplicate; ignore
+                if (peerKeyCommitment == null) {
+                    fail(SessionError.PROTOCOL_ERROR, "KEY_EXCHANGE received before KEY_COMMIT")
+                    return
+                }
+                if (!keyExchangeSent) {
+                    fail(SessionError.PROTOCOL_ERROR, "peer reveal arrived before local reveal")
+                    return
+                }
                 try {
                     onKeyExchange(frame.payload)
-                    if (!keyExchangeSent) sendKeyExchange()
                     deriveAndConfirm()
-                    AppLog.log(TAG, "KEY_EXCHANGE accepted; key derivation completed")
+                    AppLog.log(TAG, "KEY_EXCHANGE commitment verified; key derivation completed")
+                } catch (e: KeyCommitmentMismatchException) {
+                    Log.w(TAG, "KEY_EXCHANGE does not match prior commitment")
+                    fail(SessionError.AUTH_MISMATCH, "KEY_EXCHANGE commitment mismatch")
+                    return
                 } catch (e: Exception) {
                     Log.w(TAG, "bad KEY_EXCHANGE or key derivation failed", e)
                     fail(
@@ -1149,28 +1202,84 @@ class SessionManager(
         }
     }
 
+    private fun sendKeyCommit() {
+        if (keyCommitSent) return
+        val hello = byteArrayOf(Protocol.VERSION, myCodecPref)
+        val commitment = try {
+            SessionCrypto.keyCommitment(myPubBytes, myNonce, hello, myCommitSalt)
+        } finally {
+            hello.fill(0)
+        }
+        keyCommitSent = true
+        if (!enqueuePlain(MessageType.KEY_COMMIT, commitment)) {
+            fail(SessionError.PROTOCOL_ERROR, "could not enqueue KEY_COMMIT")
+        }
+    }
+
     private fun sendKeyExchange() {
+        if (keyExchangeSent) return
+        if (peerKeyCommitment == null) {
+            fail(SessionError.PROTOCOL_ERROR, "cannot reveal before peer KEY_COMMIT")
+            return
+        }
         val pub = myPubBytes
-        val buf = ByteBuffer.allocate(2 + pub.size + 16).order(ByteOrder.BIG_ENDIAN)
-        buf.putShort(pub.size.toShort())
-        buf.put(pub)
-        buf.put(myNonce)
+        val salt = myCommitSalt
+        if (salt.size != SessionCrypto.COMMITMENT_SALT_BYTES) {
+            fail(SessionError.PROTOCOL_ERROR, "local commitment salt unavailable")
+            return
+        }
+        val buf = ByteBuffer.allocate(2 + pub.size + 16 + SessionCrypto.COMMITMENT_SALT_BYTES)
+            .order(ByteOrder.BIG_ENDIAN)
+        buf.putShort(pub.size.toShort()).put(pub).put(myNonce).put(salt)
         keyExchangeSent = true
-        enqueuePlain(MessageType.KEY_EXCHANGE, buf.array())
+        val enqueued = try {
+            enqueuePlain(MessageType.KEY_EXCHANGE, buf.array())
+        } finally {
+            salt.fill(0)
+            myCommitSalt = ByteArray(0)
+        }
+        if (!enqueued) fail(SessionError.PROTOCOL_ERROR, "could not enqueue KEY_EXCHANGE")
     }
 
     private fun onKeyExchange(payload: ByteArray) {
-        require(payload.size >= 2 + 16) { "KEY_EXCHANGE too short" }
+        require(payload.size >= 2 + 16 + SessionCrypto.COMMITMENT_SALT_BYTES) {
+            "KEY_EXCHANGE too short"
+        }
         val buf = ByteBuffer.wrap(payload).order(ByteOrder.BIG_ENDIAN)
         val pubLen = buf.short.toInt() and 0xFFFF
         require(pubLen in 1..SessionCrypto.MAX_PUBKEY_BYTES) { "pubkey len $pubLen" }
-        require(payload.size == 2 + pubLen + 16) { "KEY_EXCHANGE size mismatch" }
+        require(payload.size == 2 + pubLen + 16 + SessionCrypto.COMMITMENT_SALT_BYTES) {
+            "KEY_EXCHANGE size mismatch"
+        }
         val pub = ByteArray(pubLen).also { buf.get(it) }
         val nonce = ByteArray(16).also { buf.get(it) }
-        // Validates curve/encoding now — throws on garbage.
-        SessionCrypto.decodePublicKey(pub)
-        peerPubBytes = pub
-        peerNonce = nonce
+        val salt = ByteArray(SessionCrypto.COMMITMENT_SALT_BYTES).also { buf.get(it) }
+        try {
+            SessionCrypto.decodePublicKey(pub)
+            val peerPref = peerCodecPref ?: error("peer HELLO codec preference absent")
+            val peerHello = byteArrayOf(Protocol.VERSION, peerPref)
+            val expectedCommitment = try {
+                SessionCrypto.keyCommitment(pub, nonce, peerHello, salt)
+            } finally {
+                peerHello.fill(0)
+            }
+            try {
+                val committed = peerKeyCommitment ?: error("peer commitment absent")
+                if (!MessageDigest.isEqual(expectedCommitment, committed)) {
+                    throw KeyCommitmentMismatchException()
+                }
+            } finally {
+                expectedCommitment.fill(0)
+            }
+            peerPubBytes = pub
+            peerNonce = nonce
+        } catch (e: Exception) {
+            pub.fill(0)
+            nonce.fill(0)
+            throw e
+        } finally {
+            salt.fill(0)
+        }
     }
 
     private fun deriveAndConfirm() {

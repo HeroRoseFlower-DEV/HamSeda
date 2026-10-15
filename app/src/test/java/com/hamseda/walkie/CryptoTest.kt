@@ -137,6 +137,28 @@ class CryptoTest {
     }
 
     @Test
+    fun `key commitment binds key nonce hello and salt`() {
+        val (a, b, _) = ecdhPair()
+        val hello = byteArrayOf(Protocol.VERSION, 0)
+        val salt = SessionCrypto.newCommitmentSalt()
+        val original = SessionCrypto.keyCommitment(a.pub, a.nonce, hello, salt)
+        val repeated = SessionCrypto.keyCommitment(a.pub, a.nonce, hello, salt)
+        assertArrayEquals(original, repeated)
+        assertEquals(SessionCrypto.COMMITMENT_BYTES, original.size)
+        val changedNonce = a.nonce.copyOf().also { it[0] = (it[0].toInt() xor 1).toByte() }
+        val changedHello = byteArrayOf(Protocol.VERSION, 1)
+        val changedSalt = salt.copyOf().also { it[0] = (it[0].toInt() xor 1).toByte() }
+        val changedPub = a.pub.copyOf().also { it[it.lastIndex] = (it.last().toInt() xor 1).toByte() }
+        assertFalse(original.contentEquals(SessionCrypto.keyCommitment(a.pub, changedNonce, hello, salt)))
+        assertFalse(original.contentEquals(SessionCrypto.keyCommitment(a.pub, a.nonce, changedHello, salt)))
+        assertFalse(original.contentEquals(SessionCrypto.keyCommitment(a.pub, a.nonce, hello, changedSalt)))
+        assertFalse(original.contentEquals(SessionCrypto.keyCommitment(changedPub, a.nonce, hello, salt)))
+        original.fill(0); repeated.fill(0); salt.fill(0); changedSalt.fill(0)
+        changedNonce.fill(0); changedPub.fill(0)
+        a.keys.wipe(); b.keys.wipe()
+    }
+
+    @Test
     fun `both sides compute the same SAS`() {
         val (a, b, _) = ecdhPair()
         val sasA = SessionCrypto.shortAuthString(a.keys.sasSeed)

@@ -49,6 +49,7 @@ WIRE_VERSION="$(extract_one 'Protocol.VERSION' app/src/main/java/com/hamseda/wal
 BITRATE_BPS="$(extract_one 'Opus target bitrate' app/src/main/java/com/hamseda/walkie/audio/OpusCodec.kt '^[[:space:]]*const val DEFAULT_BITRATE_BPS = ([0-9_]+).*$')"
 KEY_INFO="$(extract_one 'SessionCrypto.INFO' app/src/main/java/com/hamseda/walkie/crypto/SessionCrypto.kt '^[[:space:]]*private const val INFO = "([^"]+)".*$')"
 SAS_INFO="$(extract_one 'SessionCrypto.SAS_INFO' app/src/main/java/com/hamseda/walkie/crypto/SessionCrypto.kt '^[[:space:]]*private const val SAS_INFO = "([^"]+)".*$')"
+COMMIT_INFO="$(extract_one 'SessionCrypto.COMMIT_INFO' app/src/main/java/com/hamseda/walkie/crypto/SessionCrypto.kt '^[[:space:]]*private const val COMMIT_INFO = "([^"]+)".*$')"
 AGP_VERSION="$(extract_one 'Android Gradle Plugin version' gradle/libs.versions.toml '^[[:space:]]*agp = "([^"]+)".*$')"
 GRADLE_VERSION="$(extract_one 'Gradle wrapper version' gradle/wrapper/gradle-wrapper.properties '^[[:space:]]*distributionUrl=.*gradle-([^/-]+)-bin\.zip.*$')"
 
@@ -58,6 +59,7 @@ printf -v WIRE_VERSION_DOC '\x60%s\x60' "$WIRE_VERSION"
 printf -v BITRATE_DOC '\x60%s bps\x60' "$BITRATE_BPS"
 printf -v KEY_INFO_DOC '\x60%s\x60' "$KEY_INFO"
 printf -v SAS_INFO_DOC '\x60%s\x60' "$SAS_INFO"
+printf -v COMMIT_INFO_DOC '\x60%s\x60' "$COMMIT_INFO"
 printf -v AGP_VERSION_DOC '\x60%s\x60' "$AGP_VERSION"
 printf -v GRADLE_VERSION_DOC '\x60%s\x60' "$GRADLE_VERSION"
 
@@ -70,5 +72,6 @@ check_table_row_value README.md "Gradle Wrapper" "$GRADLE_VERSION_DOC"
 
 check_table_row_value SECURITY.md '`SessionCrypto.INFO`' "$KEY_INFO_DOC"
 check_table_row_value SECURITY.md '`SessionCrypto.SAS_INFO`' "$SAS_INFO_DOC"
+check_table_row_value SECURITY.md '`SessionCrypto.COMMIT_INFO`' "$COMMIT_INFO_DOC"
 
 echo "Consistency checks passed: versionName=$APP_VERSION, versionCode=$APP_CODE, wireVersion=$WIRE_VERSION, opusBitrateBps=$BITRATE_BPS, AGP=$AGP_VERSION, Gradle=$GRADLE_VERSION."

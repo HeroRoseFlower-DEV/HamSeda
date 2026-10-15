@@ -41,19 +41,23 @@ import javax.crypto.spec.SecretKeySpec
  * frame header is passed as associated data, binding ciphertext to its
  * session/sequence/type.
  *
- * Ephemeral keys are wiped from memory when the session ends; nothing is
- * persisted (see [SessionKeys.wipe]).
+ * Ephemeral session keys are wiped from memory when the session ends; nothing is
+ * persisted (see [SessionKeys.wipe]). The v4 handshake commits to each share
+ * before revealing it, preventing adaptive SAS grinding against the peer's share.
  */
 object SessionCrypto {
     private const val EC_CURVE = "secp256r1"
     private const val GCM_TAG_BITS = 128
     private const val NONCE_LEN = 12
-    private const val INFO = "HamSeda-v3/session-keys"
-    private const val SAS_INFO = "HamSeda-v3/sas"
-    private const val TRANSCRIPT_INFO = "HamSeda-v3/key-confirm"
+    private const val INFO = "HamSeda-v4/session-keys"
+    private const val SAS_INFO = "HamSeda-v4/sas"
+    private const val TRANSCRIPT_INFO = "HamSeda-v4/key-confirm"
+    private const val COMMIT_INFO = "HamSeda-v4/key-commitment"
 
     /** Maximum accepted encoded public-key size (P-256 X.509 ≈ 91 bytes). */
     const val MAX_PUBKEY_BYTES = 256
+    const val COMMITMENT_BYTES = 32
+    const val COMMITMENT_SALT_BYTES = 32
 
     /**
      * Exact wire size of [seal]'s output for a given plaintext length:
@@ -188,10 +192,9 @@ object SessionCrypto {
         if (compareBytes(ownPub, peerPub) < 0) 0 else 1
 
     /**
-     * Six-digit short authentication string. Derived from the session's SAS
-     * seed — both honest sides compute the same value; an active MITM
-     * cannot make both sides display the same code without also breaking
-     * the ECDH exchange it is attacking.
+     * Six-digit short authentication string. Commitment/reveal prevents an active
+     * peer from adaptively choosing its key share after learning the other share;
+     * users must still compare the displayed code on every untrusted session.
      */
     fun shortAuthString(sasSeed: ByteArray): String {
         val mac = javax.crypto.Mac.getInstance("HmacSHA256")
@@ -205,6 +208,34 @@ object SessionCrypto {
             digest.fill(0)
         }
     }
+
+    /**
+     * Creates a hiding, binding commitment to the exact values revealed in
+     * KEY_EXCHANGE. The random 32-byte salt hides the key share until reveal.
+     */
+    fun keyCommitment(
+        publicKey: ByteArray,
+        nonce: ByteArray,
+        hello: ByteArray,
+        salt: ByteArray,
+    ): ByteArray {
+        require(publicKey.size in 1..MAX_PUBKEY_BYTES) { "public key size out of bounds" }
+        require(nonce.size == 16) { "nonce must be 16 bytes" }
+        require(hello.size == 2) { "HELLO payload must be exactly 2 bytes" }
+        require(salt.size == COMMITMENT_SALT_BYTES) { "commitment salt must be 32 bytes" }
+        val domain = COMMIT_INFO.toByteArray(Charsets.UTF_8)
+        val encoded = ByteBuffer.allocate(domain.size + 2 + publicKey.size + nonce.size + hello.size + salt.size)
+            .order(ByteOrder.BIG_ENDIAN)
+            .put(domain).putShort(publicKey.size.toShort()).put(publicKey).put(nonce).put(hello).put(salt).array()
+        return try {
+            Hkdf.sha256(encoded)
+        } finally {
+            domain.fill(0)
+            encoded.fill(0)
+        }
+    }
+
+    fun newCommitmentSalt(): ByteArray = ByteArray(COMMITMENT_SALT_BYTES).also(random::nextBytes)
 
     fun newNonce16(): ByteArray = ByteArray(16).also(random::nextBytes)
 

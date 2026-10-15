@@ -130,12 +130,18 @@ class SessionHandshakeTest {
                 }
                 val sent = synchronized(outboundB) { outboundB.toList() }
                 val helloIndex = sent.indexOf(MessageType.HELLO)
+                val commitIndex = sent.indexOf(MessageType.KEY_COMMIT)
                 val exchangeIndex = sent.indexOf(MessageType.KEY_EXCHANGE)
                 assertTrue("attempt $attempt: HELLO must be sent", helloIndex >= 0)
+                assertTrue("attempt $attempt: KEY_COMMIT must be sent", commitIndex >= 0)
                 assertTrue("attempt $attempt: KEY_EXCHANGE must be sent", exchangeIndex >= 0)
                 assertTrue(
-                    "attempt $attempt: HELLO must precede KEY_EXCHANGE; sent=$sent",
-                    helloIndex < exchangeIndex,
+                    "attempt $attempt: HELLO must precede KEY_COMMIT; sent=$sent",
+                    helloIndex < commitIndex,
+                )
+                assertTrue(
+                    "attempt $attempt: commitment must precede reveal; sent=$sent",
+                    commitIndex < exchangeIndex,
                 )
             } finally {
                 rig.close()
@@ -275,29 +281,31 @@ class SessionHandshakeTest {
     }
 
     @Test
-    fun `mitm tampering with key exchange is detected`() {
-        // Flip a byte inside A's KEY_EXCHANGE nonce in flight: both sides
-        // still derive *valid* keys, but different ones — the sealed
-        // KEY_CONFIRM transcript check must then fail.
+    fun `mitm cannot alter a revealed key share after commitment`() {
+        // Mutate A's revealed nonce in transit without changing A's commitment.
+        // B must reject the reveal before deriving keys or displaying a SAS.
         val tamper: (ByteArray) -> ByteArray = { bytes ->
             val frame = Frame.decode(bytes)
             if (frame.type == MessageType.KEY_EXCHANGE) {
-                val out = bytes.copyOf()
-                // payload = pubLen(2) + pub(91) + nonce(16); flip first nonce byte
-                val nonceAt = Protocol.HEADER_SIZE + 2 + 91
-                out[nonceAt] = (out[nonceAt].toInt() xor 0xFF).toByte()
-                out
+                val payload = frame.payload.copyOf()
+                val pubLen = ((payload[0].toInt() and 0xFF) shl 8) or
+                    (payload[1].toInt() and 0xFF)
+                val nonceAt = 2 + pubLen
+                if (pubLen > 0 && nonceAt < payload.size) {
+                    payload[nonceAt] = (payload[nonceAt].toInt() xor 0xFF).toByte()
+                    frame.copy(payload = payload).encode()
+                } else bytes
             } else bytes
         }
         val rig = newRig(interceptA = tamper)
         rig.start()
-        rig.await("a detects mitm") {
-            rig.a.phase.value == SessionManager.Phase.IDLE &&
-                rig.a.error.value == SessionManager.SessionError.AUTH_MISMATCH
+        rig.await("receiver rejects uncommitted change") {
+            rig.b.phase.value == SessionManager.Phase.IDLE &&
+                rig.b.error.value == SessionManager.SessionError.AUTH_MISMATCH
         }
-        // The session never reaches the SAS phase, let alone audio.
-        assertNull(rig.a.sasCode.value)
+        assertNull(rig.b.sasCode.value)
         assertTrue(rig.a.phase.value != SessionManager.Phase.IN_SESSION)
+        assertTrue(rig.b.phase.value != SessionManager.Phase.IN_SESSION)
         rig.close()
     }
 

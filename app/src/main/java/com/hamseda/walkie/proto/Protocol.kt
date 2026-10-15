@@ -3,7 +3,7 @@ package com.hamseda.walkie.proto
 import java.util.UUID
 
 /**
- * Wire protocol constants for HamSeda v3.
+ * Wire protocol constants for HamSeda v4.
  *
  * Every datagram on the wire is one [Frame]: a fixed 29-byte header followed
  * by a length-bounded payload. Frames travel inside a length-prefixed
@@ -20,7 +20,7 @@ import java.util.UUID
 object Protocol {
     const val MAGIC_0: Byte = 0x48 // 'H'
     const val MAGIC_1: Byte = 0x53 // 'S'
-    const val VERSION: Byte = 3
+    const val VERSION: Byte = 4
 
     /** Fixed header size in bytes: magic(2) + version(1) + type(1) + sessionId(8)
      * + seq(4) + timestamp(8) + codecId(1) + payloadLen(4). */
@@ -79,6 +79,7 @@ object MessageType {
     const val KEY_EXCHANGE: Byte = 0x02
     const val KEY_CONFIRM: Byte = 0x03
     const val SAS_CONFIRM: Byte = 0x04
+    const val KEY_COMMIT: Byte = 0x05
 
     // --- real-time media (payload = 12-byte nonce + AES-256-GCM ciphertext)
     const val AUDIO: Byte = 0x10
@@ -98,13 +99,13 @@ object MessageType {
     const val ERROR: Byte = 0x41
 
     fun isKnown(type: Byte): Boolean = type in setOf(
-        HELLO, KEY_EXCHANGE, KEY_CONFIRM, SAS_CONFIRM, AUDIO,
+        HELLO, KEY_EXCHANGE, KEY_CONFIRM, SAS_CONFIRM, KEY_COMMIT, AUDIO,
         FLOOR_REQUEST, FLOOR_GRANT, FLOOR_RELEASE, FLOOR_DENY,
         PING, PONG, DISCONNECT, ERROR
     )
 
     /** Message types whose payload is sent in cleartext (handshake only). */
-    fun isPlaintext(type: Byte): Boolean = type == HELLO || type == KEY_EXCHANGE
+    fun isPlaintext(type: Byte): Boolean = type == HELLO || type == KEY_COMMIT || type == KEY_EXCHANGE
 }
 
 /** Audio codec identifiers carried in the frame header. */

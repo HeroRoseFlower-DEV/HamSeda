@@ -32,7 +32,7 @@ completed the in-app pairing flow, against:
 | Threat | Mitigation |
 |---|---|
 | Passive interception of radio traffic | AES-256-GCM on every audio/control frame (application layer, independent of WPA2/Bluetooth link encryption) |
-| Active man-in-the-middle during pairing | Ephemeral ECDH (P-256) + transcript-bound KEY_CONFIRM + user-compared 6-digit SAS; mismatch aborts the session |
+| Active man-in-the-middle during pairing | Ephemeral ECDH (P-256) + commitment/reveal before share disclosure + transcript-bound KEY_CONFIRM + user-compared 6-digit SAS; mismatch aborts the session |
 | Replay / duplication of frames | Per-direction uint32 sequence numbers + 128-frame sliding window; stale/out-of-session frames dropped |
 | Unauthenticated state influence (HS-01) | Frames are AEAD-authenticated BEFORE the replay window, liveness, or floor state may change; even ignored frames are authenticated |
 | Out-of-order wire injection (HS-02) | Single serialized outbound pipeline: one consumer allocates sequences and writes; no per-frame coroutines |
@@ -49,25 +49,31 @@ completed the in-app pairing flow, against:
 1. **Key exchange:** ephemeral ECDH on NIST P-256 (`KeyPairGenerator("EC")`,
    `ECGenParameterSpec("secp256r1")`, `KeyAgreement("ECDH")`). Keys are
    generated per session and never persisted.
-2. **Key derivation:** HKDF-SHA-256 (RFC 5869, over platform HMAC-SHA-256)
-   with salt = SHA-256(ordered nonces), info = `HamSeda-v3/session-keys`,
+2. **Commitment/reveal (wire protocol v4):** before either public key or nonce is
+   revealed, each side sends a domain-separated SHA-256 commitment to its public
+   key, nonce, exact HELLO payload and independent 32-byte random salt. KEY_EXCHANGE
+   reveals those values only after the peer's commitment arrives. Each reveal is
+   verified in constant time before ECDH; mismatch aborts before SAS display.
+   This blocks adaptive share selection after observing the other endpoint's reveal.
+3. **Key derivation:** HKDF-SHA-256 (RFC 5869, over platform HMAC-SHA-256)
+   with salt = SHA-256(ordered nonces), info = `HamSeda-v4/session-keys`,
    output = 32-byte audio key + 32-byte control key + 8-byte session id +
    32-byte SAS seed. Key separation is structural, not by convention.
 3. **Encryption:** AES-256-GCM (`AES/GCM/NoPadding`, 128-bit tag), random
    96-bit nonce per frame, header+role as AAD.
-4. **Authentication of the exchange (wire protocol v3):** KEY_CONFIRM
+5. **Authentication of the exchange (wire protocol v4):** KEY_CONFIRM
    authenticates a SHA-256 transcript with domain separator
-   `HamSeda-v3/key-confirm`. The canonical, length-prefixed transcript binds
+   `HamSeda-v4/key-confirm`. The canonical, length-prefixed transcript binds
    each peer's exact two-byte HELLO payload (protocol version + codec preference),
    16-byte nonce, and encoded ECDH public key, ordered deterministically by
    public-key role. Changing the key, nonce, protocol version, or codec
    preference changes the transcript and causes authentication to fail.
-5. **SAS:** 6 digits = `HMAC-SHA256(sasSeed, "HamSeda-v3/sas") mod 1_000_000`,
-   displayed on both phones. The SAS is *detection*, not key material: users
-   compare it out-of-band and each confirm. A six-digit code carries ~20 bits;
-   it is safe here because it authenticates an already-strong ECDH exchange
-   rather than bootstrapping trust from the code itself.
-6. **Roles:** sender role (0/1) is derived deterministically by comparing the
+6. **SAS:** 6 digits = `HMAC-SHA256(sasSeed, "HamSeda-v4/sas") mod 1_000_000`,
+   displayed on both phones. The SAS is a short equality check, not key material.
+   Users must compare it out-of-band and each confirm. A six-digit value gives
+   about 20 bits of manual verification; commitment/reveal prevents adaptive
+   share selection after an honest endpoint's share becomes visible.
+7. **Roles:** sender role (0/1) is derived deterministically by comparing the
    two encoded public keys, and mixed into the AAD — this defeats reflection
    of a sender's own frames back at them.
 
@@ -82,8 +88,9 @@ separator is intentionally changed.
 
 | Source constant | Value |
 |---|---|
-| `SessionCrypto.INFO` | `HamSeda-v3/session-keys` |
-| `SessionCrypto.SAS_INFO` | `HamSeda-v3/sas` |
+| `SessionCrypto.INFO` | `HamSeda-v4/session-keys` |
+| `SessionCrypto.SAS_INFO` | `HamSeda-v4/sas` |
+| `SessionCrypto.COMMIT_INFO` | `HamSeda-v4/key-commitment` |
 
 ## What is NOT protected / limitations
 
@@ -123,8 +130,22 @@ separator is intentionally changed.
 - Diagnostic text is capped before normalization and address-redaction regexes run.
 - The checked-in Gradle Wrapper JAR is SHA-256 checked in CI against the pinned Gradle 9.8.1 checksum (`3b8a25775a69158b5ad2b1d17a80a88dc7b40a352a73eb27d06c612a7ce68e98`). The wrapper distribution is pinned to Gradle 9.8.1 and its ZIP checksum is recorded in `gradle/wrapper/gradle-wrapper.properties` (`dce76f55f8e251a3a1f130eb120f30b3d271de2b76c9b0729d316b5a1b6dc01f`). CI verifies the JAR checksum and validates the pinned distribution before building. Dependabot monitors Gradle and GitHub Actions updates.
 
+## Trust-on-first-use (TOFU) status
+
+TOFU identity pinning is **not implemented**. The current handshake uses
+ephemeral session keys and requires users to compare the SAS on every session.
+A safe TOFU implementation requires a persistent device identity-signing key,
+a local store of peer identity public keys pinned only after a fully
+SAS-confirmed session, signature verification on subsequent handshakes, and UI
+to identify and reset trusted peers. Pinning the existing ephemeral ECDH key
+alone would not provide a stable identity and must not be presented as TOFU.
+
 ## Reporting
 
-This is a personal project without a bug-bounty process. If you find a
-vulnerability, please open a GitHub issue describing it (without posting
-exploit code targeting users) so it can be fixed openly.
+Please do **not** report security vulnerabilities in public issues, pull
+requests, or discussions. The repository owner should enable GitHub Private
+Vulnerability Reporting in **Settings → Security and quality → Advanced
+Security → Private vulnerability reporting**. Once enabled, use the repository's
+**Security → Advisories → Report a vulnerability** flow to send a private report.
+Do not include exploit details or sensitive reproduction material in a public
+issue while the private channel is unavailable.
