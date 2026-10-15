@@ -58,7 +58,7 @@ Severity means priority for the staged debugging effort, not a claim that a secu
 - [x] Inspect the active `AudioRecord.read()` → `AudioCodec.encode()` path for application-level PCM mutation.
 - [x] Gate `UNPROCESSED` source selection on Android's advertised support property; log the selected source without claiming that this proves the hardware path is unprocessed.
 - [x] Accumulate partial positive reads until a complete 20 ms frame is available instead of discarding the partial samples.
-- [x] Update the raw-capture test instructions and record the remaining `startRecording()` fallback gap.
+- [x] Update the raw-capture test instructions and add a `MIC_FALLBACK` retry when `UNPROCESSED.startRecording()` fails.
 - [ ] Run unit tests, lint, debug/release builds, and instrumented-test compilation on the Phase 1 PR.
 - [ ] Validate ten or more PTT bursts on both physical phones and record the exact APK SHA-256.
 - [ ] Verify real device routing and OEM/HAL processing behavior; not infer it from source selection alone.
