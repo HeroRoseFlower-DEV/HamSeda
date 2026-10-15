@@ -62,29 +62,8 @@ jobs:
           echo "3b8a25775a69158b5ad2b1d17a80a88dc7b40a352a73eb27d06c612a7ce68e98  gradle/wrapper/gradle-wrapper.jar" | sha256sum --check --strict
           ./gradlew --version
 
-      - name: Check documented versions and crypto domains
-        shell: bash
-        run: |
-          set -euo pipefail
-          APP_VERSION="$(sed -nE 's/^[[:space:]]*versionName = "([^"]+)".*/\1/p' app/build.gradle.kts)"
-          APP_CODE="$(sed -nE 's/^[[:space:]]*versionCode = ([0-9]+).*/\1/p' app/build.gradle.kts)"
-          WIRE_VERSION="$(sed -nE 's/^[[:space:]]*const val VERSION: Byte = ([0-9]+).*/\1/p' app/src/main/java/com/hamseda/walkie/proto/Protocol.kt)"
-          KEY_INFO="$(sed -nE 's/^[[:space:]]*private const val INFO = "([^"]+)".*/\1/p' app/src/main/java/com/hamseda/walkie/crypto/SessionCrypto.kt)"
-          SAS_INFO="$(sed -nE 's/^[[:space:]]*private const val SAS_INFO = "([^"]+)".*/\1/p' app/src/main/java/com/hamseda/walkie/crypto/SessionCrypto.kt)"
-          test -n "$APP_VERSION" && test -n "$APP_CODE" && test -n "$WIRE_VERSION"
-          test -n "$KEY_INFO" && test -n "$SAS_INFO"
-          grep -Fq -- "$APP_VERSION" README.md
-          grep -Fq -- "$APP_CODE" README.md
-          grep -Fq -- "$WIRE_VERSION" README.md
-          grep -Fq -- "$KEY_INFO" SECURITY.md
-          grep -Fq -- "$SAS_INFO" SECURITY.md
-          grep -Fq -- "Gradle 9.7.0" SECURITY.md
-          if grep -Eq 'HamSeda-v2/(session-keys|sas)|8\.12\.1|8\.14\.6' SECURITY.md; then
-            echo "::error::SECURITY.md contains stale protocol-domain or Gradle version metadata"
-            exit 1
-          fi
-          grep -Fq -- "48 kHz" README.md
-          grep -Fq -- "32 kbps" README.md
+      - name: Verify source-backed documentation contracts
+        run: bash .github/scripts/verify-consistency.sh
 
       - name: Run unit tests
         run: ./gradlew :app:testDebugUnitTest --no-daemon --stacktrace
