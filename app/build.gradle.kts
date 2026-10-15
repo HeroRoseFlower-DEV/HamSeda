@@ -3,6 +3,19 @@ plugins {
     alias(libs.plugins.kotlin.compose)
 }
 
+// Release signing is injected only by the tag-triggered release workflow.
+ // Pull-request CI deliberately builds an unsigned release variant.
+val releaseKeystorePath = System.getenv("HAMSEDA_KEYSTORE_PATH")
+val releaseKeystorePassword = System.getenv("HAMSEDA_KEYSTORE_PASSWORD")
+val releaseKeyAlias = System.getenv("HAMSEDA_KEY_ALIAS")
+val releaseKeyPassword = System.getenv("HAMSEDA_KEY_PASSWORD")
+val releaseSigningConfigured = listOf(
+    releaseKeystorePath,
+    releaseKeystorePassword,
+    releaseKeyAlias,
+    releaseKeyPassword,
+).all { !it.isNullOrBlank() }
+
 android {
     namespace = "com.hamseda.walkie"
     compileSdk = 37
@@ -32,8 +45,22 @@ android {
         }
     }
 
+    signingConfigs {
+        create("release") {
+            if (releaseSigningConfigured) {
+                storeFile = file(releaseKeystorePath!!)
+                storePassword = releaseKeystorePassword!!
+                keyAlias = releaseKeyAlias!!
+                keyPassword = releaseKeyPassword!!
+            }
+        }
+    }
+
     buildTypes {
         release {
+            if (releaseSigningConfigured) {
+                signingConfig = signingConfigs.getByName("release")
+            }
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
@@ -112,4 +139,14 @@ dependencies {
 // The old Concentus port is kept in Git for provenance, not compiled into the APK.
 tasks.withType<org.gradle.api.tasks.compile.JavaCompile>().configureEach {
     exclude("org/concentus/**")
+}
+
+
+// Stable metadata output for the tag-triggered release workflow's version gate.
+tasks.register("printReleaseMetadata") {
+    group = "help"
+    description = "Print versionName|versionCode for release tag validation."
+    doLast {
+        println("${android.defaultConfig.versionName}|${android.defaultConfig.versionCode}")
+    }
 }
