@@ -879,6 +879,7 @@ class SessionManager(
         peerHelloReceived = false
         peerCodecPref = null
         pendingKeyConfirmFrame = null
+        pendingSasConfirmFrame?.payload?.fill(0); pendingSasConfirmFrame = null
         handshakeStarted = false
         selfSasConfirmed = false
         _sasCode.value = null
@@ -927,6 +928,7 @@ class SessionManager(
         peerCodecPref = null
         keyCommitSent = false; keyExchangeSent = false; keyConfirmSent = false
         pendingKeyConfirmFrame = null
+        pendingSasConfirmFrame?.payload?.fill(0); pendingSasConfirmFrame = null
         _sasCode.value = null
         _peerSasConfirmed.value = false
         _isTransmitting.value = false
@@ -973,6 +975,7 @@ class SessionManager(
         keyExchangeSent = false
         keyConfirmSent = false
         pendingKeyConfirmFrame = null
+        pendingSasConfirmFrame?.payload?.fill(0); pendingSasConfirmFrame = null
         _phase.value = Phase.HANDSHAKE
         startHandshakeDeadline()
         try {
@@ -1194,6 +1197,20 @@ class SessionManager(
                             "cause=${e.javaClass.simpleName}: ${e.message})",
                     )
                     return
+                }
+            }
+            MessageType.SAS_CONFIRM -> {
+                // A peer can verify our KEY_CONFIRM and send confirmation just
+                // before we process its KEY_CONFIRM. Defer until transcript
+                // verification makes the SAS-phase state transition.
+                if (keys == null) {
+                    fail(SessionError.PROTOCOL_ERROR, "SAS_CONFIRM received before key derivation")
+                    return
+                }
+                if (pendingSasConfirmFrame == null) {
+                    pendingSasConfirmFrame = frame.copy(payload = frame.payload.copyOf())
+                } else {
+                    _authFailures.value += 1
                 }
             }
             MessageType.KEY_CONFIRM -> {
@@ -1449,6 +1466,8 @@ class SessionManager(
 
     // KEY_CONFIRM frames that arrive before we derived are stashed here.
     private var pendingKeyConfirmFrame: Frame? = null
+    /** SAS confirmation can race ahead of local processing of peer KEY_CONFIRM. */
+    private var pendingSasConfirmFrame: Frame? = null
 
     private fun expectedTranscript(): ByteArray =
         currentTranscriptHash(
@@ -1593,6 +1612,15 @@ class SessionManager(
             AppLog.log(TAG, "new peer identity; awaiting SAS comparison")
         }
         startSasDeadline()
+        val pendingSas = pendingSasConfirmFrame
+        pendingSasConfirmFrame = null
+        if (pendingSas != null) {
+            try {
+                handleSasPhaseFrame(pendingSas)
+            } finally {
+                pendingSas.payload.fill(0)
+            }
+        }
     }
 
     private fun maybeEnterSession() {
