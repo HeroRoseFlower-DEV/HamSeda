@@ -32,7 +32,8 @@ interface AudioCodec {
 
     /**
      * Tries to reconstruct the immediately preceding 20 ms frame from FEC
-     * carried by the following packet. Returns null when unsupported or absent.
+     * carried by the following packet. Returns null when this codec or packet
+     * does not support in-band recovery. Call only for a single-frame gap.
      */
     fun decodePreviousFrameFec(data: ByteArray): ShortArray? = null
 

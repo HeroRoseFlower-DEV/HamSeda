@@ -7,7 +7,7 @@
     <string name="status_idle">Not ready</string>
     <string name="status_connecting">Connecting…</string>
     <string name="status_handshake">Establishing secure session…</string>
-    <string name="status_verifying">Waiting for security code confirmation</string>
+    <string name="status_verifying">Verifying peer identity or waiting for security code confirmation</string>
     <string name="status_in_session">Connected — secure session active</string>
     <string name="transport_wifi_direct">Wi-Fi Direct</string>
     <string name="transport_bluetooth">Bluetooth</string>
@@ -88,6 +88,11 @@
     <string name="lang_en">English</string>
     <string name="settings_privacy">Privacy</string>
     <string name="settings_diagnostics">Diagnostics log</string>
+    <string name="settings_trusted_devices">Trusted devices</string>
+    <string name="settings_trusted_devices_desc">A peer is saved only after both phones confirm the first-contact security code. Known identities are verified automatically on later connections. Removing a pin makes the next connection require the code again.</string>
+    <string name="settings_trusted_empty">No trusted devices yet. The first successful SAS-confirmed connection will add a pin.</string>
+    <string name="settings_trusted_fingerprint">Public-key fingerprint (SHA-256)</string>
+    <string name="settings_trusted_forget">Forget</string>
     <string name="diag_title">Diagnostics</string>
     <string name="diag_hint">Connection steps are logged here. If something fails, copy the log and share it — it shows exactly which step failed.</string>
     <string name="diag_copy">Copy log</string>
@@ -104,7 +109,7 @@
     <string name="privacy_p2">No internet: everything (discovery, connection, calls) uses only the phone’s local radios.</string>
     <string name="privacy_p3">No audio storage: no audio files, call history, or contact lists are saved.</string>
     <string name="privacy_p4">Voice is sent only during an active session and only to the authenticated peer; the microphone never stays open outside the push-to-talk button.</string>
-    <string name="privacy_p5">Application-layer end-to-end encryption (ECDH on P-256, HKDF-SHA-256 key derivation, AES-256-GCM) on all audio and control frames; keys are ephemeral and wiped from memory when the session ends.</string>
+    <string name="privacy_p5">Application-layer end-to-end encryption (ECDH on P-256, HKDF-SHA-256, AES-256-GCM) protects audio and control frames. Ephemeral session keys are wiped when a session ends; the device identity-signing private key stays in Android Keystore, and public-key pins for trusted peers are stored locally after first-contact SAS verification.</string>
     <string name="privacy_p6">No behavioral analytics, ads, or cloud crash reporting.</string>
 
     <!-- First-run permissions gate -->

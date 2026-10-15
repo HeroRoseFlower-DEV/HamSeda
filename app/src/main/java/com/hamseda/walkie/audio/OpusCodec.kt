@@ -8,11 +8,12 @@ import java.io.Closeable
  * Real-time speech codec backed by the official native libopus 1.6.1 build.
  *
  * Profile: 48 kHz mono PCM16, 20 ms frames, VOIP application, 32 kbps,
- * voice signal hint, full-band maximum bandwidth, constrained VBR, DTX, and
- * in-band FEC with a 10% expected-loss hint. DTX reduces payload bitrate during
- * silence; FEC is used only to recover a single missing frame when LBRR data is
- * available in the following packet. Android 8/9 use complexity 4 to leave
- * more CPU headroom on older
+ * voice signal hint, full-band maximum bandwidth, constrained VBR, DTX,
+ * and in-band FEC with a 10% expected-loss hint. DTX reduces payload bitrate
+ * during silence; FEC is only used when the jitter buffer sees one missing frame
+ * and the following packet actually contains LBRR redundancy. This also covers
+ * deliberate application-level freshness drops on otherwise reliable transports.
+ * Android 8/9 use complexity 4 to leave more CPU headroom on older
  * hardware; API 29+ use complexity 8 for higher encoder analysis quality.
  * The upstream source archive is hash-pinned in CMake;
  * the codec is packaged in the APK and does not download anything at runtime.
@@ -78,8 +79,6 @@ class OpusCodec(
                 "Native libopus is unavailable in this runtime; run codec I/O tests on Android."
             }
             val out = ShortArray(frameSamples)
-            // The app sends one 20 ms frame per packet. FEC stays off because
-            // TCP/RFCOMM are reliable byte streams and retransmit transport loss.
             val decodedSamples = native.decode(dec, data, out, frameSamples, decodeFec = false)
             require(decodedSamples >= 0) {
                 "opus decode failed (native result=$decodedSamples)"
@@ -92,8 +91,9 @@ class OpusCodec(
     }
 
     /**
-     * Recover the preceding frame only when the packet advertises Opus LBRR.
-     * The same packet must subsequently be decoded normally to advance decoder state.
+     * Recover the preceding frame only when the packet explicitly advertises
+     * Opus LBRR. A normal decode of this same packet must follow this call for
+     * decoder state to advance through the current frame.
      */
     override fun decodePreviousFrameFec(data: ByteArray): ShortArray? {
         require(data.isNotEmpty()) { "empty Opus packet" }

@@ -7,7 +7,7 @@
     <string name="status_idle">آماده نیست</string>
     <string name="status_connecting">در حال اتصال…</string>
     <string name="status_handshake">در حال برقراری نشست امن…</string>
-    <string name="status_verifying">در انتظار تأیید کد امنیتی</string>
+    <string name="status_verifying">در حال بررسی هویت هم‌صحبت یا انتظار برای تأیید کد امنیتی</string>
     <string name="status_in_session">متصل — نشست امن برقرار است</string>
     <string name="transport_wifi_direct">وای‌فای دایرکت</string>
     <string name="transport_bluetooth">بلوتوث</string>
@@ -88,6 +88,11 @@
     <string name="lang_en">English</string>
     <string name="settings_privacy">حریم خصوصی</string>
     <string name="settings_diagnostics">گزارش عیب‌یابی</string>
+    <string name="settings_trusted_devices">دستگاه‌های مورداعتماد</string>
+    <string name="settings_trusted_devices_desc">هویت هم‌صحبت فقط پس از تأیید کد امنیتی در هر دو گوشی ذخیره می‌شود. در اتصال‌های بعدی، هویت شناخته‌شده خودکار بررسی می‌شود. با حذف pin، اتصال بعدی دوباره به تأیید کد نیاز دارد.</string>
+    <string name="settings_trusted_empty">هنوز دستگاه مورداعتمادی ثبت نشده است. پس از نخستین اتصال موفق و تأیید دوطرفهٔ کد، pin ذخیره می‌شود.</string>
+    <string name="settings_trusted_fingerprint">اثر انگشت کلید عمومی (SHA-256)</string>
+    <string name="settings_trusted_forget">فراموش‌کردن</string>
     <string name="diag_title">عیب‌یابی</string>
     <string name="diag_hint">مراحل اتصال اینجا ثبت می‌شود. اگر چیزی خراب شد، گزارش را کپی و ارسال کن — دقیقاً نشان می‌دهد کدام مرحله fail شده.</string>
     <string name="diag_copy">کپی گزارش</string>
@@ -104,7 +109,7 @@
     <string name="privacy_p2">بدون اینترنت: همه‌چیز (کشف، اتصال، گفتگو) فقط با رادیوی محلی گوشی انجام می‌شود.</string>
     <string name="privacy_p3">بدون ذخیره‌سازی صدا: هیچ فایل صوتی، تاریخچه گفتگو یا فهرست مخاطبی ذخیره نمی‌شود.</string>
     <string name="privacy_p4">صدا فقط در زمان نشست فعال و فقط برای هم‌صحبتِ احرازهویت‌شده ارسال می‌شود؛ میکروفون خارج از دکمه «نگه دار و صحبت کن» باز نمی‌ماند.</string>
-    <string name="privacy_p5">رمزنگاری سرتاسری لایه‌برنامه (ECDH روی P-256، مشتق کلید HKDF-SHA-256، رمزنگاری AES-256-GCM) روی همه فریم‌های صوتی و کنترلی؛ کلیدها موقتی‌اند و با پایان نشست از حافظه پاک می‌شوند.</string>
+    <string name="privacy_p5">رمزنگاری سرتاسری لایهٔ برنامه با ECDH روی P-256، ‏HKDF-SHA-256 و AES-256-GCM از فریم‌های صوتی و کنترلی محافظت می‌کند. کلیدهای موقتی نشست پس از پایان پاک می‌شوند؛ کلید خصوصی هویت دستگاه در Android Keystore می‌ماند و pin کلید عمومی هم‌صحبت پس از تأیید نخستین کد، محلی ذخیره می‌شود.</string>
     <string name="privacy_p6">بدون تحلیل رفتار، تبلیغات یا گزارش خرابی ابری.</string>
 
     <!-- First-run permissions gate -->

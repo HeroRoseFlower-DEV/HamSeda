@@ -46,7 +46,7 @@ class JitterBufferTest {
         val lostResult = lost as JitterBuffer.TakeResult.Lost
         assertEquals(1L, lostResult.skippedSeq)
         assertTrue(lostResult.nextPacketForFec?.contentEquals(payload(2)) == true)
-        lostResult.nextPacketForFec?.fill(0) // independent copy; queued payload remains intact
+        lostResult.nextPacketForFec?.fill(0) // copy is independent; queued packet remains intact
         assertEquals(2L, (jb.takeNext() as JitterBuffer.TakeResult.Frame).packet.seq)
     }
 

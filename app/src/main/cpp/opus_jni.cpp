@@ -41,9 +41,10 @@ Java_com_hamseda_walkie_audio_NativeOpusCodec_nativeCreateEncoder(
     const int signal_result = opus_encoder_ctl(encoder, OPUS_SET_SIGNAL(OPUS_SIGNAL_VOICE));
     const int vbr_result = opus_encoder_ctl(encoder, OPUS_SET_VBR(1));
     const int vbr_constraint_result = opus_encoder_ctl(encoder, OPUS_SET_VBR_CONSTRAINT(1));
-    // DTX lowers encoded payload size during sustained silence.
+    // DTX reduces bitrate during silence while retaining 20 ms cadence.
     const int dtx_result = opus_encoder_ctl(encoder, OPUS_SET_DTX(1));
-    // Encourage LBRR data for single-frame loss recovery where available.
+    // A modest expected-loss estimate encourages SILK/LBRR redundancy when
+    // useful. The receiver only consumes it for a single missing audio frame.
     const int fec_result = opus_encoder_ctl(encoder, OPUS_SET_INBAND_FEC(1));
     const int packet_loss_result = opus_encoder_ctl(encoder, OPUS_SET_PACKET_LOSS_PERC(10));
     const int max_bandwidth_result =

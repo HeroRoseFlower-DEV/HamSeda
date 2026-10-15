@@ -27,8 +27,8 @@ class JitterBuffer(
         data class Frame(val packet: Packet) : TakeResult
         /**
          * Expected seq missing; waited [maxWaitMs] — advance the playhead.
-         * nextPacketForFec is a wiped-by-caller copy of the next payload only
-         * when exactly one frame is missing.
+         * [nextPacketForFec] is a wiped-by-caller copy of the next payload only
+         * when exactly one frame is missing and Opus may recover it via LBRR.
          */
         data class Lost(
             val skippedSeq: Long,
@@ -120,8 +120,8 @@ class JitterBuffer(
             // Gap: expected frame missing.
             if (now - waitStartedAt >= maxWaitMs) {
                 val skipped = nextSeq
-                // Opus FEC only reconstructs the immediately preceding frame.
-                // Never hand a packet beyond a multi-frame gap to the decoder.
+                // Opus in-band FEC can reconstruct only the immediately
+                // preceding frame. Never hand a farther-future packet to FEC.
                 val fecPacket = if (head.key == nextSeq + 1L) {
                     head.value.payload.copyOf()
                 } else {

@@ -143,10 +143,11 @@ private enum class Screen { HOME, DISCOVERY, PAIRING, SETTINGS, PRIVACY, DIAGNOS
 private fun HamSedaRoot(deps: VmDeps, onLanguageChanged: () -> Unit) {
     var screen by remember { mutableStateOf(Screen.HOME) }
     val phase by deps.manager.phase.collectAsStateWithLifecycle()
+    val sasCode by deps.manager.sasCode.collectAsStateWithLifecycle()
+    val peerIdentityTrusted by deps.manager.peerIdentityTrusted.collectAsStateWithLifecycle()
 
-    // Compose navigation is state-driven, so consume system Back while a
-    // secondary screen is visible instead of letting the Activity finish.
-    // Keep the SAS confirmation screen in place until the handshake resolves.
+    // Consume system Back for Compose's state-driven navigation so a secondary
+    // screen does not finish the Activity. Keep SAS confirmation visible.
     BackHandler(enabled = screen != Screen.HOME) {
         when (screen) {
             Screen.DISCOVERY, Screen.SETTINGS -> screen = Screen.HOME
@@ -158,11 +159,13 @@ private fun HamSedaRoot(deps: VmDeps, onLanguageChanged: () -> Unit) {
 
     // Genuine state-driven navigation: the SAS screen appears exactly while
     // the session waits for code comparison, and leaves when it resolves.
-    LaunchedEffect(phase) {
+    LaunchedEffect(phase, sasCode, peerIdentityTrusted) {
         when (phase) {
-            SessionManager.Phase.AWAITING_SAS_CONFIRM -> screen = Screen.PAIRING
-            SessionManager.Phase.IN_SESSION ->
-                if (screen == Screen.PAIRING) screen = Screen.HOME
+            SessionManager.Phase.AWAITING_SAS_CONFIRM -> {
+                if (sasCode != null) screen = Screen.PAIRING
+                else if (peerIdentityTrusted) screen = Screen.HOME
+            }
+            SessionManager.Phase.IN_SESSION -> screen = Screen.HOME
             SessionManager.Phase.IDLE ->
                 if (screen == Screen.PAIRING) screen = Screen.HOME
             else -> Unit
