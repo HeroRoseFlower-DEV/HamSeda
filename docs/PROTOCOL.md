@@ -19,7 +19,7 @@ protocol violation → drop the connection.
 
 ```
  0..1   magic        0x48 0x53 ("HS")
- 2      version      0x03
+ 2      version      0x04
  3      type         see below
  4..11  sessionId    8 bytes (zeros until keys are derived)
  12..15 seq          uint32, per-direction sequence number
@@ -105,7 +105,7 @@ Commit/reveal: `KEY_COMMIT` is SHA-256 with domain `HamSeda-v4/key-commitment` o
 Codec negotiation: `codec = min(prefA, prefB)` from the two HELLOs
 (Opus=0x00 wins unless both prefer PCM).
 
-## Audio profile (protocol v3)
+## Audio profile (protocol v4)
 
 - Internal audio is 48 kHz, mono, signed 16-bit PCM.
 - Each frame spans 20 ms (960 samples/channel; 1920 bytes in PCM16 mode).

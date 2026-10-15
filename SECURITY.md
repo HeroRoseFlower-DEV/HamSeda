@@ -59,7 +59,7 @@ completed the in-app pairing flow, against:
    with salt = SHA-256(ordered nonces), info = `HamSeda-v4/session-keys`,
    output = 32-byte audio key + 32-byte control key + 8-byte session id +
    32-byte SAS seed. Key separation is structural, not by convention.
-3. **Encryption:** AES-256-GCM (`AES/GCM/NoPadding`, 128-bit tag), random
+4. **Encryption:** AES-256-GCM (`AES/GCM/NoPadding`, 128-bit tag), random
    96-bit nonce per frame, header+role as AAD.
 5. **Authentication of the exchange (wire protocol v4):** KEY_CONFIRM
    authenticates a SHA-256 transcript with domain separator

@@ -127,8 +127,9 @@ class FrameTest {
     }
 
     @Test
-    fun `plaintext types are only hello and key exchange`() {
+    fun `plaintext types are only hello commit and key exchange`() {
         assertTrue(MessageType.isPlaintext(MessageType.HELLO))
+        assertTrue(MessageType.isPlaintext(MessageType.KEY_COMMIT))
         assertTrue(MessageType.isPlaintext(MessageType.KEY_EXCHANGE))
         listOf(MessageType.AUDIO, MessageType.FLOOR_REQUEST, MessageType.SAS_CONFIRM).forEach {
             assertTrue(!MessageType.isPlaintext(it))

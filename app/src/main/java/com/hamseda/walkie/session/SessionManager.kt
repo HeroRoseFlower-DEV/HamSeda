@@ -929,14 +929,13 @@ class SessionManager(
     private fun beginHandshake() = synchronized(handshakeFrameLock) {
         // A CONNECTED state callback and the first inbound HELLO can race on
         // different dispatcher threads. Keep startup atomic with inbound frame
-        // processing so KEY_EXCHANGE cannot overtake this side's own HELLO.
+        // processing so the commitment/reveal exchange cannot overtake local HELLO.
         if (handshakeStarted) return
         handshakeStarted = true
         peerHelloReceived = false
         peerCodecPref = null
         peerPubBytes?.fill(0); peerPubBytes = null
         peerNonce?.fill(0); peerNonce = null
-        peerKeyCommitment?.fill(0); peerKeyCommitment = null
         peerKeyCommitment?.fill(0); peerKeyCommitment = null
         myCommitSalt.fill(0); myCommitSalt = ByteArray(0)
         keyCommitSent = false
@@ -953,7 +952,7 @@ class SessionManager(
         sequenceExhaustionTriggered.set(false)
         lastPeerSeen = elapsedClock()
         // Queue our protocol preamble before another thread can process the
-        // peer HELLO and enqueue KEY_EXCHANGE. The sender serializes this FIFO.
+        // peer HELLO and enqueue KEY_COMMIT. The sender serializes this FIFO.
         val hello = byteArrayOf(Protocol.VERSION, myCodecPref)
         enqueuePlain(MessageType.HELLO, hello)
         Log.i(TAG, "handshake started, HELLO sent")

@@ -22,9 +22,11 @@ import javax.crypto.spec.SecretKeySpec
  * Authenticated session cryptography for HamSeda.
  *
  * Construction (all standard platform primitives, no custom ciphers):
- * 1. Each side generates an **ephemeral** ECDH key pair on NIST P-256 and
- *    exchanges the public key in [MessageType.KEY_EXCHANGE][com.hamseda.walkie.proto.MessageType.KEY_EXCHANGE].
- * 2. Both sides run ECDH, then HKDF-SHA-256 over the shared secret to derive
+ * 1. Each side generates an **ephemeral** ECDH key pair on NIST P-256, then
+ *    commits to its public key, nonce and HELLO before revealing the public
+ *    key in [MessageType.KEY_EXCHANGE][com.hamseda.walkie.proto.MessageType.KEY_EXCHANGE].
+ * 2. Each side validates the peer's commitment before running ECDH and HKDF-SHA-256
+ *    over the shared secret to derive
  *    independent keys (key separation):
  *    - 32-byte audio key   (AES-256-GCM for AUDIO frames)
  *    - 32-byte control key (AES-256-GCM for floor-control / liveness frames)
