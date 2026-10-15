@@ -69,8 +69,10 @@ completed the in-app pairing flow, against:
    public-key role. Changing the key, nonce, protocol version, or codec
    preference changes the transcript and causes authentication to fail.
 6. **SAS:** 6 digits = `HMAC-SHA256(sasSeed, "HamSeda-v5/sas") mod 1_000_000`,
-   displayed on both phones. The SAS is a short equality check, not key material.
-   Users must compare it out-of-band and each confirm. A six-digit value gives
+   displayed on both phones during first contact or whenever pin state is
+   asymmetric. KEY_CONFIRM carries an AEAD-authenticated flag indicating whether
+   the sender already pins the recipient. SAS is skipped only when both sides
+   report mutual pins and locally validate the pinned key. A six-digit value gives
    about 20 bits of manual verification; commitment/reveal prevents adaptive
    share selection after an honest endpoint's share becomes visible.
 7. **Roles:** sender role (0/1) is derived deterministically by comparing the
@@ -137,7 +139,7 @@ Protocol v5 implements TOFU with a persistent P-256 identity-signing key. On And
 
 The commitment/reveal exchange remains mandatory. Each KEY_COMMIT binds the ephemeral ECDH public key, nonce, exact HELLO and salt to the identity ID and identity-signing public key. KEY_EXCHANGE reveals those values with an ECDSA/SHA-256 signature over a domain-separated identity proof. The receiver verifies the commitment, signature and any existing pin before running ECDH or entering SAS verification. A changed public key for an already-known identity ID is rejected; it is never silently overwritten.
 
-An unknown peer still requires users to compare the six-digit SAS out of band and both confirm it. A peer pin is saved only after both confirmations and successful playback initialization. Later sessions with the same pinned identity verify the signature and automatically skip SAS, while still requiring an authenticated peer confirmation. A pin can be removed in Settings; removing it makes the next connection require SAS again.
+An unknown peer still requires users to compare the six-digit SAS out of band and both confirm it. A peer pin is saved only after both confirmations and successful playback initialization. Later sessions skip SAS only when each endpoint's local pin is valid and the peer's AEAD-authenticated KEY_CONFIRM flag says it also pins the local identity. If either side loses or forgets a pin, both show and compare SAS again; a valid peer signature remains mandatory. Removing a pin in Settings makes the next connection require SAS.
 
 If app-local data or the Keystore identity is lost, the device presents a new identity and peers must repeat SAS verification. Protocol v5 changes the KEY_EXCHANGE wire layout and is not compatible with v4: install the same v5 build on both phones.
 
