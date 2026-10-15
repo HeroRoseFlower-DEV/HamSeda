@@ -139,7 +139,7 @@ one-to-one push-to-talk, APK built by GitHub Actions.
 ## 4. Audio routing (ADOPTED)
 
 - Capture/playback use the supported builder APIs: `AudioRecord.Builder`
-  / `AudioTrack.Builder` with `VOICE_COMMUNICATION`, 16 kHz mono PCM16,
+  / `AudioTrack.Builder` with `VOICE_COMMUNICATION`, 48 kHz mono PCM16,
   20 ms frames. These were already modern; retained.
 - **Endpoint selection:** on API 31+, `AudioManager.availableCommunicationDevices`
   + `setCommunicationDevice()` / `clearCommunicationDevice()` explicitly
