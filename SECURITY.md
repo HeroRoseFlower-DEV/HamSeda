@@ -121,7 +121,7 @@ separator is intentionally changed.
 - Opus packets are bounded to the local encoder's maximum at both the authenticated session-validation and decoder boundaries.
 - The SAS screen blocks screenshots/recent-task snapshots while visible and disables confirmation until a code has actually been generated. BLUETOOTH_ADVERTISE is not requested at startup; it is requested only for the explicit Bluetooth-listen role. Outbound queue payloads, decrypted session buffers, jitter-queue entries, decoded playback scratch, AES-GCM nonce/ciphertext scratch buffers, and ECDH/HKDF temporary material are cleared on their applicable consume/drop/teardown paths.
 - Diagnostic text is capped before normalization and address-redaction regexes run.
-- The checked-in Gradle Wrapper JAR is SHA-256 checked in CI against the published checksum for Gradle 9.7.0 (`7a9ce74cff467ca1bf60a4fcd9f05185acceda4d0f382434d393e17864262c5d`). The wrapper distribution is pinned to Gradle 9.7.0 and its ZIP checksum is recorded in `gradle/wrapper/gradle-wrapper.properties` (`84fbba45c7f4c64abc77460e1c00f541e9f960e3c7ed2538f1ede19eacd873ae`). CI verifies these before building. Dependabot monitors Gradle and GitHub Actions updates.
+- The checked-in Gradle Wrapper JAR is SHA-256 checked in CI against the pinned Gradle 9.8.1 checksum (`3b8a25775a69158b5ad2b1d17a80a88dc7b40a352a73eb27d06c612a7ce68e98`). The wrapper distribution is pinned to Gradle 9.8.1 and its ZIP checksum is recorded in `gradle/wrapper/gradle-wrapper.properties` (`dce76f55f8e251a3a1f130eb120f30b3d271de2b76c9b0729d316b5a1b6dc01f`). CI verifies the JAR checksum and validates the pinned distribution before building. Dependabot monitors Gradle and GitHub Actions updates.
 
 ## Reporting
 
