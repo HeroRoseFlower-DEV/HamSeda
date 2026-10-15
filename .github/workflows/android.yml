@@ -105,7 +105,14 @@ jobs:
             > "$RUNNER_TEMP/hamseda-emulator.log" 2>&1 &
           echo $! > "$RUNNER_TEMP/hamseda-emulator.pid"
           adb start-server
-          adb wait-for-device
+          # Do not let ADB wait indefinitely if the emulator process starts but
+          # never registers a device. Fail with diagnostics while the step is bounded.
+          if ! timeout 120s adb wait-for-device; then
+            echo "::error::ADB did not detect the Android Emulator within 120 seconds"
+            adb devices -l || true
+            cat "$RUNNER_TEMP/hamseda-emulator.log" || true
+            exit 1
+          fi
           booted=""
           for attempt in $(seq 1 180); do
             if ! kill -0 "$(cat "$RUNNER_TEMP/hamseda-emulator.pid")" 2>/dev/null; then
@@ -113,7 +120,7 @@ jobs:
               echo "::error::Android Emulator exited before boot completed"
               exit 1
             fi
-            booted="$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)"
+            booted="$(timeout 10s adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)"
             if [ "$booted" = "1" ]; then break; fi
             sleep 5
           done
