@@ -57,7 +57,7 @@ jobs:
 
       - name: Verify Gradle wrapper
         # The checked-in wrapper JAR is pinned to Gradle's published official 9.8.1 checksum.
-        # The wrapper distribution itself is SHA-256 pinned to 9.7.0 in gradle-wrapper.properties.
+        # The wrapper distribution itself is SHA-256 pinned to 9.8.1 in gradle-wrapper.properties.
         run: |
           set -e
           echo "3b8a25775a69158b5ad2b1d17a80a88dc7b40a352a73eb27d06c612a7ce68e98  gradle/wrapper/gradle-wrapper.jar" | sha256sum --check --strict
