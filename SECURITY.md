@@ -77,8 +77,9 @@ completed the in-app pairing flow, against:
    two encoded public keys, and mixed into the AAD — this defeats reflection
    of a sender's own frames back at them.
 
-No custom ciphers, no hard-coded keys, no certificate/pinning schemes (there
-is no TLS network to pin to — by design).
+No custom ciphers or hard-coded keys. HamSeda has no TLS endpoint or
+certificate pinning; the TOFU pins described above are app-level peer identity
+public keys, not TLS certificates.
 
 ## Machine-checked cryptographic domains
 
