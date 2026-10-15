@@ -63,7 +63,7 @@ class SettingsRepository(private val context: Context) {
 
     /** Software microphone leveler; enabled by default for existing installs. */
     val softwareGainFlow: Flow<Boolean> =
-        context.dataStore.data.map { it[Keys.SOFTWARE_GAIN] ?: true }
+        context.dataStore.data.map { it[Keys.SOFTWARE_GAIN] ?: false }
 
     val themeFlow: Flow<ThemeMode> =
         context.dataStore.data.map {
