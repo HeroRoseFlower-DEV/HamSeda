@@ -53,6 +53,16 @@ Severity means priority for the staged debugging effort, not a claim that a secu
 - [ ] Establish the formal two-device baseline with a known APK SHA-256.
 - [ ] Confirm every finding against the relevant implementation and regression test before closing it.
 
+## Phase 1 progress — raw capture
+
+- [x] Inspect the active `AudioRecord.read()` → `AudioCodec.encode()` path for application-level PCM mutation.
+- [x] Gate `UNPROCESSED` source selection on Android's advertised support property; log the selected source without claiming that this proves the hardware path is unprocessed.
+- [x] Accumulate partial positive reads until a complete 20 ms frame is available instead of discarding the partial samples.
+- [x] Update the raw-capture test instructions and record the remaining `startRecording()` fallback gap.
+- [ ] Run unit tests, lint, debug/release builds, and instrumented-test compilation on the Phase 1 PR.
+- [ ] Validate ten or more PTT bursts on both physical phones and record the exact APK SHA-256.
+- [ ] Verify real device routing and OEM/HAL processing behavior; not infer it from source selection alone.
+
 The unchecked items require further repository/tool/device work and must not be assumed complete.
 
 ## Required evidence format for subsequent phases
