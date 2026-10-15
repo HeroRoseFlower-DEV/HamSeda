@@ -37,10 +37,16 @@ Run at least ten PTT bursts after a 60-second session. Listen for clipping, nois
 | Full session | `SessionHandshakeTest` | v5 HELLO→KEY_COMMIT→KEY_EXCHANGE ordering; handshake→SAS→IN_SESSION; PTT→grant→audio→release; SAS mismatch and post-commitment MITM tamper → AUTH_MISMATCH before SAS; abrupt transport loss → clean teardown |
 | Security (HS-01/02/05/07) | `SessionSecurityTest` | **bad-tag + huge seq does not poison replay window**; wrong session id dropped; duplicate rejected; concurrent malicious inputs don't race; **concurrent audio has unique monotonic wire seqs**; queue stays bounded; **playback failure → clean rollback (no fake IN_SESSION)**; **handshake/SAS timeouts fire (virtual time)** |
 
-`./gradlew :app:lintDebug` must be clean; `./gradlew :app:assembleAndroidTest`
-verifies instrumented sources compile. Run `OpusCodecInstrumentedTest` on an Android
-emulator or physical device to verify the packaged native library and codec I/O; host-JVM
-tests intentionally do not load Android ABI-specific shared libraries.
+`./gradlew :app:lintDebug` must be clean. CI compiles instrumented sources with
+`:app:assembleAndroidTest` and executes them with `:app:connectedDebugAndroidTest` on a
+clean API 35 Google APIs x86_64 emulator. The emulator suite verifies actual JNI loading,
+packaged libopus encode/decode behavior, platform ECDH/AES-GCM behavior, declared core
+runtime permissions, and `MainActivity` recreation. Reports and emulator logs are uploaded
+as a workflow artifact even when the test step fails. Host-JVM tests intentionally do not
+load Android ABI-specific shared libraries. Emulator success does not verify physical
+microphone/HAL processing, AudioTrack output quality, Wi-Fi Direct discovery, Bluetooth
+radio behavior, range, screen-off reliability, or two-phone end-to-end audio. Keep those
+cases NOT RUN until physical-device evidence is recorded.
 
 ## Phase 2 — AudioTrack playback and latency
 
