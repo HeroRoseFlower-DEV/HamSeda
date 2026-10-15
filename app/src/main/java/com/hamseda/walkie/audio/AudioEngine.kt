@@ -106,7 +106,11 @@ class AudioEngine(private val context: Context) : AudioPipeline {
         private set
 
     @Volatile
-    private var softwareGainEnabled: Boolean = false
+    // Match SettingsRepository's default immediately. The DataStore collector
+    // is asynchronous; a user can press PTT before its first emission arrives.
+    // Without this safe default, the first capture burst may be encoded at raw
+    // microphone level even when the persisted preference defaults to enabled.
+    private var softwareGainEnabled: Boolean = true
 
     /** Updates the software microphone leveler without restarting capture. */
     fun setSoftwareGainEnabled(enabled: Boolean) {
@@ -278,6 +282,7 @@ class AudioEngine(private val context: Context) : AudioPipeline {
                 "bufferBytes=$requestedBufferBytes, source=${captureRecorder.sourceName}, " +
                 "softwareGainTargetRms=${CaptureGainController.DEFAULT_TARGET_RMS.toInt()}, " +
                 "softwareGainMax=${CaptureGainController.DEFAULT_MAX_GAIN}, " +
+                "softwareGainEnabled=$softwareGainEnabled, " +
                 "opusComplexity=${(codec as? OpusCodec)?.encoderComplexityInUse ?: -1}",
         )
         val worker = Thread({
