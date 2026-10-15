@@ -17,6 +17,8 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import java.util.Collections
+import java.util.concurrent.CountDownLatch
+import kotlin.concurrent.thread
 import org.junit.Test
 
 /**
@@ -183,6 +185,41 @@ class SessionHandshakeTest {
         assertNotNull(rig.audioA.playbackBuffer)
         assertNotNull(rig.audioB.playbackBuffer)
         rig.close()
+    }
+
+
+    @Test
+    fun `concurrent SAS confirmations initialize playback exactly once`() {
+        val rig = newRig(dispatcher = Dispatchers.Default)
+        try {
+            rig.start()
+            rig.await("both endpoints waiting for SAS") {
+                rig.a.phase.value == SessionManager.Phase.AWAITING_SAS_CONFIRM &&
+                    rig.b.phase.value == SessionManager.Phase.AWAITING_SAS_CONFIRM
+            }
+
+            // Compete the UI confirmation calls with each other on both managers.
+            // Peer SAS_CONFIRM frames arrive on the inbound-reader dispatcher at
+            // the same time, exercising the same enterSession race as real devices.
+            val start = CountDownLatch(1)
+            val workers = listOf(
+                thread { start.await(); rig.a.confirmSas(true) },
+                thread { start.await(); rig.a.confirmSas(true) },
+                thread { start.await(); rig.b.confirmSas(true) },
+                thread { start.await(); rig.b.confirmSas(true) },
+            )
+            start.countDown()
+            workers.forEach { it.join() }
+
+            rig.await("both endpoints in session") {
+                rig.a.phase.value == SessionManager.Phase.IN_SESSION &&
+                    rig.b.phase.value == SessionManager.Phase.IN_SESSION
+            }
+            assertEquals(1, rig.audioA.playbackStartCalls.get())
+            assertEquals(1, rig.audioB.playbackStartCalls.get())
+        } finally {
+            rig.close()
+        }
     }
 
     @Test

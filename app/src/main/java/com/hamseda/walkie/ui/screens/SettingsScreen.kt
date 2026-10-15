@@ -132,10 +132,11 @@ fun SettingsScreen(
                     onClick = { vm.setCodec(CodecId.OPUS) },
                 )
                 RadioOption(
-                    selected = codecPref == CodecId.PCM16,
+                    selected = codecPref == CodecId.PCM16 && transportPref != TransportPreference.BLUETOOTH,
                     title = stringResource(R.string.codec_pcm),
                     subtitle = stringResource(R.string.codec_pcm_desc),
                     onClick = { vm.setCodec(CodecId.PCM16) },
+                    enabled = transportPref != TransportPreference.BLUETOOTH,
                 )
             }
 

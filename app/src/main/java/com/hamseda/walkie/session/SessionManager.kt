@@ -87,6 +87,8 @@ class SessionManager(
     // ------------------------------------------------------- observable state
 
     private val lifecycleLock = Any()
+    /** Prevents simultaneous local/peer SAS callbacks from starting playback twice. */
+    private val sessionEntryLock = Any()
     /** Serializes handshake startup with inbound-frame processing on separate dispatcher threads. */
     private val handshakeFrameLock = Any()
     /** Independent cleanup survives VoiceService cancelling its child scope in onDestroy(). */
@@ -586,7 +588,13 @@ class SessionManager(
     fun startOutgoing(t: Transport, peer: PeerDevice, codecPref: Byte = CodecId.OPUS) {
         if (!claimSessionStart("startOutgoing")) return
         AppLog.log(TAG, "outgoing session start via ${t.type}")
-        myCodecPref = codecPref
+        myCodecPref = if (t.type == com.hamseda.walkie.transport.TransportType.BLUETOOTH) {
+            // PCM16 requires 768 kbps before protocol overhead and is not a
+            // usable voice profile over Bluetooth Classic RFCOMM.
+            CodecId.OPUS
+        } else {
+            codecPref
+        }
         attachTransport(t, peer.displayName)
         // The transport may already report CONNECTED (peer connected first);
         // the state-flow collector below only fires on *changes*.
@@ -615,7 +623,13 @@ class SessionManager(
     ) {
         if (!claimSessionStart("acceptIncoming")) return
         AppLog.log(TAG, "listening for incoming via ${t.type}")
-        myCodecPref = codecPref
+        myCodecPref = if (t.type == com.hamseda.walkie.transport.TransportType.BLUETOOTH) {
+            // PCM16 requires 768 kbps before protocol overhead and is not a
+            // usable voice profile over Bluetooth Classic RFCOMM.
+            CodecId.OPUS
+        } else {
+            codecPref
+        }
         attachTransport(t, "")
         val listenerGeneration = sessionGeneration
         // The transport may already report CONNECTED (peer connected first);
@@ -1323,9 +1337,32 @@ class SessionManager(
         enterSession()
     }
 
-    private fun enterSession() {
+    private fun enterSession() = synchronized(sessionEntryLock) {
+        // confirmSas() and the inbound SAS_CONFIRM reader can race on different
+        // threads. Only the first caller observing the SAS phase may initialize
+        // codec/playback; later callers see the phase transition and return.
+        if (_phase.value != Phase.AWAITING_SAS_CONFIRM) return@synchronized
         cancelDeadlines()
-        codec = AudioCodec.create(activeCodecId).also { it.reset() }
+        val initializedCodec = try {
+            // OpusCodec initializes its native encoder/decoder in its constructor;
+            // don't immediately destroy and recreate those handles with reset().
+            AudioCodec.create(activeCodecId)
+        } catch (e: Exception) {
+            Log.e(TAG, "codec initialization failed: ${e.javaClass.simpleName}", e)
+            AppLog.log(TAG, "codec initialization failed: ${e.javaClass.simpleName}")
+            endSession(SessionError.PLAYBACK_UNAVAILABLE, notifyPeer = true,
+                disconnectReason = DisconnectReason.PROTOCOL_ERROR)
+            return@synchronized
+        } catch (e: LinkageError) {
+            // Covers a missing/corrupt ABI library or JNI symbol, which is an
+            // Error (not Exception) and otherwise could crash the app at PTT setup.
+            Log.e(TAG, "native codec unavailable: ${e.javaClass.simpleName}", e)
+            AppLog.log(TAG, "native codec unavailable: ${e.javaClass.simpleName}")
+            endSession(SessionError.PLAYBACK_UNAVAILABLE, notifyPeer = true,
+                disconnectReason = DisconnectReason.PROTOCOL_ERROR)
+            return@synchronized
+        }
+        codec = initializedCodec
         jitter.reset()
         replay.reset()
         lastPeerSeen = elapsedClock()
@@ -1347,7 +1384,7 @@ class SessionManager(
                 notifyPeer = true,
                 disconnectReason = DisconnectReason.PROTOCOL_ERROR,
             )
-            return
+            return@synchronized
         }
         _phase.value = Phase.IN_SESSION
         val establishedAt = elapsedClock()
@@ -1386,6 +1423,8 @@ class SessionManager(
             }
         }
         Log.i(TAG, "session established (codec=$activeCodecId)")
+    }
+
     }
 
     private var lastPingSent: Long = 0

@@ -99,6 +99,8 @@ class WifiDirectTransport(private val context: Context) : Transport {
     @Volatile private var p2pDiscoveryActive = false
     private var framed: FramedSocket? = null
     @Volatile private var serverSocket: ServerSocket? = null
+    /** Socket currently inside the blocking client connect loop; closed by Stop/disconnect. */
+    @Volatile private var inFlightClientSocket: Socket? = null
     private var readerJob: Job? = null
     private var socketJob: Job? = null
     private var connectWatchdog: Job? = null
@@ -845,7 +847,8 @@ class WifiDirectTransport(private val context: Context) : Transport {
                 socketJob = scope.launch {
                     try {
                         val socket = withTimeout(Protocol.CONNECT_TIMEOUT_MS.toLong()) {
-                            if (info.isGroupOwner) acceptAsOwner(info, expectedGeneration) else connectAsClient(info)
+                            if (info.isGroupOwner) acceptAsOwner(info, expectedGeneration)
+                            else connectAsClient(info, expectedGeneration)
                         }
                         AppLog.log(TAG, "p2p socket established")
                         onSocketReady(socket, expectedGeneration)
@@ -976,7 +979,7 @@ class WifiDirectTransport(private val context: Context) : Transport {
         }
     }
 
-    private fun connectAsClient(info: WifiP2pInfo): Socket {
+    private fun connectAsClient(info: WifiP2pInfo, expectedGeneration: Long): Socket {
         val host = info.groupOwnerAddress?.hostAddress
             ?: throw IOException("group owner address unavailable")
         Log.i(TAG, "client: connecting to Wi-Fi Direct group owner")
@@ -991,6 +994,9 @@ class WifiDirectTransport(private val context: Context) : Transport {
         var lastFailure: IOException? = null
         var loggedNotReady = false
         while (true) {
+            if (operationGeneration.get() != expectedGeneration) {
+                throw IOException("stale Wi-Fi Direct client attempt")
+            }
             val remainingNanos = deadlineNanos - System.nanoTime()
             if (remainingNanos <= 0L) break
             val timeoutMs = (remainingNanos / 1_000_000L)
@@ -998,17 +1004,31 @@ class WifiDirectTransport(private val context: Context) : Transport {
                 .coerceAtMost(1_000L)
                 .toInt()
             val client = Socket()
+            inFlightClientSocket = client
+            if (operationGeneration.get() != expectedGeneration) {
+                try { client.close() } catch (_: IOException) {}
+                if (inFlightClientSocket === client) inFlightClientSocket = null
+                throw IOException("stale Wi-Fi Direct client attempt")
+            }
             try {
                 client.connect(
                     InetSocketAddress(host, Protocol.WIFI_DIRECT_PORT),
                     timeoutMs,
                 )
                 client.tcpNoDelay = true
+                if (operationGeneration.get() != expectedGeneration) {
+                    throw IOException("stale Wi-Fi Direct client attempt")
+                }
+                if (inFlightClientSocket === client) inFlightClientSocket = null
                 Log.i(TAG, "client: connected to Wi-Fi Direct group owner")
                 return client
             } catch (e: IOException) {
                 lastFailure = e
                 try { client.close() } catch (_: IOException) {}
+                if (inFlightClientSocket === client) inFlightClientSocket = null
+                if (operationGeneration.get() != expectedGeneration) {
+                    throw IOException("stale Wi-Fi Direct client attempt", e)
+                }
                 if (!loggedNotReady) {
                     AppLog.log(TAG, "group owner socket not ready yet; retrying (${e.javaClass.simpleName})")
                     loggedNotReady = true
@@ -1123,6 +1143,8 @@ class WifiDirectTransport(private val context: Context) : Transport {
         socketJob?.cancel(); socketJob = null
         connectWatchdog?.cancel(); connectWatchdog = null
         framed?.close(); framed = null
+        try { inFlightClientSocket?.close() } catch (_: IOException) {}
+        inFlightClientSocket = null
         try { serverSocket?.close() } catch (_: IOException) {}
         serverSocket = null
     }
@@ -1150,6 +1172,9 @@ class WifiDirectTransport(private val context: Context) : Transport {
         operationGeneration.incrementAndGet()
         discoveryGeneration.incrementAndGet()
         listeningRequested = false
+        // Close the blocking connect() immediately instead of waiting for its
+        // per-attempt timeout while Stop waits to acquire the transport mutex.
+        try { inFlightClientSocket?.close() } catch (_: IOException) {}
         mutex.withLock {
             val stopFailure = stopP2pRadioModeAndAwait()
             if (stopFailure != null) {

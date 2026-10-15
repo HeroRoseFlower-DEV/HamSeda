@@ -60,6 +60,9 @@ class AudioEngine(private val context: Context) : AudioPipeline {
         context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
 
     private val captureRunning = AtomicBoolean(false)
+    /** Serializes recorder creation/start/stop so a stale PTT start cannot outlive release. */
+    private val captureLifecycleLock = Any()
+    @Volatile private var captureGeneration = 0L
     private var captureThread: Thread? = null
     private var recorder: AudioRecord? = null
 
@@ -209,7 +212,16 @@ class AudioEngine(private val context: Context) : AudioPipeline {
      * (for the transmit animation — real measured amplitude, not simulated).
      * Returns false if the recorder could not be started.
      */
-    override fun startCapture(codec: AudioCodec, onFrame: (encoded: ByteArray, level: Float) -> Unit): Boolean {
+    override fun startCapture(codec: AudioCodec, onFrame: (encoded: ByteArray, level: Float) -> Unit): Boolean =
+        synchronized(captureLifecycleLock) {
+            if (captureRunning.get()) return@synchronized true
+            startCaptureLocked(codec, onFrame)
+        }
+
+    private fun startCaptureLocked(
+        codec: AudioCodec,
+        onFrame: (encoded: ByteArray, level: Float) -> Unit,
+    ): Boolean {
         if (captureRunning.get()) return true
         // The UI requests RECORD_AUDIO before PTT, but the engine must not
         // assume it: fail closed with a clear error instead of throwing
@@ -256,6 +268,7 @@ class AudioEngine(private val context: Context) : AudioPipeline {
         attachEffects(rec.audioSessionId)
         recorder = rec
         captureRunning.set(true)
+        val generation = ++captureGeneration
         applyAudioMode(force = true)
         AppLog.log(
             TAG,
@@ -272,11 +285,30 @@ class AudioEngine(private val context: Context) : AudioPipeline {
                 Log.w(TAG, "could not set capture audio priority: ${e.javaClass.simpleName}")
             }
             val frame = ShortArray(AudioCodec.FRAME_SAMPLES)
-            try {
-                rec.startRecording()
-            } catch (e: IllegalStateException) {
-                pipelineListener?.onCaptureError("microphone start failed: ${e.javaClass.simpleName}")
-                captureRunning.set(false)
+            // The stop path can win immediately after Thread.start(). Check the
+            // generation and start the recorder under the same lifecycle lock.
+            val startedRecording = synchronized(captureLifecycleLock) {
+                if (!captureRunning.get() || captureGeneration != generation || recorder !== rec) {
+                    false
+                } else {
+                    try {
+                        rec.startRecording()
+                        true
+                    } catch (e: IllegalStateException) {
+                        Log.w(TAG, "microphone start failed: ${e.javaClass.simpleName}")
+                        false
+                    }
+                }
+            }
+            if (!startedRecording) {
+                synchronized(captureLifecycleLock) {
+                    if (captureGeneration == generation && recorder === rec) {
+                        // Clean up before notifying listeners; callbacks may
+                        // themselves request stopCapture().
+                        stopCapture()
+                        pipelineListener?.onCaptureError("microphone start failed")
+                    }
+                }
                 frame.fill(0)
                 return@Thread
             }
@@ -292,30 +324,25 @@ class AudioEngine(private val context: Context) : AudioPipeline {
             var gainWindowAppliedTotal = 0.0
             var gainWindowMaxApplied = 1f
             var gainWindowNearSilenceFrames = 0
-            while (captureRunning.get()) {
+            while (captureRunning.get() && captureGeneration == generation) {
                 val read = rec.read(frame, 0, frame.size)
                 if (read < 0) {
                     consecutiveErrors++
                     when (read) {
                         AudioRecord.ERROR_DEAD_OBJECT -> {
                             Log.w(TAG, "AudioRecord dead object; stopping capture")
-                            pipelineListener?.onCaptureError("microphone disconnected")
-                            captureRunning.set(false)
+                            reportCaptureFailure(generation, "microphone disconnected")
                             break
                         }
                         AudioRecord.ERROR_INVALID_OPERATION,
                         AudioRecord.ERROR_BAD_VALUE -> {
-                            pipelineListener?.onCaptureError("microphone read error ($read)")
-                            captureRunning.set(false)
+                            reportCaptureFailure(generation, "microphone read error ($read)")
                             break
                         }
                         else -> {
                             Log.w(TAG, "AudioRecord.read error: $read")
                             if (consecutiveErrors > MAX_CONSECUTIVE_READ_ERRORS) {
-                                pipelineListener?.onCaptureError(
-                                    "microphone read error ($read)"
-                                )
-                                captureRunning.set(false)
+                                reportCaptureFailure(generation, "microphone read error ($read)")
                                 break
                             }
                             try {
@@ -379,25 +406,46 @@ class AudioEngine(private val context: Context) : AudioPipeline {
                 }
             }
             frame.fill(0)
-        }, "HamSeda-Capture").also { it.start() }
+        }, "HamSeda-Capture")
+        // Publish the worker before it starts; an immediate audio error must
+        // recognize that it is running on the current capture thread.
+        captureThread = worker
+        worker.start()
         return true
     }
 
-    override fun stopCapture() {
-        captureRunning.set(false)
-        val worker = captureThread
-        // Audio errors can invoke stopCapture from the capture callback itself.
-        // Joining the current thread would stall the callback for the full timeout.
-        if (worker != null && worker !== Thread.currentThread()) {
-            try { worker.join(500) } catch (_: InterruptedException) {}
+    private fun reportCaptureFailure(generation: Long, message: String) {
+        synchronized(captureLifecycleLock) {
+            // An old recorder must not stop or report errors against a newer PTT run.
+            if (captureGeneration != generation || recorder == null) return
+            stopCapture()
+            pipelineListener?.onCaptureError(message)
         }
-        captureThread = null
-        try { recorder?.stop() } catch (_: IllegalStateException) {}
-        recorder?.release()
-        recorder = null
-        releaseEffects()
-        abandonFocus()
-        restoreAudioModeIfIdle()
+    }
+
+    override fun stopCapture() {
+        synchronized(captureLifecycleLock) {
+            captureRunning.set(false)
+            captureGeneration++
+            val worker = captureThread
+            captureThread = null
+            val activeRecorder = recorder
+            recorder = null
+
+            // Stop first to unblock a read, then join. If the worker is blocked
+            // on this lifecycle lock before startRecording, don't wait on a
+            // thread which cannot proceed until this block exits.
+            try { activeRecorder?.stop() } catch (_: IllegalStateException) {}
+            if (worker != null && worker !== Thread.currentThread() &&
+                worker.state != Thread.State.BLOCKED
+            ) {
+                try { worker.join(500) } catch (_: InterruptedException) {}
+            }
+            try { activeRecorder?.release() } catch (_: Exception) {}
+            releaseEffects()
+            abandonFocus()
+            restoreAudioModeIfIdle()
+        }
     }
 
     override val isCapturing: Boolean get() = captureRunning.get()

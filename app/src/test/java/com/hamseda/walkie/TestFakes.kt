@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * In-memory loopback transport pair for session tests: frames sent on one
@@ -121,6 +122,7 @@ class FakeAudioPipeline : AudioPipeline {
     var onFrame: ((ByteArray, Float) -> Unit)? = null
     var playbackCodec: AudioCodec? = null
     var playbackBuffer: JitterBuffer? = null
+    val playbackStartCalls = AtomicInteger(0)
     var speakerphoneOn: Boolean = true
         private set
     /** When true, startPlayback returns false (HS-05 test hook). */
@@ -141,6 +143,7 @@ class FakeAudioPipeline : AudioPipeline {
     }
 
     override fun startPlayback(codec: AudioCodec, buffer: JitterBuffer): Boolean {
+        playbackStartCalls.incrementAndGet()
         if (failPlayback) return false
         playbackCodec = codec
         playbackBuffer = buffer
