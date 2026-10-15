@@ -8,9 +8,12 @@ import java.io.Closeable
  * Real-time speech codec backed by the official native libopus 1.6.1 build.
  *
  * Profile: 48 kHz mono PCM16, 20 ms frames, VOIP application, 32 kbps,
- * voice signal hint, full-band maximum bandwidth and constrained VBR. This
- * keeps the speech stream lighter and limits packet-size bursts on byte-stream
- * transports. Android 8/9 use complexity 4 to leave more CPU headroom on older
+ * voice signal hint, full-band maximum bandwidth, constrained VBR and DTX
+ * during silence. DTX keeps the 20 ms frame cadence but reduces payload bitrate
+ * when the user is not speaking. In-band FEC remains disabled because the current
+ * TCP/RFCOMM transports are reliable byte streams; useful FEC recovery needs an
+ * explicit late/lost-packet playout path, not just an encoder flag. Android 8/9
+ * use complexity 4 to leave more CPU headroom on older
  * hardware; API 29+ use complexity 8 for higher encoder analysis quality.
  * The upstream source archive is hash-pinned in CMake;
  * the codec is packaged in the APK and does not download anything at runtime.
@@ -76,8 +79,9 @@ class OpusCodec(
                 "Native libopus is unavailable in this runtime; run codec I/O tests on Android."
             }
             val out = ShortArray(frameSamples)
-            // The app sends one 20 ms frame per packet. FEC stays off because
-            // TCP/RFCOMM are reliable byte streams and retransmit transport loss.
+            // TCP/RFCOMM preserve packet order and retransmit loss. The current
+            // jitter path has no next-packet FEC recovery step, so do not request
+            // FEC decode until that behavior is implemented end-to-end.
             val decodedSamples = native.decode(dec, data, out, frameSamples, decodeFec = false)
             require(decodedSamples >= 0) {
                 "opus decode failed (native result=$decodedSamples)"
