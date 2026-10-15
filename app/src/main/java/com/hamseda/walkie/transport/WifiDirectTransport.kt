@@ -806,6 +806,43 @@ class WifiDirectTransport(private val context: Context) : Transport {
 
     // --------------------------------------------------------------- socket
 
+    /**
+     * Waits for Android's P2P framework to publish a usable group-owner address.
+     *
+     * Some devices broadcast group formation before requestConnectionInfo()
+     * contains the negotiated address. Polling is bounded and cancellable; a
+     * Stop/disconnect generation change aborts immediately so stale work cannot
+     * attach a socket to a later session.
+     */
+    @SuppressLint("MissingPermission")
+    private suspend fun awaitGroupOwnerAddress(expectedGeneration: Long): WifiP2pInfo {
+        val deadlineNanos = System.nanoTime() + GROUP_OWNER_ADDRESS_WAIT_MS * 1_000_000L
+        var lastGroupFormed = false
+        while (true) {
+            if (operationGeneration.get() != expectedGeneration) {
+                throw CancellationException("Wi-Fi Direct socket attempt superseded")
+            }
+            val current = requestConnectionInfoSync()
+            if (current != null) {
+                lastGroupFormed = current.groupFormed
+                val address = current.groupOwnerAddress
+                if (current.groupFormed && address != null &&
+                    !address.isAnyLocalAddress && !address.isLoopbackAddress
+                ) {
+                    return current
+                }
+            }
+            val remainingNanos = deadlineNanos - System.nanoTime()
+            if (remainingNanos <= 0L) {
+                throw IOException(
+                    "group owner address unavailable after ${GROUP_OWNER_ADDRESS_WAIT_MS}ms " +
+                        "(lastGroupFormed=$lastGroupFormed)",
+                )
+            }
+            delay(minOf(GROUP_OWNER_ADDRESS_RETRY_DELAY_MS, (remainingNanos / 1_000_000L).coerceAtLeast(1L)))
+        }
+    }
+
     private fun onConnectionInfo(info: WifiP2pInfo, expectedGeneration: Long) {
         if (expectedGeneration != operationGeneration.get()) return
 
@@ -896,8 +933,13 @@ class WifiDirectTransport(private val context: Context) : Transport {
                 socketJob = scope.launch {
                     try {
                         val socket = withTimeout(Protocol.CONNECT_TIMEOUT_MS.toLong()) {
-                            if (info.isGroupOwner) acceptAsOwner(info, expectedGeneration)
-                            else connectAsClient(info, expectedGeneration)
+                            // Android can announce groupFormed=true before it has
+                            // populated groupOwnerAddress. Do not fail the whole
+                            // transport on that short-lived framework race: query
+                            // the authoritative connection info for a bounded window.
+                            val readyInfo = awaitGroupOwnerAddress(expectedGeneration)
+                            if (readyInfo.isGroupOwner) acceptAsOwner(readyInfo, expectedGeneration)
+                            else connectAsClient(readyInfo, expectedGeneration)
                         }
                         AppLog.log(TAG, "p2p socket established")
                         onSocketReady(socket, expectedGeneration)
@@ -1560,5 +1602,7 @@ class WifiDirectTransport(private val context: Context) : Transport {
         private const val TAG = "HamSedaWifiDirect"
         private const val OWNER_BIND_RETRY_WINDOW_MS = 2_500L
         private const val OWNER_BIND_RETRY_DELAY_MS = 200L
+        private const val GROUP_OWNER_ADDRESS_WAIT_MS = 2_500L
+        private const val GROUP_OWNER_ADDRESS_RETRY_DELAY_MS = 200L
     }
 }
