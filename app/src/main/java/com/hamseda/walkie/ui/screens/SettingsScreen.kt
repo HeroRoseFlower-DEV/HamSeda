@@ -75,7 +75,6 @@ fun SettingsScreen(
     val codecPref by vm.codecPref.collectAsStateWithLifecycle()
     val speakerphone by vm.speakerphone.collectAsStateWithLifecycle()
     val vibration by vm.vibration.collectAsStateWithLifecycle()
-    val softwareGain by vm.softwareGain.collectAsStateWithLifecycle()
     val theme by vm.theme.collectAsStateWithLifecycle()
     val language by vm.language.collectAsStateWithLifecycle()
     val identityStore = remember(deps.appContext) { AndroidPeerIdentityStore(deps.appContext) }
@@ -149,15 +148,6 @@ fun SettingsScreen(
                     subtitle = stringResource(R.string.codec_pcm_desc),
                     onClick = { vm.setCodec(CodecId.PCM16) },
                     enabled = !bluetoothVoiceOnly,
-                )
-            }
-
-            SettingSection(title = stringResource(R.string.settings_audio_processing)) {
-                SwitchRow(
-                    title = stringResource(R.string.settings_software_gain),
-                    subtitle = stringResource(R.string.settings_software_gain_desc),
-                    checked = softwareGain,
-                    onChecked = vm::setSoftwareGain,
                 )
             }
 
