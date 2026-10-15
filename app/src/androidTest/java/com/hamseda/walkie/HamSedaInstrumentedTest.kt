@@ -1,11 +1,13 @@
 package com.hamseda.walkie
 
+import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.hamseda.walkie.audio.OpusCodec
 import com.hamseda.walkie.crypto.SessionCrypto
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 
@@ -22,6 +24,35 @@ class HamSedaInstrumentedTest {
     fun appContext_isCorrect() {
         val ctx = InstrumentationRegistry.getInstrumentation().targetContext
         assertEquals("com.hamseda.walkie", ctx.packageName)
+    }
+
+    @Test
+    fun manifestDeclaresCoreRuntimePermissions() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val requested = context.packageManager
+            .getPackageInfo(context.packageName, android.content.pm.PackageManager.GET_PERMISSIONS)
+            .requestedPermissions
+            .orEmpty()
+            .toSet()
+
+        assertTrue("microphone permission must be declared", requested.contains(android.Manifest.permission.RECORD_AUDIO))
+        assertTrue("Wi-Fi Direct nearby permission must be declared", requested.contains(android.Manifest.permission.NEARBY_WIFI_DEVICES))
+        assertTrue("Bluetooth scan permission must be declared", requested.contains(android.Manifest.permission.BLUETOOTH_SCAN))
+        assertTrue("Bluetooth connect permission must be declared", requested.contains(android.Manifest.permission.BLUETOOTH_CONNECT))
+        assertTrue("wake lock permission must be declared", requested.contains(android.Manifest.permission.WAKE_LOCK))
+    }
+
+    @Test
+    fun mainActivitySurvivesLifecycleRecreation() {
+        ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+            scenario.onActivity { activity ->
+                assertNotNull("activity should be created", activity.window)
+            }
+            scenario.recreate()
+            scenario.onActivity { activity ->
+                assertNotNull("recreated activity should own a window", activity.window)
+            }
+        }
     }
 
     @Test
