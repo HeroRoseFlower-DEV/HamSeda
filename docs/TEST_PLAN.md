@@ -93,6 +93,11 @@ procedure and its device variations).
 7. While A transmits, B presses PTT → B sees "peer busy", A keeps the floor.
 8. A walks out of range / disables Wi-Fi → both show "connection lost",
    session ends, keys wiped (no crash, no stuck mic icon).
+9. Repeat cold starts and incoming/outgoing connection attempts. If Android
+   reports a formed group before `groupOwnerAddress` is available, verify the
+   transport performs bounded connection-info polling (up to 2.5 s) and recovers
+   without an immediate socket failure. If the address never appears, verify a
+   finite error and confirm a delayed callback cannot resurrect the failed session.
 
 ### 2.2 SAS mismatch (MITM simulation)
 1. Start pairing as in 2.1 but tap "کدها فرق دارند" on one phone.
@@ -115,6 +120,9 @@ procedure and its device variations).
 - Plug/unplug wired headset mid-session → route switches, no crash.
 - Rotate screen, lock screen, background the app (notification persists),
   foreground again → session survives; Stop from notification ends everything.
+- Rapidly start and end playback/session around AudioTrack initialization
+  (at least 20 cycles) → teardown wins cleanly; no late playback startup,
+  leaked track, stuck audio route, or wake lock after the session returns to IDLE.
 - Deny microphone permission → clear recovery message, no nag loop.
 - Deny nearby-devices/Bluetooth permission → rationale card, then system
   settings path.
