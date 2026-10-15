@@ -80,8 +80,7 @@ jobs:
         run: ./gradlew :app:assembleRelease --no-daemon --stacktrace
 
       - name: Compile instrumented tests
-        # Compiles androidTest sources; execution needs an emulator/device
-        # (see docs/TEST_PLAN.md). Compilation is verified here.
+        # Keep a dedicated compile failure separate from emulator startup and execution.
         run: ./gradlew :app:assembleAndroidTest --no-daemon --stacktrace
 
       - name: Start Android Emulator (API 35, x86_64)
@@ -91,7 +90,8 @@ jobs:
           ANDROID_HOME="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
           export ANDROID_HOME
           export PATH="$ANDROID_HOME/platform-tools:$ANDROID_HOME/emulator:$PATH"
-          echo "no" | "$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager" create avd \
+          CT="$(find "$ANDROID_HOME/cmdline-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n1)"
+          echo "no" | "$CT/bin/avdmanager" create avd \
             --name hamseda-api35 \
             --package "system-images;android-35;google_apis;x86_64" \
             --device pixel_2 --force
