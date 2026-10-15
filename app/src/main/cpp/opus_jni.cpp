@@ -41,6 +41,11 @@ Java_com_hamseda_walkie_audio_NativeOpusCodec_nativeCreateEncoder(
     const int signal_result = opus_encoder_ctl(encoder, OPUS_SET_SIGNAL(OPUS_SIGNAL_VOICE));
     const int vbr_result = opus_encoder_ctl(encoder, OPUS_SET_VBR(1));
     const int vbr_constraint_result = opus_encoder_ctl(encoder, OPUS_SET_VBR_CONSTRAINT(1));
+    // DTX lowers encoded payload size during sustained silence.
+    const int dtx_result = opus_encoder_ctl(encoder, OPUS_SET_DTX(1));
+    // Encourage LBRR data for single-frame loss recovery where available.
+    const int fec_result = opus_encoder_ctl(encoder, OPUS_SET_INBAND_FEC(1));
+    const int packet_loss_result = opus_encoder_ctl(encoder, OPUS_SET_PACKET_LOSS_PERC(10));
     const int max_bandwidth_result =
         opus_encoder_ctl(encoder, OPUS_SET_MAX_BANDWIDTH(OPUS_BANDWIDTH_FULLBAND));
     const int depth_result = opus_encoder_ctl(encoder, OPUS_SET_LSB_DEPTH(16));
@@ -50,6 +55,9 @@ Java_com_hamseda_walkie_audio_NativeOpusCodec_nativeCreateEncoder(
         signal_result != OPUS_OK ||
         vbr_result != OPUS_OK ||
         vbr_constraint_result != OPUS_OK ||
+        dtx_result != OPUS_OK ||
+        fec_result != OPUS_OK ||
+        packet_loss_result != OPUS_OK ||
         max_bandwidth_result != OPUS_OK ||
         depth_result != OPUS_OK) {
         opus_encoder_destroy(encoder);
@@ -147,6 +155,24 @@ Java_com_hamseda_walkie_audio_NativeOpusCodec_nativeDecode(
     env->ReleaseByteArrayElements(packet_array, packet, JNI_ABORT);
     env->ReleaseShortArrayElements(output_array, output, 0);
     return decoded_samples;
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_hamseda_walkie_audio_NativeOpusCodec_nativeHasInbandFec(
+    JNIEnv* env,
+    jobject /* thiz */,
+    jbyteArray packet_array) {
+    if (packet_array == nullptr) return JNI_FALSE;
+    const jsize packet_size = env->GetArrayLength(packet_array);
+    if (packet_size <= 0) return JNI_FALSE;
+
+    jbyte* packet = env->GetByteArrayElements(packet_array, nullptr);
+    if (packet == nullptr) return JNI_FALSE;
+    const int result = opus_packet_has_lbrr(
+        reinterpret_cast<const unsigned char*>(packet),
+        packet_size);
+    env->ReleaseByteArrayElements(packet_array, packet, JNI_ABORT);
+    return result == 1 ? JNI_TRUE : JNI_FALSE;
 }
 
 extern "C" JNIEXPORT void JNICALL

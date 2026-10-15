@@ -25,8 +25,15 @@ class JitterBuffer(
 
     sealed interface TakeResult {
         data class Frame(val packet: Packet) : TakeResult
-        /** Expected seq missing; waited [maxWaitMs] — conceal and advance. */
-        data class Lost(val skippedSeq: Long) : TakeResult
+        /**
+         * Expected seq missing; waited [maxWaitMs] — advance the playhead.
+         * nextPacketForFec is a wiped-by-caller copy of the next payload only
+         * when exactly one frame is missing.
+         */
+        data class Lost(
+            val skippedSeq: Long,
+            val nextPacketForFec: ByteArray? = null,
+        ) : TakeResult
         /** Nothing to play yet (initial buffering or empty). */
         data object NotReady : TakeResult
     }
@@ -113,10 +120,17 @@ class JitterBuffer(
             // Gap: expected frame missing.
             if (now - waitStartedAt >= maxWaitMs) {
                 val skipped = nextSeq
+                // Opus FEC only reconstructs the immediately preceding frame.
+                // Never hand a packet beyond a multi-frame gap to the decoder.
+                val fecPacket = if (head.key == nextSeq + 1L) {
+                    head.value.payload.copyOf()
+                } else {
+                    null
+                }
                 nextSeq++
                 lost++
                 waitStartedAt = now
-                return TakeResult.Lost(skipped)
+                return TakeResult.Lost(skipped, fecPacket)
             }
             return TakeResult.NotReady
         }

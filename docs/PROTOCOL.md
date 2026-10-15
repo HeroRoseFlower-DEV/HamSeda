@@ -110,8 +110,12 @@ Codec negotiation: `codec = min(prefA, prefB)` from the two HELLOs
 - Internal audio is 48 kHz, mono, signed 16-bit PCM.
 - Each frame spans 20 ms (960 samples/channel; 1920 bytes in PCM16 mode).
 - Opus uses official libopus 1.6.1, a 32 kbps target, voice mode, full-band
-  maximum bandwidth, and constrained VBR. Encoder complexity is device-profile
-  dependent: 4 on Android 8/9 (API 26–28), 8 on Android 10+ (API 29+).
+  maximum bandwidth, constrained VBR, DTX, and in-band FEC with a 10% expected-
+  loss hint. DTX reduces payload bitrate during sustained silence. Since the
+  transports are reliable byte streams, FEC is intended for an application-level
+  single-sequence gap; the next packet is used only when it contains LBRR data.
+  Larger gaps and packets without redundancy use the existing concealment path.
+  Encoder complexity is 4 on Android 8/9 (API 26–28) and 8 on Android 10+ (API 29+).
 - PCM16 is diagnostic-only at 768 kbps; prefer Opus for Bluetooth Classic.
 
 Both HELLO payloads are included in a domain-separated KEY_CONFIRM transcript, canonicalized together with the corresponding public key and nonce. A modified codec preference or reassigned nonce changes the transcript and causes the session to fail closed.

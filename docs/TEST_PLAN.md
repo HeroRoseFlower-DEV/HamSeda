@@ -9,7 +9,8 @@ capture diagnostics (input RMS, average/maximum gain, near-silence count and
 enabled flag), and listen for background-noise pumping, clipping, tail
 suppression and intelligibility. Run at least ten PTT bursts after a 60-second
 session. Synthetic tests do not prove subjective quality on every microphone
-or vendor AGC implementation.
+or vendor AGC implementation. Software gain is disabled by default; enable it
+only after comparing raw input and processed audio on the target device.
 
 > **Physical-device baseline:** use [`docs/MAIN_BASELINE_AUDIT.md`](MAIN_BASELINE_AUDIT.md) for the reproducible two-phone setup, attempt counts, evidence capture, performance-measurement method, and result sheet. CI compilation is not a substitute for tests on real radios and audio hardware. Do not mark unrun cases as passed.
 
@@ -34,7 +35,7 @@ or vendor AGC implementation.
 | Codecs (JVM) | `CodecTest` | PCM bit-exact roundtrip, Opus profile defaults, codec factory and bad-input checks that do not require native audio I/O |
 | Microphone level control (JVM) | `CaptureGainControllerTest` | boosts quiet active frames, leaves near-silence unamplified, reduces gain on loud transients immediately, and respects the peak ceiling |
 | Platform routing and Bluetooth discovery | `ModernizationTest` | deterministic API 31+ audio route priority and expiration of discovered non-bonded peers after the 120 s freshness TTL; bonded devices remain listed |
-| Native Opus | `OpusCodecInstrumentedTest` | Actual Android JNI load, runtime libopus version, 20 ms encode/decode, signal correlation/energy, silence, reset and bad-input rejection |
+| Native Opus | `OpusCodecInstrumentedTest` | Actual Android JNI load, runtime libopus version, 20 ms encode/decode, signal correlation/energy, DTX compaction during sustained silence, LBRR detection/prior-frame recovery, reset and bad-input rejection |
 | Framed socket | `FramedSocketTest` | delimiting, clean EOF → Closed, oversized envelope rejected, truncated frame → Error, oversized write rejected |
 | Full session | `SessionHandshakeTest` | v4 HELLO→KEY_COMMIT→KEY_EXCHANGE ordering; handshake→SAS→IN_SESSION; PTT→grant→audio→release; SAS mismatch and post-commitment MITM tamper → AUTH_MISMATCH before SAS; abrupt transport loss → clean teardown |
 | Security (HS-01/02/05/07) | `SessionSecurityTest` | **bad-tag + huge seq does not poison replay window**; wrong session id dropped; duplicate rejected; concurrent malicious inputs don't race; **concurrent audio has unique monotonic wire seqs**; queue stays bounded; **playback failure → clean rollback (no fake IN_SESSION)**; **handshake/SAS timeouts fire (virtual time)** |

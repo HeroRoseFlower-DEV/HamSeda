@@ -67,15 +67,72 @@ class OpusCodecInstrumentedTest {
     }
 
     @Test
+    fun inBandFecCanRecoverOnePriorFrameWhenPresent() {
+        OpusCodec().use { codec ->
+            fun voicedFrame(frameIndex: Int): ShortArray = ShortArray(AudioCodec.FRAME_SAMPLES) { i ->
+                val sampleIndex = frameIndex * AudioCodec.FRAME_SAMPLES + i
+                val t = sampleIndex.toDouble() / AudioCodec.SAMPLE_RATE
+                val value =
+                    sin(2.0 * Math.PI * 130.0 * t) * 9_000.0 +
+                    sin(2.0 * Math.PI * 260.0 * t) * 5_000.0 +
+                    sin(2.0 * Math.PI * 520.0 * t) * 2_500.0
+                value.toInt().toShort()
+            }
+
+            var foundFec = false
+            for (index in 0..80) {
+                val pcm = voicedFrame(index)
+                val packet = codec.encode(pcm)
+                pcm.fill(0)
+                val recovered = codec.decodePreviousFrameFec(packet)
+                if (recovered != null) {
+                    assertEquals(AudioCodec.FRAME_SAMPLES, recovered.size)
+                    recovered.fill(0)
+                    val current = codec.decode(packet)
+                    assertEquals(AudioCodec.FRAME_SAMPLES, current.size)
+                    current.fill(0)
+                    foundFec = true
+                    packet.fill(0)
+                    break
+                }
+                // Keep encoder and decoder histories aligned before the next
+                // packet so this test exercises a realistic continuous stream.
+                val current = codec.decode(packet)
+                current.fill(0)
+                packet.fill(0)
+            }
+            assertTrue("no Opus packet exposed in-band LBRR in the test speech stream", foundFec)
+        }
+    }
+
+    @Test
     fun silenceResetAndInputValidationRemainStable() {
         OpusCodec().use { codec ->
             val silence = ShortArray(AudioCodec.FRAME_SAMPLES)
-            val decodedSilence = codec.decode(codec.encode(silence))
+            val firstSilencePacket = codec.encode(silence)
+            val decodedSilence = codec.decode(firstSilencePacket)
             assertEquals(AudioCodec.FRAME_SAMPLES, decodedSilence.size)
             assertTrue(
                 "silence decoded with peak ${decodedSilence.maxOf { kotlin.math.abs(it.toInt()) }}",
                 decodedSilence.maxOf { kotlin.math.abs(it.toInt()) } < 200,
             )
+            firstSilencePacket.fill(0)
+
+            // DTX is stateful; sustain silence and decode in order to exercise it.
+            val dtxPackets = List(20) { codec.encode(silence) }
+            try {
+                assertTrue(
+                    "DTX should compact sustained silence packets: ${dtxPackets.map { it.size }}",
+                    dtxPackets.any { it.size <= 10 },
+                )
+                dtxPackets.forEach { packet ->
+                    val decoded = codec.decode(packet)
+                    assertEquals(AudioCodec.FRAME_SAMPLES, decoded.size)
+                    decoded.fill(0)
+                }
+            } finally {
+                dtxPackets.forEach { it.fill(0) }
+            }
 
             codec.reset()
             assertEquals(AudioCodec.FRAME_SAMPLES, codec.decode(codec.encode(sineFrame())).size)
