@@ -81,3 +81,14 @@ For each defect, record: **ID, exact file/symbol, reproduction steps, expected b
 - [ ] Validate rapid teardown/restart, output-route changes, stale audio, and underruns on two physical phones.
 - [ ] Measure end-to-end audible latency on device; queue/write timing alone is not a mouth-to-ear measurement.
 
+
+
+## Phase 3 progress — transport receive freshness
+
+- [x] Identified an asymmetry: Wi-Fi Direct's frame reader checked the operation generation before a blocking read but did not re-check socket/generation/state before publishing the returned frame.
+- [x] Added a pure generation/socket/state guard and applied it to Wi-Fi Direct immediately before publication.
+- [x] Drop and zero a frame if it belongs to an obsolete socket generation.
+- [x] Added JVM regression tests for current connection, authentication state, stale generation, socket replacement, and inactive transport state.
+- [ ] Run unit tests, lint, debug/release builds, and instrumented-test compilation on the Phase 3 branch.
+- [ ] Verify rapid stop/reconnect and stale-frame isolation on two physical phones.
+- [ ] Confirm Bluetooth Classic and Wi-Fi Direct behavior with the same APK hash; do not infer radio behavior from unit tests.
