@@ -40,7 +40,7 @@
 | نسخهٔ نمایشی برنامه (`versionName`) | `1.1` |
 | کد نسخه (`versionCode`) | `2` |
 | پروتکل ارتباطی سیم (`Protocol.VERSION`) | `3` |
-| نرخ هدف Opus (`DEFAULT_BITRATE_BPS`) | `40_000 bps` |
+| نرخ هدف Opus (`DEFAULT_BITRATE_BPS`) | `32_000 bps` |
 | حداقل Android API (`minSdk`) | `26` |
 | `compileSdk` / `targetSdk` | `37` |
 
