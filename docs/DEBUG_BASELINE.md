@@ -68,3 +68,16 @@ The unchecked items require further repository/tool/device work and must not be 
 ## Required evidence format for subsequent phases
 
 For each defect, record: **ID, exact file/symbol, reproduction steps, expected behavior, observed behavior, root cause, smallest safe patch, regression test, CI result, and physical-device result (or NOT RUN)**. Separate facts confirmed by source/tests from hypotheses requiring device evidence. Avoid including raw audio, keys, SAS codes, personal identifiers, or unredacted device addresses in public logs.
+
+## Phase 2 progress — playback lifecycle and output routing
+
+- [x] Inspect AudioTrack construction, actual performance mode, buffer sizing, start threshold, queue pacing, non-blocking writes, underrun metrics, and teardown.
+- [x] Prevent a second playback worker from starting while a previous worker is still alive.
+- [x] Ensure unexpected playback-worker exceptions clear the running state and report a playback failure.
+- [x] Interrupt the worker during teardown, bound waiting, and retain its reference if it has not exited so a new session cannot race buffer cleanup.
+- [x] Observe output-device additions/removals through AudioDeviceCallback and unregister the callback during engine release.
+- [x] Add JVM tests for partial playback writes and repeated playback-head polling.
+- [ ] Run unit tests, lint, debug/release builds, and instrumented-test compilation on the Phase 2 PR.
+- [ ] Validate rapid teardown/restart, output-route changes, stale audio, and underruns on two physical phones.
+- [ ] Measure end-to-end audible latency on device; queue/write timing alone is not a mouth-to-ear measurement.
+
