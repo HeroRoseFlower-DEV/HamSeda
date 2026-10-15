@@ -62,6 +62,25 @@ class AppLogTest {
     }
 
     @Test
+    fun `diagnostics redact explicitly labeled key nonce and SAS fields`() {
+        AppLog.clear()
+        AppLog.log(
+            "test",
+            "privateKey=deadbeef derived_key:0123456789abcdef nonce=00112233445566778899aabb " +
+                "sas=123456 sas_code:654321 audio-key=abcdef controlKey=feedface",
+        )
+
+        val dump = AppLog.dump()
+        listOf(
+            "deadbeef", "0123456789abcdef", "00112233445566778899aabb",
+            "123456", "654321", "abcdef", "feedface",
+        ).forEach { assertFalse("secret leaked: $it", dump.contains(it)) }
+        assertTrue(dump.contains("privateKey=[REDACTED]"))
+        assertTrue(dump.contains("nonce=[REDACTED]"))
+        assertTrue(dump.contains("sas=[REDACTED]"))
+    }
+
+    @Test
     fun `diagnostics normalize control characters and cap message length`() {
         AppLog.clear()
         AppLog.log("test", "before\r\nafter\u0000" + "x".repeat(5000))

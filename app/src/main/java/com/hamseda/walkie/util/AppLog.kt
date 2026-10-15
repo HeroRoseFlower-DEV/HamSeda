@@ -34,6 +34,10 @@ object AppLog {
      */
     private val IPV6_CANDIDATE_RE =
         Regex("""(?i)(?<![0-9a-z:.])(?:[0-9a-f]{0,4}:){2,7}[0-9a-f]{0,4}(?:%[a-z0-9_.-]+)?(?![0-9a-z:.])""")
+    /** Redacts explicitly labeled secret material in exception/framework text. */
+    private val SECRET_FIELD_RE = Regex(
+        """(?i)\b((?:private[_ -]?key|derived[_ -]?key|session[_ -]?key|audio[_ -]?key|control[_ -]?key|key[_ -]?material|nonce|sas(?:[_ -]?code|[_ -]?seed)?)\s*[:=]\s*)([^\s,;]+)"""
+    )
     /** Prevents attacker-controlled newlines/control bytes from forging log entries. */
     private val CONTROL_RE = Regex("[\\r\\n\\u0000-\\u001F\\u007F]+")
 
@@ -51,8 +55,12 @@ object AppLog {
         val boundedInput = message.take(MAX_INPUT_CHARS)
         // Normalize first so an exception/device name cannot inject fake lines.
         val oneLine = CONTROL_RE.replace(boundedInput, " ")
+        // Redact explicitly labeled secret fields before storing or sharing logs.
+        val withoutSecrets = SECRET_FIELD_RE.replace(oneLine) { match ->
+            match.groupValues[1] + "[REDACTED]"
+        }
         // Redact identifiers before they hit the in-memory buffer or dump/share.
-        val withoutMacs = MAC_RE.replace(oneLine, "[MAC]")
+        val withoutMacs = MAC_RE.replace(withoutSecrets, "[MAC]")
         val withoutIpv4 = IPV4_RE.replace(withoutMacs, "[IP]")
         val redacted = IPV6_CANDIDATE_RE.replace(withoutIpv4) { match ->
             val literal = match.value.substringBefore('%')
