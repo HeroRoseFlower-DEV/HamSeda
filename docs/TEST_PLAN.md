@@ -26,6 +26,7 @@ or vendor AGC implementation.
 | Jitter buffer | `JitterBufferTest` | priming, in-order playout, gap→Lost after wait, in-time gap fill, stale drop, queue cap, stats; **HS-10: stale/duplicate at full buffer does not evict useful frames** |
 | Playback queue tracker | `PlaybackQueueTrackerTest` | pending PCM accounting, underrun clamp, unsigned playback-head wrap, implausible position jump, and queue-limit rounding to the AudioTrack start threshold |
 | Codecs (JVM) | `CodecTest` | PCM bit-exact roundtrip, Opus profile defaults, codec factory and bad-input checks that do not require native audio I/O |
+| Microphone level control (JVM) | `CaptureGainControllerTest` | boosts quiet active frames, leaves near-silence unamplified, reduces gain on loud transients immediately, and respects the peak ceiling |
 | Native Opus | `OpusCodecInstrumentedTest` | Actual Android JNI load, runtime libopus version, 20 ms encode/decode, signal correlation/energy, silence, reset and bad-input rejection |
 | Framed socket | `FramedSocketTest` | delimiting, clean EOF → Closed, oversized envelope rejected, truncated frame → Error, oversized write rejected |
 | Full session | `SessionHandshakeTest` | handshake→SAS→IN_SESSION over loopback transport, matching SAS, PTT→grant→audio frames→release, SAS-mismatch abort, **MITM tamper → AUTH_MISMATCH**, abrupt transport loss → clean teardown |
@@ -41,17 +42,21 @@ tests intentionally do not load Android ABI-specific shared libraries.
 ### AudioTrack startup-threshold regression
 
 The playback queue ceiling must not be below the threshold Android requires to
-start consuming a streaming AudioTrack. The implementation tries to reduce the
-effective PCM buffer to the three-frame queue on all supported API levels and
-sets a two-frame start threshold on API 31+. On API 26–30, if the platform does
-not apply the requested buffer size exactly, the queue ceiling is rounded to a
-complete 20 ms PCM frame at or above the effective buffer threshold.
+start consuming a streaming AudioTrack. The app requests 100 ms native output
+capacity. If Android actually grants LOW_LATENCY mode, it caps application-fed
+PCM at three 20 ms frames (60 ms); otherwise it keeps up to five frames (100 ms)
+to absorb occasional output scheduling/HAL stalls. API 31+ requests a two-frame
+start threshold. On API 26–30, the queue ceiling is rounded to a complete 20 ms
+PCM frame at or above the effective streaming threshold.
 
-On API 27 and API 36 devices, inspect the `playback initialized` line for
-`bufferFrames`, `startThresholdFrames`, `queueLimitFrames`, and
-`bufferResizeResult`. Confirm ordinary close-range speech no longer triggers
-`AudioTrack queue pacing timed out`. Record underruns and audible gaps; the
-absence of this timeout alone does not prove that playback quality is good.
+On API 27 and API 36 devices, inspect `playback initialized` for
+`actualPerformanceMode`, `bufferFrames`, `capacityFrames`,
+`startThresholdFrames`, `queueLimitFrames`, and `bufferResizeResult`.
+Confirm ordinary close-range speech no longer triggers
+`AudioTrack queue pacing timed out`. The expected queue limit is 4,800 frames
+in default mode and 2,880 frames only when LOW_LATENCY is actually active.
+Record underruns and audible gaps; absence of the timeout alone does not prove
+that playback quality is good.
 
 ### Session timing diagnostics
 
@@ -118,11 +123,11 @@ procedure and its device variations).
 ### 2.6 Performance (before any numeric claim)
 - Measure end-to-end latency (mouth-to-ear) on real devices before quoting it.
 - Confirm diagnostics report the selected AudioTrack performance mode, buffer
-  limit, and 3-frame initial jitter target. The playback path also limits
-  application-fed PCM already queued in AudioTrack to three 20 ms frames
-  (2,880 mono frames at 48 kHz); inspect the `AudioTrack queue pacing` log
-  for `waitedFrames`, `maxWaitMs`, `maxObservedQueuedFrames`, and
-  `queueLimitFrames`. The limit should be 2,880 frames; a queue-pacing timeout
+  limit, and 3-frame initial jitter target. In actual LOW_LATENCY mode the app
+  caps pending output PCM at three 20 ms frames (2,880 mono frames); when the
+  platform falls back to default mode it allows five frames (4,800 mono frames).
+  Inspect `AudioTrack queue pacing` for `waitedFrames`, `maxWaitMs`,
+  `maxObservedQueuedFrames`, and the effective `queueLimitFrames`. A queue-pacing timeout
   is a playback failure, not a pass. Compare audibility, perceived gaps,
   underruns, and pacing waits against the prior APK on both transports. This
   bounds queued PCM; it is not a measurement of mouth-to-ear latency.
@@ -168,11 +173,21 @@ not validate vendor audio HAL behavior.
   if the OEM rejects it during build/initialization, MIC_FALLBACK should be
   reported and capture should still work. Confirm audible AEC/noise behavior
   because MIC fallback may sound different.
-- Confirm the selected Opus complexity is 6 on API 26–28 and 8 on API 29+,
-  while the target bitrate remains 40 kbps. Compare CPU usage, encode timing,
-  intelligibility, clipping, and gaps against the earlier build. Lower
-  complexity may reduce CPU work but can also change speech quality; do not
-  assume it is an improvement without listening and measuring.
+- Confirm the selected Opus complexity is 4 on API 26–28 and 8 on API 29+,
+  with a 32 kbps target and constrained VBR. Compare CPU usage, encode timing,
+  intelligibility, clipping, and gaps against the earlier build. This is a
+  lower-load real-time profile, not an assumed quality improvement.
+- The sender drops audio older than 120 ms before serialization and counts
+  it in `droppedAudioTotal`; stale audio must not be replayed after a blocked send.
+- Inbound transport flows have no application-side frame backlog: when the
+  session consumer slows, the reader must suspend and backpressure the peer
+  rather than accumulating up to 64 frames. Verify ordinary floor/control frames
+  still arrive and the session does not disconnect due to routine backpressure.
+- In `AudioTrack write timing`, compare `nativeAvgMs/nativeMaxMs` (time inside
+  native write calls) separately from `avgWaitMs/maxWaitMs` (waiting for output
+  capacity). `deadlineTimeouts` should remain zero during ordinary speech.
+  In `audio receive timing`, `cadenceIntervals/avgIntervalMs` describe
+  within-burst cadence; `interBurstGapsOver250Ms` separates long gaps.
 - Lock the screen for 5 minutes and test repeated PTT, stop notification,
   headset insertion/removal, incoming call/audio-focus loss, radio loss, and
   reconnect. Confirm microphone, wake lock, and foreground notification are
@@ -195,3 +210,16 @@ runs cannot validate Wi-Fi Direct/Bluetooth audio — they only compile.
 - AudioRecord/AudioTrack latency & quality (needs hardware + ears).
 - Foreground-service microphone behavior under OEM battery savers.
 - Wi-Fi Direct group-owner negotiation across vendors.
+
+
+### Microphone level and distant speech (physical-device check)
+
+Use the same two phones, transport, room and receiver volume for each run. Hold
+PTT and speak the same phrase first at roughly 15–20 cm and then at 60–100 cm
+from the transmitting phone; repeat on both devices and both transports. Compare
+intelligibility, background-noise pumping, clipping, and the sender's
+`capture encode timing` fields: `avgInputRms`, `avgGain`, `maxGain`, and
+`nearSilenceFrames`. Also verify quiet-room silence does not become a loud hiss.
+This is a comparative manual check, not a calibrated microphone-sensitivity
+measurement. A gain increase cannot recover speech whose signal is below the
+microphone/noise-suppression floor.
