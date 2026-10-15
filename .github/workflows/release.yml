@@ -49,8 +49,7 @@ jobs:
             || sdkmanager "platform-tools" "platforms;android-37.0" "build-tools;36.0.0" \
               "ndk;30.0.16248370" "cmake;3.31.6"
 
-      - name: Validate tag, version metadata, and signing secrets
-        id: release
+      - name: Validate signing secrets
         shell: bash
         env:
           HAMSEDA_KEYSTORE_BASE64: ${{ secrets.HAMSEDA_KEYSTORE_BASE64 }}
@@ -64,8 +63,6 @@ jobs:
               echo "::error::Required repository secret $name is not configured."
               exit 1
             fi
-          done
-
           metadata="$(./gradlew -q printReleaseMetadata --no-daemon)"
           IFS='|' read -r app_version app_code <<< "$metadata"
           tag_version="${GITHUB_REF_NAME#v}"
@@ -105,7 +102,6 @@ jobs:
           echo "Validated release tag $GITHUB_REF_NAME (versionName=$app_version, versionCode=$app_code)."
           echo "version_name=$app_version" >> "$GITHUB_OUTPUT"
           echo "version_code=$app_code" >> "$GITHUB_OUTPUT"
-
       - name: Prepare temporary signing key
         shell: bash
         env:
