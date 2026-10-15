@@ -135,8 +135,8 @@ jobs:
           set +e
           ANDROID_HOME="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
           export PATH="$ANDROID_HOME/platform-tools:$PATH"
-          adb logcat -d -t 12000 > "$RUNNER_TEMP/hamseda-emulator-logcat.txt"
-          adb shell getprop > "$RUNNER_TEMP/hamseda-emulator-getprop.txt"
+          timeout 15s adb logcat -d -t 12000 > "$RUNNER_TEMP/hamseda-emulator-logcat.txt" 2>&1 || true
+          timeout 10s adb shell getprop > "$RUNNER_TEMP/hamseda-emulator-getprop.txt" 2>&1 || true
           if [ -f "$RUNNER_TEMP/hamseda-emulator.log" ]; then
             cp "$RUNNER_TEMP/hamseda-emulator.log" "$RUNNER_TEMP/hamseda-emulator-console.log"
           fi
@@ -160,7 +160,7 @@ jobs:
           set +e
           ANDROID_HOME="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
           export PATH="$ANDROID_HOME/platform-tools:$PATH"
-          adb emu kill
+          timeout 10s adb emu kill 2>/dev/null || true
           if [ -f "$RUNNER_TEMP/hamseda-emulator.pid" ]; then
             kill "$(cat "$RUNNER_TEMP/hamseda-emulator.pid")" 2>/dev/null || true
           fi
