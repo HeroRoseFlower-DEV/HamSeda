@@ -1114,7 +1114,7 @@ class AudioEngine(private val context: Context) : AudioPipeline {
 
             // Keep the reference if a vendor call still has the worker alive; a
             // subsequent start must not overlap it or race its final buffer reset.
-            if (worker == null || worker === Thread.currentThread() || !worker.isAlive) {
+            if (worker == null || !worker.isAlive) {
                 playbackThread = null
             } else {
                 AppLog.log(TAG, "playback worker remains alive after forced AudioTrack release")
