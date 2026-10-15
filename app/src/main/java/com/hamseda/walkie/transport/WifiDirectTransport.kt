@@ -1019,7 +1019,8 @@ class WifiDirectTransport(private val context: Context) : Transport {
                 if (operationGeneration.get() != expectedGeneration) {
                     throw IOException("stale Wi-Fi Direct client attempt")
                 }
-                if (inFlightClientSocket === client) inFlightClientSocket = null
+                // Keep this reference until onSocketReady transfers ownership;
+                // disconnect() may race in the small hand-off window.
                 Log.i(TAG, "client: connected to Wi-Fi Direct group owner")
                 return client
             } catch (e: IOException) {
@@ -1055,9 +1056,13 @@ class WifiDirectTransport(private val context: Context) : Transport {
                 _state.value != TransportState.AUTHENTICATING
             ) {
                 try { socket.close() } catch (_: IOException) {}
+                if (inFlightClientSocket === socket) inFlightClientSocket = null
                 AppLog.log(TAG, "discarding stale Wi-Fi Direct socket after stop/disconnect")
                 return@withLock
             }
+            // Keep the client socket cancellable until ownership has safely
+            // transferred into FramedSocket under the transport mutex.
+            if (inFlightClientSocket === socket) inFlightClientSocket = null
             framed?.close()
             framed = FramedSocket.fromTcpSocket(socket) {
                 scope.launch { handleGroupLost(expectedGeneration = expectedGeneration) }
