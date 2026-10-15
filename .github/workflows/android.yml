@@ -19,7 +19,7 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       # M2: third-party actions are pinned to full commit SHAs (version
       # comments for readability). A compromised mutable tag cannot inject
@@ -52,6 +52,7 @@ jobs:
           export PATH="$CT/bin:$PATH"
           yes | sdkmanager --licenses > /dev/null || true
           # API 37 platform: try the canonical path, fall back to the .0 variant.
+          sdkmanager "platform-tools" "emulator" "system-images;android-35;google_apis;x86_64"
           sdkmanager "platforms;android-37" "build-tools;36.0.0" "ndk;30.0.16248370" "cmake;3.31.6" \
             || sdkmanager "platforms;android-37.0" "build-tools;36.0.0" "ndk;30.0.16248370" "cmake;3.31.6"
 
@@ -83,6 +84,91 @@ jobs:
         # (see docs/TEST_PLAN.md). Compilation is verified here.
         run: ./gradlew :app:assembleAndroidTest --no-daemon --stacktrace
 
+      - name: Start Android Emulator (API 35, x86_64)
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          ANDROID_HOME="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          export ANDROID_HOME
+          export PATH="$ANDROID_HOME/platform-tools:$ANDROID_HOME/emulator:$PATH"
+          echo "no" | "$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager" create avd \
+            --name hamseda-api35 \
+            --package "system-images;android-35;google_apis;x86_64" \
+            --device pixel_2 --force
+          "$ANDROID_HOME/emulator/emulator" \
+            -avd hamseda-api35 -no-window -no-audio -no-boot-anim \
+            -gpu swiftshader_indirect -accel on -wipe-data \
+            > "$RUNNER_TEMP/hamseda-emulator.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/hamseda-emulator.pid"
+          adb start-server
+          adb wait-for-device
+          booted=""
+          for attempt in $(seq 1 180); do
+            if ! kill -0 "$(cat "$RUNNER_TEMP/hamseda-emulator.pid")" 2>/dev/null; then
+              cat "$RUNNER_TEMP/hamseda-emulator.log"
+              echo "::error::Android Emulator exited before boot completed"
+              exit 1
+            fi
+            booted="$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)"
+            if [ "$booted" = "1" ]; then break; fi
+            sleep 5
+          done
+          if [ "$booted" != "1" ]; then
+            cat "$RUNNER_TEMP/hamseda-emulator.log"
+            echo "::error::Android Emulator did not finish booting within 15 minutes"
+            exit 1
+          fi
+          adb shell settings put global window_animation_scale 0
+          adb shell settings put global transition_animation_scale 0
+          adb shell settings put global animator_duration_scale 0
+          # Pre-grant only runtime permissions needed to let the app reach its
+          # normal UI in instrumentation tests. This is test setup, not an app
+          # permission-policy change; no radio hardware behavior is simulated.
+          adb shell pm grant com.hamseda.walkie android.permission.RECORD_AUDIO
+          adb shell pm grant com.hamseda.walkie android.permission.NEARBY_WIFI_DEVICES
+          adb shell pm grant com.hamseda.walkie android.permission.BLUETOOTH_SCAN
+          adb shell pm grant com.hamseda.walkie android.permission.BLUETOOTH_CONNECT
+          adb devices -l
+
+      - name: Execute instrumented tests on Android Emulator
+        timeout-minutes: 20
+        run: ./gradlew :app:connectedDebugAndroidTest --no-daemon --stacktrace
+
+      - name: Capture emulator diagnostics
+        if: always()
+        run: |
+          set +e
+          ANDROID_HOME="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          export PATH="$ANDROID_HOME/platform-tools:$PATH"
+          adb logcat -d -t 12000 > "$RUNNER_TEMP/hamseda-emulator-logcat.txt"
+          adb shell getprop > "$RUNNER_TEMP/hamseda-emulator-getprop.txt"
+          if [ -f "$RUNNER_TEMP/hamseda-emulator.log" ]; then
+            cp "$RUNNER_TEMP/hamseda-emulator.log" "$RUNNER_TEMP/hamseda-emulator-console.log"
+          fi
+
+      - name: Upload instrumented test reports and emulator logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: HamSeda-instrumented-test-results
+          path: |
+            app/build/outputs/androidTest-results/connected/**
+            app/build/reports/androidTests/connected/**
+            ${{ runner.temp }}/hamseda-emulator-*.txt
+            ${{ runner.temp }}/hamseda-emulator-console.log
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Stop Android Emulator
+        if: always()
+        run: |
+          set +e
+          ANDROID_HOME="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          export PATH="$ANDROID_HOME/platform-tools:$PATH"
+          adb emu kill
+          if [ -f "$RUNNER_TEMP/hamseda-emulator.pid" ]; then
+            kill "$(cat "$RUNNER_TEMP/hamseda-emulator.pid")" 2>/dev/null || true
+          fi
       - name: Verify APK native ABIs and compute SHA-256
         id: apk
         run: |
