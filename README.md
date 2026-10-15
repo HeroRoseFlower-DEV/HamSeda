@@ -67,7 +67,7 @@
 | مؤلفه | نسخه | دلیل انتخاب |
 |---|---|---|
 | Android Gradle Plugin | 9.3.3 | پشتیبانی از API 37؛ Gradle حداقل 9.5؛ شامل اصلاح lint برای JDK 17 |
-| Gradle Wrapper | 9.7.0 | در بازهٔ سازگاری مستندشدهٔ Kotlin 2.4.x؛ SHA-256 توزیع پین شده |
+| Gradle Wrapper | 9.8.1 | در بازهٔ سازگاری مستندشدهٔ Kotlin 2.4.x؛ SHA-256 توزیع پین شده |
 | Kotlin / Compose compiler plugin | 2.4.21 | نسخهٔ پایدار؛ Kotlin اندروید از AGP 9 به‌صورت built-in تأمین می‌شود |
 | JDK | 17 (Temurin) | پشتیبانی‌شده توسط AGP 9.3.3؛ در CI روی `ubuntu-24.04` |
 | compileSdk / targetSdk | 37 | پشتیبانی‌شده توسط AGP 9.3.x |
