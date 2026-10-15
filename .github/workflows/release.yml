@@ -122,7 +122,51 @@ jobs:
           APKSIGNER="$ANDROID_HOME/build-tools/36.0.0/apksigner"
           test -x "$APKSIGNER"
           "$APKSIGNER" verify --verbose --print-certs "$APK"
-          jarsigner -verify "$AAB"
+          if ! unzip -Z1 "$AAB" | grep -Eq '^META-INF/[^/]+\\.(RSA|DSA|EC)
+          cp "$APK" release-assets/
+          cp "$AAB" release-assets/
+          (
+            cd release-assets
+            sha256sum *.apk *.aab > SHA256SUMS
+            sha256sum --check SHA256SUMS
+          )
+          echo "Release artifacts verified; SHA-256 manifest generated."
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release create "$GITHUB_REF_NAME" \
+            release-assets/*.apk release-assets/*.aab release-assets/SHA256SUMS \
+            --verify-tag \
+            --title "HamSeda $GITHUB_REF_NAME" \
+            --generate-notes
+
+      - name: Remove temporary signing material
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          if [ -n "${HAMSEDA_KEYSTORE_PATH:-}" ]; then
+            rm -f "$HAMSEDA_KEYSTORE_PATH"
+          else
+            rm -f "$RUNNER_TEMP/hamseda-release.jks"
+          fi
+; then
+            echo "::error::AAB has no JAR signature block; refusing to publish an unsigned bundle."
+            exit 1
+          fi
+          if ! jarsigner -verify -verbose "$AAB" > "$RUNNER_TEMP/aab-jarsigner-verification.txt" 2>&1; then
+            cat "$RUNNER_TEMP/aab-jarsigner-verification.txt"
+            exit 1
+          fi
+          if ! grep -Fq "jar verified." "$RUNNER_TEMP/aab-jarsigner-verification.txt"; then
+            cat "$RUNNER_TEMP/aab-jarsigner-verification.txt"
+            echo "::error::jarsigner did not confirm the AAB signature."
+            exit 1
+          fi
 
           mkdir -p release-assets
           cp "$APK" release-assets/
