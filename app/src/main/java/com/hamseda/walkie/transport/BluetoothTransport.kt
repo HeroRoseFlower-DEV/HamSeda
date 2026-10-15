@@ -12,6 +12,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.os.Build
+import android.os.SystemClock
 import android.util.Log
 import com.hamseda.walkie.proto.FrameException
 import com.hamseda.walkie.proto.FramedSocket
@@ -111,6 +112,8 @@ class BluetoothTransport(private val context: Context) : Transport {
     // platform broadcast; a dense environment can still contain many devices.
     private val peerLock = Any()
     private val found = LinkedHashMap<String, PeerDevice>()
+    /** Monotonic timestamps for currently discovered (unbonded) peers. */
+    private val foundSeenAt = LinkedHashMap<String, Long>()
     private val bondedCache = LinkedHashMap<String, PeerDevice>()
 
     // Windowed write telemetry avoids per-packet logs and never records audio contents.
@@ -125,14 +128,23 @@ class BluetoothTransport(private val context: Context) : Transport {
 
     /** Merge a bounded snapshot without racing receiver and scan callbacks. */
     private fun publishPeers() {
-        val snapshot = synchronized(peerLock) {
+        val nowMs = SystemClock.elapsedRealtime()
+        val (snapshot, expiredCount) = synchronized(peerLock) {
+            val stale = stalePeerIds(foundSeenAt, nowMs, FOUND_PEER_TTL_MS)
+            stale.forEach { id ->
+                found.remove(id)
+                foundSeenAt.remove(id)
+            }
             val result = ArrayList<PeerDevice>(MAX_VISIBLE_PEERS)
             found.values.take(MAX_DISCOVERED_PEERS).forEach(result::add)
             for (peer in bondedCache.values) {
                 if (result.size >= MAX_VISIBLE_PEERS) break
                 if (peer.id !in found && result.none { it.id == peer.id }) result.add(peer)
             }
-            result
+            result to stale.size
+        }
+        if (expiredCount > 0) {
+            AppLog.log(TAG, "expiring $expiredCount stale discovered peer(s)")
         }
         _peers.value = snapshot
     }
@@ -277,7 +289,10 @@ class BluetoothTransport(private val context: Context) : Transport {
         registerReceiver()
         synchronized(discoveryLock) {
             if (attempt != discoveryGeneration) return
-            synchronized(peerLock) { found.clear() }
+            synchronized(peerLock) {
+                found.clear()
+                foundSeenAt.clear()
+            }
             _peers.value = emptyList()
         }
         updateDiscoverable()
@@ -1002,7 +1017,10 @@ class BluetoothTransport(private val context: Context) : Transport {
             // Preserve the terminal transport error for the UI diagnostics
             // banner; a subsequent stopDiscovery/new attempt clears it.
             _peers.value = emptyList()
-            synchronized(peerLock) { found.clear() }
+            synchronized(peerLock) {
+                found.clear()
+                foundSeenAt.clear()
+            }
         }
     }
 
@@ -1056,9 +1074,11 @@ class BluetoothTransport(private val context: Context) : Transport {
                         displayName = displayName,
                         transport = TransportType.BLUETOOTH,
                     )
+                    val seenAtMs = SystemClock.elapsedRealtime()
                     synchronized(peerLock) {
                         if (address in found || found.size < MAX_DISCOVERED_PEERS) {
                             found[address] = peer
+                            foundSeenAt[address] = seenAtMs
                         }
                     }
                     // Keep paired-but-not-discovered phones in the list too.
@@ -1088,6 +1108,8 @@ class BluetoothTransport(private val context: Context) : Transport {
                             _state.value = TransportState.IDLE
                         }
                     }
+                    // Expire vanished non-bonded peers even when this scan found nothing.
+                    publishPeers()
                 }
                 BluetoothAdapter.ACTION_SCAN_MODE_CHANGED -> {
                     updateDiscoverable()
@@ -1139,5 +1161,24 @@ class BluetoothTransport(private val context: Context) : Transport {
         private const val MAX_DISCOVERED_PEERS = 128
         private const val MAX_VISIBLE_PEERS = 192
         private const val MAX_PEER_NAME_CHARS = 64
+        /** Discovered peers expire after two minutes without a fresh sighting. */
+        const val FOUND_PEER_TTL_MS = 120_000L
     }
+}
+
+
+/**
+ * Returns discovered peer IDs older than the freshness window. Uses elapsed
+ * realtime values supplied by Android so wall-clock changes cannot retain or
+ * prematurely evict a peer. Exact TTL equality is still considered fresh.
+ */
+internal fun stalePeerIds(
+    lastSeenMs: Map<String, Long>,
+    nowMs: Long,
+    ttlMs: Long,
+): Set<String> {
+    require(ttlMs >= 0L) { "ttlMs must be non-negative" }
+    return lastSeenMs.filterValues { lastSeen ->
+        nowMs >= lastSeen && nowMs - lastSeen > ttlMs
+    }.keys.toSet()
 }

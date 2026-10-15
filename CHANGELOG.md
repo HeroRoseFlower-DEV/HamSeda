@@ -1,5 +1,17 @@
 # HamSeda Changelog
 
+## 2026-10-15 — Bluetooth peer freshness and platform regression coverage
+
+- Track discovery sightings with monotonic elapsed-realtime timestamps. Remove
+  non-bonded devices that have not been seen for 120 seconds; bonded devices
+  remain in the paired-device cache and are not expired by this policy.
+- Prune stale entries when publishing peer results and on discovery-finished
+  broadcasts, including scans that find no new peers.
+- Add JVM regression tests for API 31+ audio-route decisions and exact TTL
+  boundary behavior, plus a source-backed technology-decision record.
+- Add a 45-minute CI timeout and compile the release variant in addition to the
+  debug APK. Release APK build success does not replace physical-device tests.
+
 ## 2026-10-15 — Stop sessions before wire-sequence rollover
 
 - Replace silent uint32 sequence wrap with a per-session monotonic counter.
