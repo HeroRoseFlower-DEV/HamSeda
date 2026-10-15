@@ -29,7 +29,7 @@ import java.util.Locale
 /**
  * Low-latency voice capture/playback engine.
  *
- * - Capture: [AudioRecord] with `VOICE_COMMUNICATION` source, 48 kHz mono
+ * - Capture: [AudioRecord] with `UNPROCESSED` when supported, otherwise `MIC`, at 48 kHz mono
  *   PCM16, read in exact 20 ms (960-sample) chunks on a dedicated thread —
  *   never the main thread. Encoded frames are delivered via [onFrame].
  * - Playback: [AudioTrack] in streaming mode fed from a [JitterBuffer];
@@ -151,7 +151,7 @@ class AudioEngine(private val context: Context) : AudioPipeline {
     )
 
     /**
-     * Some older OEM audio HALs reject VOICE_COMMUNICATION during construction
+     * Some older OEM audio HALs reject UNPROCESSED during construction
      * even though microphone capture via MIC works. Prefer UNPROCESSED capture
      * when the device supports it, then fall back to MIC. Never request the
      * VOICE_COMMUNICATION source because it may select a voice-processed path.
@@ -238,8 +238,8 @@ class AudioEngine(private val context: Context) : AudioPipeline {
             .setChannelMask(AudioFormat.CHANNEL_IN_MONO)
             .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
             .build()
-        // Note: AudioRecord.Builder has no setAudioAttributes — routing and
-        // usage are driven by the VOICE_COMMUNICATION audio source.
+        // AudioRecord.Builder has no setAudioAttributes; capture source is
+        // selected explicitly below to avoid the voice-processed source path.
         // Request 100 ms capacity up front. configurePlaybackBuffer() will use
         // a 60 ms application queue only when LOW_LATENCY mode is actually active.
         val requestedBufferBytes = maxOf(
@@ -407,7 +407,6 @@ class AudioEngine(private val context: Context) : AudioPipeline {
                 try { worker.join(500) } catch (_: InterruptedException) {}
             }
             try { activeRecorder?.release() } catch (_: Exception) {}
-            releaseEffects()
             abandonFocus()
             restoreAudioModeIfIdle()
         }
