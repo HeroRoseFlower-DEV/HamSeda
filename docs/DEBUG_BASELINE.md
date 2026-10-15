@@ -5,7 +5,7 @@
 
 ## Current source baseline
 
-Values checked against the current default-branch source during this review:
+Values checked against the current staged source tree during this review; the Phase 4 CI row reflects this branch and does not imply that `main` already contains the change:
 
 | Item | Current source value |
 |---|---|
