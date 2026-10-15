@@ -1,5 +1,12 @@
 # HamSeda Changelog
 
+## 2026-10-15 — Stop sessions before wire-sequence rollover
+
+- Replace silent uint32 sequence wrap with a per-session monotonic counter.
+- End the session at `0xFFFF0000`, before counter exhaustion; a new authenticated
+  session starts a new sequence space. No wire-format change is made.
+- Add unit tests for monotonic allocation, exhaustion, reset and invalid limits.
+
 ## 2026-10-14 — AudioTrack startup-threshold deadlock fix
 - **Playback startup:** the queue previously capped at 60 ms even when an
   AudioTrack's default streaming start threshold was its full 64–80 ms buffer.
