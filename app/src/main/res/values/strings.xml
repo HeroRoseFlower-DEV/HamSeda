@@ -109,7 +109,7 @@
     <string name="privacy_p2">No internet: everything (discovery, connection, calls) uses only the phone’s local radios.</string>
     <string name="privacy_p3">No audio storage: no audio files, call history, or contact lists are saved.</string>
     <string name="privacy_p4">Voice is sent only during an active session and only to the authenticated peer; the microphone never stays open outside the push-to-talk button.</string>
-    <string name="privacy_p5">Application-layer end-to-end encryption (ECDH on P-256, HKDF-SHA-256, AES-256-GCM) protects audio and control frames. Ephemeral session keys are wiped when a session ends; the device identity-signing private key stays in Android Keystore, and trusted peers' public-key pins are stored locally after first-contact SAS verification.</string>
+    <string name="privacy_p5">Application-layer end-to-end encryption (ECDH on P-256, HKDF-SHA-256, AES-256-GCM) protects audio and control frames. Ephemeral session keys are wiped when a session ends; the device identity-signing private key stays in Android Keystore, and public-key pins for trusted peers are stored locally after first-contact SAS verification.</string>
     <string name="privacy_p6">No behavioral analytics, ads, or cloud crash reporting.</string>
 
     <!-- First-run permissions gate -->
