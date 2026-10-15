@@ -55,8 +55,13 @@ class OpusCodec(
                 "Native libopus is unavailable in this runtime; run codec I/O tests on Android."
             }
             val n = native.encode(enc, pcm, frameSamples, encodeBuf)
-            require(n > 0) { "opus encode failed (native result=$n)" }
-            return encodeBuf.copyOf(n)
+            try {
+                require(n in 1..encodeBuf.size) { "opus encode failed (native result=$n)" }
+                return encodeBuf.copyOf(n)
+            } finally {
+                // The scratch array otherwise retains the last compressed voice frame.
+                encodeBuf.fill(0)
+            }
         }
     }
 
@@ -86,6 +91,7 @@ class OpusCodec(
 
     override fun reset() {
         synchronized(lock) {
+            encodeBuf.fill(0)
             releaseHandlesLocked()
 
             // Plain JVM tests have no Android ABI-specific .so. They can wire
@@ -125,6 +131,7 @@ class OpusCodec(
 
     override fun close() {
         synchronized(lock) {
+            encodeBuf.fill(0)
             releaseHandlesLocked()
         }
     }

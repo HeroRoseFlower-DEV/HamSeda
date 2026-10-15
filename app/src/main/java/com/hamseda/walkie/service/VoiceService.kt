@@ -71,9 +71,10 @@ class VoiceService : Service() {
                     setSessionCpuAwake(false)
                     stopForegroundCompat()
                 } else {
-                    // Keep voice processing scheduled with the display off.
-                    // This improves background reliability, not radio transmit power.
-                    setSessionCpuAwake(true)
+                    // Listening/handshake phases must not hold the CPU awake
+                    // indefinitely. Audio processing needs the partial wake lock
+                    // only after both peers have confirmed the authenticated session.
+                    setSessionCpuAwake(phase == SessionManager.Phase.IN_SESSION)
                     ensureForeground(phase)
                 }
             }

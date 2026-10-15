@@ -323,6 +323,7 @@ class SessionManager(
         val frames = ArrayList<ByteArray>(messages.size)
         var transportNanos = 0L
         var delivered = false
+        var buildFailed = false
         try {
             for ((index, message) in messages.withIndex()) {
                 // A prior blocked socket write may make queued voice obsolete.
@@ -359,10 +360,14 @@ class SessionManager(
                     break
                 } catch (e: Exception) {
                     buildNanos[index] = System.nanoTime() - buildStartedAt
+                    buildFailed = true
                     Log.w(TAG, "outbound build failed: " + e.javaClass.simpleName)
+                    AppLog.log(TAG, "outbound frame construction failed; ending session")
+                    endSession(SessionError.PROTOCOL_ERROR, notifyPeer = false)
+                    break
                 }
             }
-            if (frames.isNotEmpty()) {
+            if (frames.isNotEmpty() && !buildFailed) {
                 val transportStartedAt = System.nanoTime()
                 try {
                     t.sendFrames(frames)
