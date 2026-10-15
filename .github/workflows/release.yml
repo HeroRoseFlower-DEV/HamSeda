@@ -92,7 +92,7 @@ jobs:
           fi
           if [ "${#version_tags[@]}" -gt 1 ]; then
             previous_tag="${version_tags[1]}"
-            previous_version_code="$(git show "$previous_tag:app/build.gradle.kts" | sed -nE 's/^[[:space:]]*versionCode[[:space:]]*=[[:space:]]*([0-9]+).*$/\1/p' | head -nn1)"
+            previous_version_code="$(git show "$previous_tag:app/build.gradle.kts" | sed -nE 's/^[[:space:]]*versionCode[[:space:]]*=[[:space:]]*([0-9]+).*$/\1/p' | head -n1)"
             if [[ ! "$previous_version_code" =~ ^[0-9]+$ ]]; then
               echo "::error::Could not read a numeric versionCode from previous tag $previous_tag."
               exit 1
