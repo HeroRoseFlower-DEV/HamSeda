@@ -17,13 +17,13 @@ Values checked against the current default-branch source during this review:
 | Opus target bitrate | `32,000 bps` |
 | Native Opus | `libopus` through JNI |
 | Native ABIs configured | `arm64-v8a`, `armeabi-v7a`, `x86_64`, `x86` |
-| CI build checks | unit tests, lint, debug/release APK builds, instrumented-test compilation, JNI ABI and 16 KiB ELF alignment checks |
+| CI build checks | unit tests, lint, debug/release APK builds, emulator-executed instrumented tests, JNI ABI and 16 KiB ELF alignment checks |
 
 Authoritative source files: `app/build.gradle.kts`, `app/src/main/AndroidManifest.xml`, `.github/workflows/android.yml`, `.github/scripts/verify-consistency.sh`, `app/src/main/java/com/hamseda/walkie/audio/AudioEngine.kt`, and `docs/TEST_PLAN.md`.
 
 ## Important interpretation limits
 
-- A successful GitHub Actions run verifies only the tasks actually executed by that workflow. `:app:assembleAndroidTest` compiles instrumented tests; it does **not** run them on an emulator or physical device.
+- A successful GitHub Actions run verifies only the tasks actually executed by that workflow. Phase 4 adds `:app:connectedDebugAndroidTest` on an API 35 x86_64 emulator; this is not a physical-device or radio test.
 - Unit tests cannot establish microphone/HAL behavior, radio discovery reliability, range, audible intelligibility, mouth-to-ear latency, Bluetooth congestion, or screen-off behavior on a real handset.
 - The repository's existing baseline report records earlier two-phone log batches, a remaining Bluetooth freshness-drop concern, and an incomplete formal 10-attempt baseline. Those historical observations must not be presented as results for a newer APK without repeating the test.
 - The current audio engine selects Android `UNPROCESSED` capture where it initializes successfully and falls back to `MIC`; it does not perform application-level PCM gain/leveling or attach app-created audio effects in the capture path. Android/OEM microphone hardware and audio HAL processing may still vary by device. Opus encoding is still lossy compression, so the transmitted/reconstructed signal is not bit-identical raw PCM.
@@ -92,3 +92,14 @@ For each defect, record: **ID, exact file/symbol, reproduction steps, expected b
 - [ ] Run unit tests, lint, debug/release builds, and instrumented-test compilation on the Phase 3 branch.
 - [ ] Verify rapid stop/reconnect and stale-frame isolation on two physical phones.
 - [ ] Confirm Bluetooth Classic and Wi-Fi Direct behavior with the same APK hash; do not infer radio behavior from unit tests.
+
+## Phase 4 progress — emulator-backed instrumentation
+
+- [x] Add an API 35 Google APIs x86_64 emulator to the CI workflow and wait for full boot before tests.
+- [x] Install the debug APK and grant only the runtime permissions needed for deterministic startup-gate traversal in the test environment.
+- [x] Execute `:app:connectedDebugAndroidTest` rather than stopping at `:app:assembleAndroidTest`.
+- [x] Add instrumentation coverage for core manifest permissions and `MainActivity` lifecycle recreation; retain native Opus JNI and platform crypto tests.
+- [x] Upload connected-test reports and emulator diagnostics on success or failure.
+- [ ] Confirm the Phase 4 GitHub Actions run completes successfully; do not infer success from workflow edits alone.
+- [ ] Run the separate two-physical-phone acceptance plan for Wi-Fi Direct, Bluetooth Classic, bidirectional audio, reconnect races, screen-off behavior, and real audio quality.
+- [ ] API 37-specific `ACCESS_LOCAL_NETWORK` enforcement is not proven by the API 35 emulator job and needs a compatible API 37 runtime test or device validation.
