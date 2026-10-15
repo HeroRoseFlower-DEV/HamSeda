@@ -42,6 +42,7 @@ import java.io.IOException
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.security.MessageDigest
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Authenticated one-to-one voice session over an attached [Transport].
@@ -151,7 +152,8 @@ class SessionManager(
     private var activeCodecId: Byte = CodecId.OPUS
     private var codec: AudioCodec? = null
 
-    private var sendSeq: Long = 0
+    private val sendSequence = SessionSequenceCounter()
+    private val sequenceExhaustionTriggered = AtomicBoolean(false)
     /** Dense audio-only sequence for playout; wire seq also numbers control frames. */
     private var receivedAudioSeq: Long = 0
     private val replay = ReplayProtection()
@@ -275,8 +277,9 @@ class SessionManager(
         senderJob = null
         drainOutbound()
         resetAudioTimingWindow()
+        sequenceExhaustionTriggered.set(false)
         senderJob = scope.launch {
-            while (isActive) {
+            while (isActive && !sequenceExhaustionTriggered.get()) {
                 val first = nextOutbound()
                 val t = transport
                 if (t == null) {
@@ -327,6 +330,15 @@ class SessionManager(
                 } catch (e: CancellationException) {
                     buildNanos[index] = System.nanoTime() - buildStartedAt
                     throw e
+                } catch (e: SessionSequenceCounter.SequenceExhaustedException) {
+                    buildNanos[index] = System.nanoTime() - buildStartedAt
+                    if (sequenceExhaustionTriggered.compareAndSet(false, true)) {
+                        Log.w(TAG, "session sequence safety limit reached; ending session before uint32 wrap")
+                        // No sequence remains for a trustworthy DISCONNECT frame. Fail closed
+                        // and close the transport rather than wrapping the wire counter.
+                        endSession(SessionError.PROTOCOL_ERROR, notifyPeer = false)
+                    }
+                    break
                 } catch (e: Exception) {
                     buildNanos[index] = System.nanoTime() - buildStartedAt
                     Log.w(TAG, "outbound build failed: " + e.javaClass.simpleName)
@@ -866,7 +878,8 @@ class SessionManager(
         myKeyPair = SessionCrypto.generateEphemeralKeyPair()
         myPubBytes = SessionCrypto.encodePublicKey(myKeyPair!!.public)
         myNonce = SessionCrypto.newNonce16()
-        sendSeq = 0
+        sendSequence.reset()
+        sequenceExhaustionTriggered.set(false)
         lastPeerSeen = elapsedClock()
         // Queue our protocol preamble before another thread can process the
         // peer HELLO and enqueue KEY_EXCHANGE. The sender serializes this FIFO.
@@ -1569,13 +1582,11 @@ class SessionManager(
     // ------------------------------------------------------- frame builders
     //
     // Called ONLY from the single outbound sender coroutine, so sequence
-    // allocation is deterministic and race-free. Sequence numbers are uint32
-    // and wrap after 2^32 frames; the wrap is safe because every frame is
-    // AEAD-authenticated with a fresh random nonce (no nonce reuse) and the
-    // replay window treats the wrap as a far jump (documented in
-    // ReplayProtection).
-
-    private fun nextSeq(): Long = (sendSeq++).and(0xFFFFFFFFL)
+    // allocation is deterministic and race-free. Do not wrap uint32 sequence
+    // numbers within one session: replay-window serial arithmetic and a random
+    // AEAD nonce do not make a sequence rollover safe at the protocol layer.
+    // End the session at a guarded limit and establish a fresh key/session.
+    private fun nextSeq(): Long = sendSequence.next()
 
     private fun buildPlainFrame(type: Byte, payload: ByteArray): ByteArray {
         return Frame(
