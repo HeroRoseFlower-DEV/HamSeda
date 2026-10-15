@@ -12,10 +12,10 @@ import org.junit.Test
 import org.junit.runner.RunWith
 
 /**
- * On-device sanity checks. Compiled in CI via `:app:assembleAndroidTest`;
- * executed on hardware/emulator (see docs/TEST_PLAN.md). These verify that
- * the platform crypto provider and the vendored Opus codec behave on a
- * real Android runtime — the JVM unit tests cannot prove that.
+ * Android-runtime checks executed by `:app:connectedDebugAndroidTest` on the
+ * CI emulator and suitable physical devices. These verify that the platform
+ * crypto provider and packaged native Opus codec behave in an Android process;
+ * JVM unit tests cannot prove JNI loading or device-provider behavior.
  */
 @RunWith(AndroidJUnit4::class)
 class HamSedaInstrumentedTest {
