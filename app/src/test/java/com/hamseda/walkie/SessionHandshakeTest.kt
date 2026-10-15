@@ -1,5 +1,7 @@
 package com.hamseda.walkie
 
+import com.hamseda.walkie.crypto.MemoryPeerIdentityStore
+import com.hamseda.walkie.crypto.PeerIdentityStore
 import com.hamseda.walkie.proto.Frame
 import com.hamseda.walkie.proto.MessageType
 import com.hamseda.walkie.proto.Protocol
@@ -43,6 +45,8 @@ class SessionHandshakeTest {
         interceptA: ((ByteArray) -> ByteArray)? = null,
         interceptB: ((ByteArray) -> ByteArray)? = null,
         dispatcher: CoroutineDispatcher = Dispatchers.Unconfined,
+        storeA: PeerIdentityStore = MemoryPeerIdentityStore(),
+        storeB: PeerIdentityStore = MemoryPeerIdentityStore(),
     ): Rig {
         val (ta, tb) = LoopbackTransport.pair(interceptA, interceptB)
         val scopeA = CoroutineScope(SupervisorJob() + dispatcher)
@@ -50,7 +54,8 @@ class SessionHandshakeTest {
         val audioA = FakeAudioPipeline()
         val audioB = FakeAudioPipeline()
         return Rig(
-            SessionManager(scopeA, audioA), SessionManager(scopeB, audioB),
+            SessionManager(scopeA, audioA, peerIdentityStore = storeA),
+            SessionManager(scopeB, audioB, peerIdentityStore = storeB),
             audioA, audioB, ta, tb, scopeA, scopeB,
         )
     }
@@ -363,4 +368,72 @@ class SessionHandshakeTest {
         assertEquals(SessionManager.Phase.IN_SESSION, rig.b.phase.value)
         rig.close()
     }
+    @Test
+    fun tamperingWithSignedIdentityProofIsRejectedBeforeSas() {
+        val tamperSignature: (ByteArray) -> ByteArray = { bytes ->
+            val frame = Frame.decode(bytes)
+            if (frame.type == MessageType.KEY_EXCHANGE && frame.payload.isNotEmpty()) {
+                val payload = frame.payload.copyOf()
+                payload[payload.lastIndex] = (payload.last().toInt() xor 0x01).toByte()
+                frame.copy(payload = payload).encode()
+            } else bytes
+        }
+        val rig = newRig(interceptA = tamperSignature)
+        try {
+            rig.start()
+            rig.await("altered identity signature rejected") {
+                rig.b.phase.value == SessionManager.Phase.IDLE &&
+                    rig.b.error.value == SessionManager.SessionError.AUTH_MISMATCH
+            }
+            assertNull(rig.b.sasCode.value)
+            assertTrue(rig.a.phase.value != SessionManager.Phase.IN_SESSION)
+            assertTrue(rig.b.phase.value != SessionManager.Phase.IN_SESSION)
+        } finally {
+            rig.close()
+        }
+    }
+
+    @Test
+    fun tofuPinsAfterFirstSasConfirmationAndSkipsSasForKnownPeers() {
+        val storeA = MemoryPeerIdentityStore()
+        val storeB = MemoryPeerIdentityStore()
+        val first = newRig(storeA = storeA, storeB = storeB)
+        try {
+            first.start()
+            first.await("first-contact SAS") {
+                first.a.phase.value == SessionManager.Phase.AWAITING_SAS_CONFIRM &&
+                    first.b.phase.value == SessionManager.Phase.AWAITING_SAS_CONFIRM
+            }
+            assertNotNull(first.a.sasCode.value)
+            assertEquals(first.a.sasCode.value, first.b.sasCode.value)
+            assertNull(storeA.trustedPublicKey(storeB.localIdentityId()))
+            assertNull(storeB.trustedPublicKey(storeA.localIdentityId()))
+            first.a.confirmSas(true)
+            first.b.confirmSas(true)
+            first.await("first session established") {
+                first.a.phase.value == SessionManager.Phase.IN_SESSION &&
+                    first.b.phase.value == SessionManager.Phase.IN_SESSION
+            }
+            val keyB = storeB.localPublicKey()
+            val keyA = storeA.localPublicKey()
+            assertTrue(keyB.contentEquals(storeA.trustedPublicKey(storeB.localIdentityId())!!))
+            assertTrue(keyA.contentEquals(storeB.trustedPublicKey(storeA.localIdentityId())!!))
+        } finally {
+            first.close()
+        }
+
+        val second = newRig(storeA = storeA, storeB = storeB)
+        try {
+            second.start()
+            second.await("trusted identities auto-authenticate") {
+                second.a.phase.value == SessionManager.Phase.IN_SESSION &&
+                    second.b.phase.value == SessionManager.Phase.IN_SESSION
+            }
+            assertNull(second.a.sasCode.value)
+            assertNull(second.b.sasCode.value)
+        } finally {
+            second.close()
+        }
+    }
+
 }
