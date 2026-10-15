@@ -1195,7 +1195,24 @@ class WifiDirectTransport(private val context: Context) : Transport {
                     return@launch
                 }
                 when (r) {
-                    is FramedSocket.ReadResult.Frame -> _incomingFrames.emit(r.frame)
+                    is FramedSocket.ReadResult.Frame -> {
+                        // A read can complete just as Stop/reconnect invalidates
+                        // this generation. Never publish a frame from the old
+                        // socket into a newly authenticated session.
+                        if (!isCurrentIncomingFrame(
+                                expectedGeneration = expectedGeneration,
+                                currentGeneration = operationGeneration.get(),
+                                expectedSocket = f,
+                                currentSocket = framed,
+                                state = _state.value,
+                            )
+                        ) {
+                            r.frame.fill(0)
+                            AppLog.log(TAG, "discarding frame from stale Wi-Fi Direct socket generation")
+                            return@launch
+                        }
+                        _incomingFrames.emit(r.frame)
+                    }
                     is FramedSocket.ReadResult.Closed -> {
                         handleGroupLost(expectedGeneration = expectedGeneration)
                         return@launch
