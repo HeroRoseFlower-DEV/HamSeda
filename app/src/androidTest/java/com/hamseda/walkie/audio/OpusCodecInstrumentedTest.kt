@@ -70,12 +70,29 @@ class OpusCodecInstrumentedTest {
     fun silenceResetAndInputValidationRemainStable() {
         OpusCodec().use { codec ->
             val silence = ShortArray(AudioCodec.FRAME_SAMPLES)
-            val decodedSilence = codec.decode(codec.encode(silence))
+            val firstSilencePacket = codec.encode(silence)
+            val decodedSilence = codec.decode(firstSilencePacket)
             assertEquals(AudioCodec.FRAME_SAMPLES, decodedSilence.size)
             assertTrue(
                 "silence decoded with peak ${decodedSilence.maxOf { kotlin.math.abs(it.toInt()) }}",
                 decodedSilence.maxOf { kotlin.math.abs(it.toInt()) } < 200,
             )
+            firstSilencePacket.fill(0)
+
+            // DTX is stateful; let the encoder enter its silence profile before
+            // asserting that repeated silent PTT frames use compact payloads.
+            val dtxPackets = List(20) { codec.encode(silence) }
+            try {
+                assertTrue(
+                    "DTX should compact sustained silence packets: ${dtxPackets.map { it.size }}",
+                    dtxPackets.any { it.size <= 10 },
+                )
+                dtxPackets.forEach { packet ->
+                    assertEquals(AudioCodec.FRAME_SAMPLES, codec.decode(packet).size)
+                }
+            } finally {
+                dtxPackets.forEach { it.fill(0) }
+            }
 
             codec.reset()
             assertEquals(AudioCodec.FRAME_SAMPLES, codec.decode(codec.encode(sineFrame())).size)
