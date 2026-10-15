@@ -9,6 +9,7 @@ import java.security.KeyPair
 import java.security.KeyPairGenerator
 import java.security.PublicKey
 import java.security.SecureRandom
+import java.security.Signature
 import java.security.interfaces.ECPublicKey
 import java.security.spec.ECGenParameterSpec
 import java.security.spec.ECParameterSpec
@@ -44,22 +45,24 @@ import javax.crypto.spec.SecretKeySpec
  * session/sequence/type.
  *
  * Ephemeral session keys are wiped from memory when the session ends; nothing is
- * persisted (see [SessionKeys.wipe]). The v4 handshake commits to each share
+ * persisted (see [SessionKeys.wipe]). The v5 handshake commits to each share
  * before revealing it, preventing adaptive SAS grinding against the peer's share.
  */
 object SessionCrypto {
     private const val EC_CURVE = "secp256r1"
     private const val GCM_TAG_BITS = 128
     private const val NONCE_LEN = 12
-    private const val INFO = "HamSeda-v4/session-keys"
-    private const val SAS_INFO = "HamSeda-v4/sas"
-    private const val TRANSCRIPT_INFO = "HamSeda-v4/key-confirm"
-    private const val COMMIT_INFO = "HamSeda-v4/key-commitment"
+    private const val INFO = "HamSeda-v5/session-keys"
+    private const val SAS_INFO = "HamSeda-v5/sas"
+    private const val TRANSCRIPT_INFO = "HamSeda-v5/key-confirm"
+    private const val COMMIT_INFO = "HamSeda-v5/key-commitment"
 
     /** Maximum accepted encoded public-key size (P-256 X.509 ≈ 91 bytes). */
     const val MAX_PUBKEY_BYTES = 256
     const val COMMITMENT_BYTES = 32
     const val COMMITMENT_SALT_BYTES = 32
+    const val IDENTITY_ID_BYTES = 16
+    const val MAX_IDENTITY_SIGNATURE_BYTES = 256
 
     /**
      * Exact wire size of [seal]'s output for a given plaintext length:
@@ -212,29 +215,107 @@ object SessionCrypto {
     }
 
     /**
-     * Creates a hiding, binding commitment to the exact values revealed in
-     * KEY_EXCHANGE. The random 32-byte salt hides the key share until reveal.
+     * Legacy helper retained for focused crypto tests. Wire protocol v5 uses
+     * the identity-bound overload below.
      */
     fun keyCommitment(
         publicKey: ByteArray,
         nonce: ByteArray,
         hello: ByteArray,
         salt: ByteArray,
+    ): ByteArray = keyCommitment(publicKey, nonce, hello, salt, ByteArray(0), ByteArray(0))
+
+    /**
+     * Hiding, binding commitment to the ephemeral share and the stable identity
+     * presented with it. The random salt hides all committed fields until reveal.
+     */
+    fun keyCommitment(
+        publicKey: ByteArray,
+        nonce: ByteArray,
+        hello: ByteArray,
+        salt: ByteArray,
+        identityId: ByteArray,
+        identityPublicKey: ByteArray,
     ): ByteArray {
         require(publicKey.size in 1..MAX_PUBKEY_BYTES) { "public key size out of bounds" }
         require(nonce.size == 16) { "nonce must be 16 bytes" }
         require(hello.size == 2) { "HELLO payload must be exactly 2 bytes" }
         require(salt.size == COMMITMENT_SALT_BYTES) { "commitment salt must be 32 bytes" }
+        require(
+            (identityId.isEmpty() && identityPublicKey.isEmpty()) ||
+                (identityId.size == IDENTITY_ID_BYTES && identityPublicKey.size in 1..MAX_PUBKEY_BYTES),
+        ) { "identity ID/public key size mismatch" }
+
         val domain = COMMIT_INFO.toByteArray(Charsets.UTF_8)
-        val encoded = ByteBuffer.allocate(domain.size + 2 + publicKey.size + nonce.size + hello.size + salt.size)
-            .order(ByteOrder.BIG_ENDIAN)
-            .put(domain).putShort(publicKey.size.toShort()).put(publicKey).put(nonce).put(hello).put(salt).array()
+        val encodedIdentityKey = if (identityPublicKey.isEmpty()) ByteArray(0) else {
+            ByteBuffer.allocate(2 + identityPublicKey.size).order(ByteOrder.BIG_ENDIAN)
+                .putShort(identityPublicKey.size.toShort()).put(identityPublicKey).array()
+        }
+        val encoded = ByteBuffer.allocate(
+            domain.size + 2 + publicKey.size + nonce.size + hello.size +
+                identityId.size + encodedIdentityKey.size + salt.size,
+        ).order(ByteOrder.BIG_ENDIAN)
+            .put(domain)
+            .putShort(publicKey.size.toShort()).put(publicKey)
+            .put(nonce).put(hello)
+            .put(identityId).put(encodedIdentityKey).put(salt)
+            .array()
         return try {
             Hkdf.sha256(encoded)
         } finally {
             domain.fill(0)
+            encodedIdentityKey.fill(0)
             encoded.fill(0)
         }
+    }
+
+    /** Canonical domain-separated input signed by the persistent identity key. */
+    fun identityProofInput(
+        identityId: ByteArray,
+        identityPublicKey: ByteArray,
+        ephemeralPublicKey: ByteArray,
+        nonce: ByteArray,
+        hello: ByteArray,
+        salt: ByteArray,
+    ): ByteArray {
+        require(identityId.size == IDENTITY_ID_BYTES) { "identity ID must be 16 bytes" }
+        require(identityPublicKey.size in 1..MAX_PUBKEY_BYTES) { "identity public key size out of bounds" }
+        require(ephemeralPublicKey.size in 1..MAX_PUBKEY_BYTES) { "ephemeral public key size out of bounds" }
+        require(nonce.size == 16) { "nonce must be 16 bytes" }
+        require(hello.size == 2) { "HELLO payload must be exactly 2 bytes" }
+        require(salt.size == COMMITMENT_SALT_BYTES) { "commitment salt must be 32 bytes" }
+
+        val domain = "HamSeda-v5/identity-proof".toByteArray(Charsets.UTF_8)
+        val encoded = ByteBuffer.allocate(
+            domain.size + identityId.size + 2 + identityPublicKey.size +
+                2 + ephemeralPublicKey.size + nonce.size + hello.size + salt.size,
+        ).order(ByteOrder.BIG_ENDIAN)
+            .put(domain)
+            .put(identityId)
+            .putShort(identityPublicKey.size.toShort()).put(identityPublicKey)
+            .putShort(ephemeralPublicKey.size.toShort()).put(ephemeralPublicKey)
+            .put(nonce).put(hello).put(salt)
+            .array()
+        domain.fill(0)
+        return encoded
+    }
+
+    /** Verifies a proof and rejects EC public keys on any curve except P-256. */
+    fun verifyIdentitySignature(
+        identityPublicKey: ByteArray,
+        message: ByteArray,
+        signatureBytes: ByteArray,
+    ): Boolean = try {
+        if (signatureBytes.isEmpty() || signatureBytes.size > MAX_IDENTITY_SIGNATURE_BYTES) {
+            false
+        } else {
+            val verifier = Signature.getInstance("SHA256withECDSA")
+            verifier.initVerify(decodePublicKey(identityPublicKey))
+            verifier.update(message)
+            verifier.verify(signatureBytes)
+        }
+    } catch (_: Exception) {
+        false
     }
 
     fun newCommitmentSalt(): ByteArray = ByteArray(COMMITMENT_SALT_BYTES).also(random::nextBytes)
