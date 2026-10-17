@@ -14,7 +14,6 @@ import android.content.IntentFilter
 import android.os.Build
 import android.os.SystemClock
 import android.util.Log
-import com.hamseda.walkie.proto.FrameException
 import com.hamseda.walkie.proto.FramedSocket
 import com.hamseda.walkie.proto.Protocol
 import com.hamseda.walkie.util.AppLog
@@ -59,7 +58,8 @@ import java.util.concurrent.atomic.AtomicReference
  *
  * Bluetooth name/device-name is display-only, never identity.
  */
-class BluetoothTransport(private val context: Context) : Transport {
+class BluetoothTransport(private val context: Context) : AbstractFramedStreamTransport(), Transport {
+    override val tag: String = TAG
 
     override val type = TransportType.BLUETOOTH
 
@@ -78,7 +78,7 @@ class BluetoothTransport(private val context: Context) : Transport {
     private val _incomingFrames = MutableSharedFlow<ByteArray>()
     override val incomingFrames: SharedFlow<ByteArray> = _incomingFrames.asSharedFlow()
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    override val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val mutex = Mutex()
 
     // Serializes incoming-frame publication with socket replacement. A reader
@@ -97,7 +97,6 @@ class BluetoothTransport(private val context: Context) : Transport {
     private var framed: FramedSocket? = null
     private var btSocket: BluetoothSocket? = null
     private var serverSocket: BluetoothServerSocket? = null
-    private var readerJob: Job? = null
     private var acceptThread: Thread? = null
 
     // Outgoing RFCOMM connect() is a blocking platform call. Keep its job and
@@ -724,14 +723,20 @@ class BluetoothTransport(private val context: Context) : Transport {
                     val socket: BluetoothSocket = server.accept()
                     Log.i(TAG, "incoming RFCOMM connection accepted")
                     scope.launch {
+                        // Capture the generation before the mutex: stop() or
+                        // disconnect() may have bumped it while accept() was
+                        // blocked. Re-check under the mutex so a stale accept
+                        // can never resurrect a torn-down socket.
+                        val gen = connectionGeneration.get()
                         // Decide under the mutex, then release it BEFORE
                         // onSocketReady: it also locks the mutex and Mutex
                         // is not reentrant — holding it here deadlocks the
                         // listener forever (incoming connections could never
                         // complete).
                         val accept = mutex.withLock {
-                            if (framed != null) {
+                            if (connectionGeneration.get() != gen || framed != null) {
                                 try { socket.close() } catch (_: IOException) {}
+                                AppLog.log(TAG, "discarding stale incoming RFCOMM socket (generation changed)")
                                 false
                             } else {
                                 try {
@@ -787,47 +792,28 @@ class BluetoothTransport(private val context: Context) : Transport {
             synchronized(readerGate) { framed = newFramed }
             _state.value = TransportState.CONNECTED
             _error.value = null
-            startReaderLocked(newFramed)
+            startReader(newFramed)
         }
     }
 
-    private fun startReaderLocked(source: FramedSocket) {
-        readerJob?.cancel()
-        readerJob = scope.launch {
-            while (isCurrentSocketConnected(source)) {
-                // HS-04: malformed frames and I/O failures use the common
-                // cleanup path. Always carry the source socket identity so a
-                // cancelled old reader cannot tear down a newer connection.
-                val r = try {
-                    source.readFrame()
-                } catch (e: FrameException) {
-                    AppLog.log(TAG, "framing error: ${e.message}")
-                    handleLost("framing error: ${e.message}", source)
-                    return@launch
-                } catch (e: CancellationException) {
-                    throw e // normal shutdown; not an error
-                } catch (e: Exception) {
-                    AppLog.log(TAG, "reader failed: ${e.javaClass.simpleName}")
-                    handleLost("read error: ${e.message}", source)
-                    return@launch
-                }
-                when (r) {
-                    is FramedSocket.ReadResult.Frame -> {
-                        if (!publishIncomingFrame(source, r.frame)) {
-                            return@launch // socket was replaced or closed
-                        }
-                    }
-                    is FramedSocket.ReadResult.Closed -> {
-                        handleLost("peer closed the connection", source)
-                        return@launch
-                    }
-                    is FramedSocket.ReadResult.Error -> {
-                        handleLost(r.cause.message ?: "read error", source)
-                        return@launch
-                    }
-                }
-            }
+    // Reader-loop hooks (shared loop lives in AbstractFramedStreamTransport).
+
+    override fun isReaderActive(source: FramedSocket): Boolean =
+        isCurrentSocketConnected(source)
+
+    override suspend fun onFrame(source: FramedSocket, frame: ByteArray): Boolean {
+        if (!publishIncomingFrame(source, frame)) {
+            return false // socket was replaced or closed
         }
+        return true
+    }
+
+    override suspend fun onClosed(source: FramedSocket) {
+        handleLost("peer closed the connection", source)
+    }
+
+    override suspend fun onReadError(reason: String, source: FramedSocket) {
+        handleLost(reason, source)
     }
 
     /**
@@ -843,7 +829,10 @@ class BluetoothTransport(private val context: Context) : Transport {
         val current = synchronized(readerGate) {
             framed === source && _state.value == TransportState.CONNECTED
         }
-        if (!current) return false
+        if (!current) {
+            discardStaleFrame(frame)
+            return false
+        }
         _incomingFrames.emit(frame)
         return true
     }
@@ -886,7 +875,7 @@ class BluetoothTransport(private val context: Context) : Transport {
         val oldFramed = synchronized(readerGate) {
             framed.also { framed = null }
         }
-        readerJob?.cancel(); readerJob = null
+        cancelReader()
         oldFramed?.close()
         try { btSocket?.close() } catch (_: IOException) {}
         btSocket = null
@@ -1157,8 +1146,16 @@ class BluetoothTransport(private val context: Context) : Transport {
 
     companion object {
         private const val RFCOMM_WRITE_DIAGNOSTIC_INTERVAL = 50
-        /** Let bounded outbound audio freshness drops absorb brief RF/backpressure pauses. */
-        private const val RFCOMM_WRITE_STALL_TIMEOUT_MS = 2_000L
+        /**
+         * RFCOMM write-stall watchdog. Calibrated to 8s: Bluetooth Classic
+         * can legitimately stall for several seconds during interference,
+         * retransmission bursts, or headset profile switches; the session's
+         * bounded audio-freshness policy already drops stale voice frames
+         * while the writer is blocked, so only a sustained stall (link truly
+         * dead) should tear the socket down. Shorter values caused false
+         * disconnects on congested 2.4 GHz links during field testing.
+         */
+        private const val RFCOMM_WRITE_STALL_TIMEOUT_MS = 8_000L
         private const val TAG = "HamSedaBluetooth"
         private const val MAX_DISCOVERED_PEERS = 128
         private const val MAX_VISIBLE_PEERS = 192

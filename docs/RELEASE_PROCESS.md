@@ -36,7 +36,7 @@ Before creating a public tag:
 2. Ensure all required CI jobs are green on the exact commit to be tagged: unit tests, lint, debug/release compilation, native ABI and ELF page-alignment checks, and connected instrumentation tests.
 3. Complete the two-physical-phone acceptance tests in docs/TEST_PLAN.md, including Wi-Fi Direct, Bluetooth Classic, secure pairing/reconnect, microphone capture, playback, route changes, and background/foreground lifecycle. Record Android versions and device models.
 4. Validate the relevant platform-specific permission behavior on API 37 / Android 17 before claiming that gate is passed. The API 35 emulator suite does not prove API 37 runtime enforcement.
-5. Review CHANGELOG.md and prepare human-readable release notes. Document known limitations; do not claim measured latency, guaranteed range, or independent security certification without evidence.
+5. Review CHANGELOG.md and fill in docs/RELEASE_NOTES_TEMPLATE.md by hand (the release workflow publishes it via --notes-file). Document known limitations; do not claim measured latency, guaranteed range, or independent security certification without evidence.
 6. Increase versionCode and set versionName in app/build.gradle.kts; keep the version name consistent with the release tag. Commit this change before tagging.
 7. Confirm all four Actions secrets are configured. Create and push an annotated version tag pointing at the reviewed commit, for example v1.2 for versionName = "1.2".
 8. Wait for the Release workflow to finish. Confirm the APK and AAB signatures and SHA256SUMS are attached to the GitHub Release.

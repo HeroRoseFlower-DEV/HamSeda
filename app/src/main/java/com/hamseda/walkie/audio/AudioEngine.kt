@@ -20,6 +20,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.Process
+import android.os.SystemClock
 import android.util.Log
 import androidx.annotation.RequiresApi
 import com.hamseda.walkie.util.AppLog
@@ -64,11 +65,26 @@ class AudioEngine(private val context: Context) : AudioPipeline {
     @Volatile private var captureGeneration = 0L
     private var captureThread: Thread? = null
     private var recorder: AudioRecord? = null
+    /** Generation guard for the playback worker; bumped on every stop. */
+    @Volatile private var playbackGeneration = 0L
+    /**
+     * When stopPlayback gives up on a stuck worker (zombie), the timestamp is
+     * recorded here. A later startPlayback may proceed past the zombie once
+     * ZOMBIE_GRACE_MS has elapsed; the generation guard keeps the zombie from
+     * interfering when it finally wakes.
+     */
+    @Volatile private var playbackZombieSince = 0L
 
     private val playbackRunning = AtomicBoolean(false)
     /** Serializes AudioTrack creation/start/stop so teardown cannot race a late startup. */
     private val playbackLifecycleLock = Any()
     private var playbackThread: Thread? = null
+    /**
+     * Scratch for PLC synthesis in [conceal]. Only touched on the playback
+     * worker thread, so no synchronization is needed. Sized for the standard
+     * frame; [conceal] falls back to allocation if a frame ever differs.
+     */
+    private val plcScratch = ShortArray(AudioCodec.FRAME_SAMPLES)
     private var track: AudioTrack? = null
 
     // Playback worker owns these aggregates; they distinguish output write stalls
@@ -94,6 +110,12 @@ class AudioEngine(private val context: Context) : AudioPipeline {
     private var playbackQueueWindowMaxObservedFrames = 0L
 
     private var focusRequest: AudioFocusRequest? = null
+    /**
+     * Capture and playback each hold audio focus independently; the request
+     * is abandoned only when the last holder releases it.
+     */
+    private var focusHolders = 0
+    private val focusLock = Any()
     /** Audio routing is global to the device; restore the previous state when this app stops audio. */
     private var previousAudioMode: Int? = null
     private var previousSpeakerphoneOn: Boolean? = null
@@ -101,6 +123,13 @@ class AudioEngine(private val context: Context) : AudioPipeline {
     @Volatile
     var speakerphoneOn: Boolean = true
         private set
+    // Accepted limitation: speakerphone defaults ON with no acoustic echo
+    // cancellation. AEC is deliberately not applied — the raw-PCM contract
+    // forbids app-level DSP, and Android's VOICE_COMMUNICATION source (which
+    // would enable platform AEC) applies undisclosed OEM processing. In
+    // practice PTT is half-duplex (floor control), so mic and speaker are
+    // rarely open simultaneously; speaker echo during the brief overlap is
+    // a known, accepted trade-off.
 
     @Volatile
     var currentRoute: AudioRoute = AudioRoute.SPEAKER
@@ -284,11 +313,16 @@ class AudioEngine(private val context: Context) : AudioPipeline {
             .build()
         // AudioRecord.Builder has no setAudioAttributes; capture source is
         // selected explicitly below to avoid the voice-processed source path.
-        // Request 100 ms capacity up front. configurePlaybackBuffer() will use
-        // a 60 ms application queue only when LOW_LATENCY mode is actually active.
+        // Request ~200 ms HAL capacity up front: AudioRecord reports overruns
+        // only via getMetrics(), so headroom is the only defense against
+        // silent sample loss when the worker thread is briefly descheduled.
+        // Trade-off: a larger HAL buffer adds a few ms of capture latency;
+        // 200 ms is the sweet spot for a PTT app (configurePlaybackBuffer()
+        // will use a 60 ms application queue only when LOW_LATENCY mode is
+        // actually active).
         val requestedBufferBytes = maxOf(
             minBuf,
-            AudioCodec.FRAME_BYTES_PCM * MAX_TRACKED_PLAYBACK_QUEUE_FRAMES,
+            AudioCodec.FRAME_BYTES_PCM * CAPTURE_BUFFER_FRAMES,
         )
         val captureRecorder = buildCaptureRecorder(format, requestedBufferBytes)
         if (captureRecorder == null) {
@@ -310,10 +344,11 @@ class AudioEngine(private val context: Context) : AudioPipeline {
         )
         val worker = Thread({
             try {
-                Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
-            } catch (e: Exception) {
-                Log.w(TAG, "could not set capture audio priority: ${e.javaClass.simpleName}")
-            }
+                try {
+                    Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
+                } catch (e: Exception) {
+                    Log.w(TAG, "could not set capture audio priority: ${e.javaClass.simpleName}")
+                }
             val frame = ShortArray(AudioCodec.FRAME_SAMPLES)
             // The stop path can win immediately after Thread.start(). Check the
             // generation and start the recorder under the same lifecycle lock.
@@ -380,6 +415,7 @@ class AudioEngine(private val context: Context) : AudioPipeline {
             // and invalid-operation are fatal (stop, don't spin); transient
             // errors back off with a bounded retry count.
             var consecutiveErrors = 0
+            var consecutiveZeroReads = 0
             var encodeWindowFrames = 0
             var encodeWindowTotalNanos = 0L
             var encodeWindowMaxNanos = 0L
@@ -428,8 +464,11 @@ class AudioEngine(private val context: Context) : AudioPipeline {
                         break
                     }
                     if (read == 0) {
-                        consecutiveErrors++
-                        if (consecutiveErrors > MAX_CONSECUTIVE_READ_ERRORS) {
+                        // Zero reads are "no progress yet", not hardware errors:
+                        // track them separately so a slow-starting HAL cannot
+                        // burn the fatal-error budget.
+                        consecutiveZeroReads++
+                        if (consecutiveZeroReads > MAX_CONSECUTIVE_ZERO_READS) {
                             reportCaptureFailure(generation, "microphone read made no progress")
                             break
                         }
@@ -442,6 +481,7 @@ class AudioEngine(private val context: Context) : AudioPipeline {
                         continue
                     }
                     consecutiveErrors = 0
+                    consecutiveZeroReads = 0
                     frameSamplesRead += read
                 }
                 if (frameSamplesRead != frame.size) continue
@@ -479,6 +519,20 @@ class AudioEngine(private val context: Context) : AudioPipeline {
                 }
             }
             frame.fill(0)
+            } finally {
+                // Safety net: if the worker died (exception) without going
+                // through stopCapture, clear the running flag so a stale
+                // "capturing" state can never block a later startCapture.
+                // stopCapture's own join(500) + clear still runs normally.
+                synchronized(captureLifecycleLock) {
+                    if (captureGeneration == generation) {
+                        if (captureRunning.getAndSet(false)) {
+                            Log.w(TAG, "capture worker died unexpectedly; cleared stale running flag")
+                            pipelineListener?.onCaptureError("capture worker died")
+                        }
+                    }
+                }
+            }
         }, "HamSeda-Capture")
         // Publish the worker before it starts; an immediate audio error must
         // recognize that it is running on the current capture thread.
@@ -612,8 +666,15 @@ class AudioEngine(private val context: Context) : AudioPipeline {
         // normal session teardown. Never overlap workers or reuse a live track.
         val previousWorker = playbackThread
         if (previousWorker?.isAlive == true) {
-            AppLog.log(TAG, "playback start rejected: previous worker is still terminating")
-            return false
+            // Watchdog: a zombie the stop path already gave up on must not
+            // block playback forever. After the grace period, proceed; the
+            // generation guard below keeps the zombie from interfering.
+            val zombieAge = SystemClock.elapsedRealtime() - playbackZombieSince
+            if (playbackZombieSince == 0L || zombieAge < ZOMBIE_GRACE_MS) {
+                AppLog.log(TAG, "playback start rejected: previous worker is still terminating")
+                return false
+            }
+            AppLog.log(TAG, "playback start proceeding past zombie worker (age=${zombieAge}ms)")
         }
         playbackThread = null
         track?.let { previousTrack ->
@@ -622,12 +683,21 @@ class AudioEngine(private val context: Context) : AudioPipeline {
         }
         track = null
 
+        // Playback holds audio focus too: a session can receive voice without
+        // ever starting capture. Refcounted with capture's holder.
+        if (!requestFocus()) {
+            Log.w(TAG, "could not gain audio focus for playback")
+        }
+
         val minBuf = AudioTrack.getMinBufferSize(
             AudioCodec.SAMPLE_RATE,
             AudioFormat.CHANNEL_OUT_MONO,
             AudioFormat.ENCODING_PCM_16BIT,
         )
-        if (minBuf <= 0) return false
+        if (minBuf <= 0) {
+            abandonFocus()
+            return false
+        }
         val format = AudioFormat.Builder()
             .setSampleRate(AudioCodec.SAMPLE_RATE)
             .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
@@ -733,6 +803,7 @@ class AudioEngine(private val context: Context) : AudioPipeline {
                 "initialUnderruns=$initialUnderruns, frameMs=20",
         )
         playbackThread = Thread({
+            val generation = playbackGeneration
             try {
                 Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
             } catch (e: Exception) {
@@ -750,7 +821,7 @@ class AudioEngine(private val context: Context) : AudioPipeline {
             var fecFallbackFrames = 0L
             var lastHealthLogNanos = System.nanoTime()
             try {
-                playback@ while (playbackRunning.get()) {
+                playback@ while (playbackRunning.get() && playbackGeneration == generation) {
                     val healthNowNanos = System.nanoTime()
                     if (healthNowNanos - lastHealthLogNanos >= PLAYBACK_DIAGNOSTIC_INTERVAL_MS * 1_000_000L) {
                         val underruns = try { at.underrunCount } catch (_: Exception) { -1 }
@@ -1064,9 +1135,17 @@ class AudioEngine(private val context: Context) : AudioPipeline {
         plcCount: Int,
         queueLimitFrames: Int,
     ): Int? {
-        val generated = last != null && plcCount < MAX_PLC_FRAMES
-        val pcm = if (generated) {
-            ShortArray(last!!.size) { i -> (last[i] * PLC_DECAY).toInt().toShort() }
+        val lastFrame = last
+        val generated = lastFrame != null && plcCount < MAX_PLC_FRAMES
+        // Reuse the scratch buffer instead of allocating per lost packet;
+        // writePcm consumes it synchronously and the finally-block wipes it.
+        val pcm = if (generated && lastFrame != null && lastFrame.size == plcScratch.size) {
+            for (i in lastFrame.indices) {
+                plcScratch[i] = (lastFrame[i] * PLC_DECAY).toInt().toShort()
+            }
+            plcScratch
+        } else if (generated && lastFrame != null) {
+            ShortArray(lastFrame.size) { i -> (lastFrame[i] * PLC_DECAY).toInt().toShort() }
         } else {
             silence
         }
@@ -1114,12 +1193,17 @@ class AudioEngine(private val context: Context) : AudioPipeline {
 
             // Keep the reference if a vendor call still has the worker alive; a
             // subsequent start must not overlap it or race its final buffer reset.
+            // Bump the generation so the zombie exits if its native call ever returns.
+            playbackGeneration++
             if (worker == null || !worker.isAlive) {
                 playbackThread = null
+                playbackZombieSince = 0L
             } else {
                 AppLog.log(TAG, "playback worker remains alive after forced AudioTrack release")
+                playbackZombieSince = SystemClock.elapsedRealtime()
             }
             restoreAudioModeIfIdle()
+            abandonFocus()
             if (interrupted) Thread.currentThread().interrupt()
         }
     }
@@ -1165,6 +1249,8 @@ class AudioEngine(private val context: Context) : AudioPipeline {
                 audioManager.isSpeakerphoneOn =
                     speakerphoneOn && currentRoute != AudioRoute.WIRED_HEADSET
             }
+            // Bring up/tear down the SCO link to match the selected route.
+            updateBluetoothSco(currentRoute == AudioRoute.BLUETOOTH_SCO)
         } catch (e: SecurityException) {
             Log.w(TAG, "audio mode change rejected: ${e.javaClass.simpleName}")
         } catch (e: IllegalStateException) {
@@ -1215,12 +1301,64 @@ class AudioEngine(private val context: Context) : AudioPipeline {
         )
     }
 
+    /**
+     * BLUETOOTH_CONNECT is a runtime permission on API 31+. Without it,
+     * setCommunicationDevice(BLUETOOTH_SCO) throws SecurityException (caught
+     * by callers) and startBluetoothSco() is a no-op. Check first so the
+     * BT route degrades gracefully instead of throwing.
+     */
+    private fun hasBluetoothConnectPermission(): Boolean {
+        if (Build.VERSION.SDK_INT < 31) return true
+        return ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.BLUETOOTH_CONNECT,
+        ) == PackageManager.PERMISSION_GRANTED
+    }
+
+    /**
+     * Establish or tear down the Bluetooth SCO audio link. Must be called
+     * when the BT SCO route is selected/deselected: setCommunicationDevice
+     * alone does not bring up the SCO connection on all devices.
+     */
+    private fun updateBluetoothSco(useSco: Boolean) {
+        if (!hasBluetoothConnectPermission()) {
+            if (useSco) Log.w(TAG, "BT SCO route requested without BLUETOOTH_CONNECT; skipping")
+            return
+        }
+        try {
+            if (useSco) {
+                if (!audioManager.isBluetoothScoOn) {
+                    @Suppress("DEPRECATION")
+                    audioManager.startBluetoothSco()
+                }
+            } else {
+                if (audioManager.isBluetoothScoOn) {
+                    @Suppress("DEPRECATION")
+                    audioManager.stopBluetoothSco()
+                }
+            }
+        } catch (e: SecurityException) {
+            Log.w(TAG, "BT SCO change rejected: ${e.javaClass.simpleName}")
+        }
+    }
+
     private fun restoreAudioModeIfIdle() {
         if (captureRunning.get() || playbackRunning.get()) return
         val mode = previousAudioMode
         val speaker = previousSpeakerphoneOn
         val previousDevice = previousCommunicationDevice
         if (mode == null && speaker == null && previousDevice == null) return
+        // Re-read the live state before restoring: if another app (e.g. an
+        // incoming call) changed the audio mode while we were active, our
+        // snapshot is stale — do not clobber their state, just drop ours.
+        val currentMode: Int? = try { audioManager.mode } catch (_: Exception) { null }
+        if (currentMode != null && currentMode != AudioManager.MODE_IN_COMMUNICATION) {
+            Log.w(TAG, "audio mode changed externally during session; skipping restore (current=$currentMode)")
+            previousAudioMode = null
+            previousSpeakerphoneOn = null
+            previousCommunicationDevice = null
+            return
+        }
         try {
             if (Build.VERSION.SDK_INT >= 31) {
                 val available = try {
@@ -1241,6 +1379,8 @@ class AudioEngine(private val context: Context) : AudioPipeline {
                 audioManager.isSpeakerphoneOn = speaker
             }
             if (mode != null) audioManager.mode = mode
+            // Session over: tear down the SCO link we may have brought up.
+            updateBluetoothSco(false)
         } catch (e: SecurityException) {
             Log.w(TAG, "audio mode restore rejected: ${e.javaClass.simpleName}")
         } catch (e: IllegalStateException) {
@@ -1276,22 +1416,40 @@ class AudioEngine(private val context: Context) : AudioPipeline {
     }
 
     private fun requestFocus(): Boolean {
-        val req = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
-            .setAudioAttributes(
-                AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                    .build(),
-            )
-            .setOnAudioFocusChangeListener(focusChangeListener)
-            .build()
-        focusRequest = req
-        return audioManager.requestAudioFocus(req) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+        synchronized(focusLock) {
+            if (focusHolders > 0) {
+                focusHolders++
+                return true
+            }
+            val req = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
+                .setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                        .build(),
+                )
+                .setOnAudioFocusChangeListener(focusChangeListener)
+                .build()
+            val granted = audioManager.requestAudioFocus(req) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+            if (granted) {
+                focusRequest = req
+                focusHolders = 1
+            } else {
+                Log.w(TAG, "audio focus request denied")
+            }
+            return granted
+        }
     }
 
     private fun abandonFocus() {
-        focusRequest?.let { audioManager.abandonAudioFocusRequest(it) }
-        focusRequest = null
+        synchronized(focusLock) {
+            if (focusHolders == 0) return
+            focusHolders--
+            if (focusHolders == 0) {
+                focusRequest?.let { audioManager.abandonAudioFocusRequest(it) }
+                focusRequest = null
+            }
+        }
     }
 
     fun release() {
@@ -1315,16 +1473,26 @@ class AudioEngine(private val context: Context) : AudioPipeline {
         private const val ENCODE_DIAGNOSTIC_INTERVAL = 50
         private const val PLAYBACK_DIAGNOSTIC_INTERVAL_MS = 5_000L
         private const val PLAYBACK_WRITE_DIAGNOSTIC_INTERVAL = 50
+        /**
+         * Grace period before a new playback may start past a zombie worker
+         * thread that stopPlayback already gave up on. Bounded so a stuck
+         * native AudioTrack call can never block voice forever.
+         */
+        private const val ZOMBIE_GRACE_MS = 10_000L
         /** Three frames only when LOW_LATENCY is actually granted by Android. */
         private const val LOW_LATENCY_PLAYBACK_QUEUE_FRAMES = 3
         /** 100 ms PCM headroom when Android declines AudioTrack LOW_LATENCY mode. */
         private const val MAX_TRACKED_PLAYBACK_QUEUE_FRAMES = 5
+        /** ~200 ms of HAL capture headroom (see startCapture). */
+        private const val CAPTURE_BUFFER_FRAMES = 10
         /** A stuck output head is a playback failure, not an infinite wait. */
         private const val MAX_PLAYBACK_QUEUE_WAIT_MS = 500L
         /** Bound time spent retrying a full/no-progress non-blocking AudioTrack write. */
         private const val MAX_AUDIO_TRACK_WRITE_WAIT_MS = 250L
         /** HS-09: bounded retries for transient AudioRecord.read errors. */
         private const val MAX_CONSECUTIVE_READ_ERRORS = 10
+        /** Separate, more generous budget for zero-progress reads (not hardware errors). */
+        private const val MAX_CONSECUTIVE_ZERO_READS = 50
         private const val READ_ERROR_BACKOFF_MS = 20L
     }
 }

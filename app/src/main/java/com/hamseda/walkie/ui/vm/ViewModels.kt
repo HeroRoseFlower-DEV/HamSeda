@@ -5,6 +5,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.hamseda.walkie.data.SettingsRepository
+import com.hamseda.walkie.crypto.AndroidPeerIdentityStore
+import com.hamseda.walkie.crypto.TrustedPeerIdentity
 import com.hamseda.walkie.proto.CodecId
 import com.hamseda.walkie.service.VoiceService
 import com.hamseda.walkie.session.SessionManager
@@ -20,6 +22,7 @@ import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
@@ -44,6 +47,9 @@ class HomeViewModel(private val deps: VmDeps) : ViewModel() {
     val floorHolder = deps.manager.floorHolder
     val voiceLevel = deps.manager.voiceLevel
     val error = deps.manager.error
+    /** Exposed so the screen does not reach past the VM into SettingsRepository. */
+    val vibrationEnabled: StateFlow<Boolean> = deps.settings.vibrationFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
 
     fun setPtt(pressed: Boolean) = deps.manager.setPttPressed(pressed)
     fun endSession() {
@@ -198,6 +204,8 @@ class PairingViewModel(private val deps: VmDeps) : ViewModel() {
     val sasCode = deps.manager.sasCode
     val peerConfirmed = deps.manager.peerSasConfirmed
     val phase = deps.manager.phase
+    val peerIdentityFingerprint = deps.manager.peerIdentityFingerprint
+    val peerIdentityTrusted = deps.manager.peerIdentityTrusted
 
     fun confirm(match: Boolean) = deps.manager.confirmSas(match)
     fun cancel() {
@@ -221,6 +229,32 @@ class SettingsViewModel(private val deps: VmDeps) : ViewModel() {
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), "")
 
     val phase = deps.manager.phase
+
+    /** Active radio type; exposed so the screen does not reach into TransportManager directly. */
+    val activeTransportType: StateFlow<TransportType> = deps.transports.activeType
+
+    private val identityStore = AndroidPeerIdentityStore(deps.appContext)
+    private val _trustedPeers = MutableStateFlow<List<TrustedPeerIdentity>>(emptyList())
+    /** Trusted peer identities, loaded off the main thread (SharedPreferences I/O). */
+    val trustedPeers: StateFlow<List<TrustedPeerIdentity>> = _trustedPeers.asStateFlow()
+
+    init {
+        refreshTrustedPeers()
+    }
+
+    fun refreshTrustedPeers() {
+        viewModelScope.launch(Dispatchers.IO) {
+            _trustedPeers.value = identityStore.listTrustedPeers()
+        }
+    }
+
+    fun forgetPeer(identityIdHex: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            if (identityStore.forgetPeer(identityIdHex)) {
+                _trustedPeers.value = identityStore.listTrustedPeers()
+            }
+        }
+    }
 
     fun setTransportPreference(p: TransportPreference) {
         viewModelScope.launch {

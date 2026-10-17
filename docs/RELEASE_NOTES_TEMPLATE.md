@@ -1,4 +1,7 @@
 # HamSeda release notes — template
+<!-- Fill this in manually BEFORE pushing the release tag (it is committed,
+     then the release workflow publishes it via --notes-file). The
+     auto-generated changelog is appended by the workflow. -->
 
 ## Highlights
 - 

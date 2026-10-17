@@ -17,7 +17,6 @@ import android.net.wifi.p2p.WifiP2pManager
 import android.os.Build
 import android.os.Looper
 import android.util.Log
-import com.hamseda.walkie.proto.FrameException
 import com.hamseda.walkie.proto.FramedSocket
 import com.hamseda.walkie.proto.Protocol
 import com.hamseda.walkie.util.AppLog
@@ -51,22 +50,6 @@ import java.net.SocketTimeoutException
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * Primary transport: Wi-Fi Direct (Wi-Fi P2P).
- *
- * Flow: [startDiscovery] → peer list via framework discovery → [connect]
- * with WPS-PBC → framework negotiates group owner → the group owner opens
- * a [ServerSocket] on [Protocol.WIFI_DIRECT_PORT], the client opens a TCP
- * socket to the negotiated group-owner address (never hard-coded) →
- * [FramedSocket] carries the session frames.
- *
- * Incoming connections are handled symmetrically: when the framework
- * reports a formed group and this device is the owner, the transport
- * accepts the peer's socket without any prior outgoing [connect] call.
- *
- * No internet, no access point, no router: the group is negotiated directly
- * between the two phones over the Wi-Fi radio.
- */
-/**
  * Android reports BUSY when a previous P2P radio transition has not completed.
  * Retry only that transient condition; all other failures remain fail-fast.
  */
@@ -83,7 +66,24 @@ internal object P2pListenRetryPolicy {
     }
 }
 
-class WifiDirectTransport(private val context: Context) : Transport {
+/**
+ * Primary transport: Wi-Fi Direct (Wi-Fi P2P).
+ *
+ * Flow: [startDiscovery] → peer list via framework discovery → [connect]
+ * with WPS-PBC → framework negotiates group owner → the group owner opens
+ * a [ServerSocket] on [Protocol.WIFI_DIRECT_PORT], the client opens a TCP
+ * socket to the negotiated group-owner address (never hard-coded) →
+ * [FramedSocket] carries the session frames.
+ *
+ * Incoming connections are handled symmetrically: when the framework
+ * reports a formed group and this device is the owner, the transport
+ * accepts the peer's socket without any prior outgoing [connect] call.
+ *
+ * No internet, no access point, no router: the group is negotiated directly
+ * between the two phones over the Wi-Fi radio.
+ */
+class WifiDirectTransport(private val context: Context) : AbstractFramedStreamTransport(), Transport {
+    override val tag: String = TAG
 
     override val type = TransportType.WIFI_DIRECT
 
@@ -104,7 +104,7 @@ class WifiDirectTransport(private val context: Context) : Transport {
     private val _incomingFrames = MutableSharedFlow<ByteArray>()
     override val incomingFrames: SharedFlow<ByteArray> = _incomingFrames.asSharedFlow()
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    override val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val mutex = Mutex()
 
     private var manager: WifiP2pManager? = null
@@ -118,7 +118,40 @@ class WifiDirectTransport(private val context: Context) : Transport {
     @Volatile private var serverSocket: ServerSocket? = null
     /** Socket currently inside the blocking client connect loop; closed by Stop/disconnect. */
     @Volatile private var inFlightClientSocket: Socket? = null
-    private var readerJob: Job? = null
+    /**
+     * Keeps the Wi-Fi radio at full performance during an active P2P session.
+     * Without it, Doze can throttle the radio mid-call and stall voice.
+     * Acquired on socket ready, released on disconnect.
+     */
+    private var wifiLock: WifiManager.WifiLock? = null
+
+    private fun acquireWifiLock() {
+        if (wifiLock?.isHeld == true) return
+        try {
+            val wm = context.applicationContext.getSystemService(WifiManager::class.java)
+            val lock = wm?.createWifiLock(
+                WifiManager.WIFI_MODE_FULL_HIGH_PERF,
+                "HamSeda:P2pSession",
+            )
+            lock?.let {
+                it.acquire()
+                wifiLock = it
+                AppLog.log(TAG, "Wi-Fi lock acquired for P2P session")
+            }
+        } catch (e: Exception) {
+            AppLog.log(TAG, "Wi-Fi lock acquire failed: ${e.javaClass.simpleName}")
+        }
+    }
+
+    private fun releaseWifiLock() {
+        try {
+            wifiLock?.let { if (it.isHeld) it.release() }
+        } catch (e: Exception) {
+            AppLog.log(TAG, "Wi-Fi lock release failed: ${e.javaClass.simpleName}")
+        } finally {
+            wifiLock = null
+        }
+    }
     private var socketJob: Job? = null
     private var connectWatchdog: Job? = null
     // Invalidates framework callbacks/socket jobs that complete after Stop/disconnect.
@@ -571,6 +604,13 @@ class WifiDirectTransport(private val context: Context) : Transport {
             _state.value = TransportState.FAILED
             return
         }
+        // Idempotent: a second listen() while already listening must not
+        // bump the generation or restart the radio (would drop an inbound
+        // connection racing the redundant call).
+        if (listeningRequested) {
+            AppLog.log(TAG, "listen() ignored: already listening")
+            return
+        }
         val attempt = operationGeneration.incrementAndGet()
         listeningRequested = true
         registerReceiver()
@@ -607,6 +647,43 @@ class WifiDirectTransport(private val context: Context) : Transport {
      * LISTEN state making later scans/connects look like a fresh operation.
      */
     @SuppressLint("MissingPermission")
+    /**
+     * Remove the P2P group with a bounded await and one retry. The
+     * fire-and-forget removeGroup(channel, null) left stale groups behind
+     * when the framework was busy; a lingering group blocks the next
+     * connect with "group already exists" failures.
+     */
+    private suspend fun removeGroupAndAwait(): String? {
+        val mgr = manager ?: return "manager unavailable"
+        val ch = channel ?: return "channel unavailable"
+        repeat(2) { attempt ->
+            val done = CompletableDeferred<String?>()
+            val listener = object : WifiP2pManager.ActionListener {
+                override fun onSuccess() {
+                    done.complete(null)
+                }
+
+                override fun onFailure(reason: Int) {
+                    done.complete("${reasonName(reason)} (code=$reason)")
+                }
+            }
+            val failure = try {
+                mgr.removeGroup(ch, listener)
+                withTimeout(3_000L) { done.await() }
+            } catch (e: TimeoutCancellationException) {
+                "removeGroup timed out"
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                "${e.javaClass.simpleName}: ${e.message}"
+            }
+            if (failure == null) return null
+            AppLog.log(TAG, "removeGroup attempt ${attempt + 1} failed: $failure")
+            if (attempt == 0) delay(500L) // brief backoff before retry
+        }
+        return "removeGroup failed after 2 attempts"
+    }
+
     private suspend fun stopP2pRadioModeAndAwait(): String? {
         val stopListen = Build.VERSION.SDK_INT >= 33 && p2pListenModeActive
         if (!stopListen && !p2pDiscoveryActive) return null
@@ -1166,66 +1243,58 @@ class WifiDirectTransport(private val context: Context) : Transport {
             }
             _state.value = TransportState.CONNECTED
             _error.value = null
+            acquireWifiLock()
             startReaderLocked(expectedGeneration)
         }
     }
 
+    // Reader-loop hooks (shared loop lives in AbstractFramedStreamTransport).
+    // The generation is captured when the reader starts; the loop carries it
+    // so a stale reader can never publish into a newer session.
+
+    private var readerGeneration: Long = -1L
+
     private fun startReaderLocked(expectedGeneration: Long) {
-        readerJob?.cancel()
         val f = framed ?: return
-        readerJob = scope.launch {
-            while (operationGeneration.get() == expectedGeneration &&
-                (_state.value == TransportState.CONNECTED ||
-                    _state.value == TransportState.AUTHENTICATING)
-            ) {
-                // HS-04: readFrame() throws FrameException on protocol
-                // violation — route it through the common disconnect path
-                // instead of stranding the transport in CONNECTED.
-                val r = try {
-                    f.readFrame()
-                } catch (e: FrameException) {
-                    AppLog.log(TAG, "framing error: ${e.message}")
-                    handleGroupLost("framing error: ${e.message}", expectedGeneration)
-                    return@launch
-                } catch (e: CancellationException) {
-                    throw e // normal shutdown; not an error
-                } catch (e: Exception) {
-                    AppLog.log(TAG, "reader failed: ${e.javaClass.simpleName}")
-                    handleGroupLost("read error: ${e.message}", expectedGeneration)
-                    return@launch
-                }
-                when (r) {
-                    is FramedSocket.ReadResult.Frame -> {
-                        // A read can complete just as Stop/reconnect invalidates
-                        // this generation. Never publish a frame from the old
-                        // socket into a newly authenticated session.
-                        if (!isCurrentIncomingFrame(
-                                expectedGeneration = expectedGeneration,
-                                currentGeneration = operationGeneration.get(),
-                                expectedSocket = f,
-                                currentSocket = framed,
-                                state = _state.value,
-                            )
-                        ) {
-                            r.frame.fill(0)
-                            AppLog.log(TAG, "discarding frame from stale Wi-Fi Direct socket generation")
-                            return@launch
-                        }
-                        _incomingFrames.emit(r.frame)
-                    }
-                    is FramedSocket.ReadResult.Closed -> {
-                        handleGroupLost(expectedGeneration = expectedGeneration)
-                        return@launch
-                    }
-                    is FramedSocket.ReadResult.Error -> {
-                        if (r.cause is SocketTimeoutException) continue // idle read timeout
-                        handleGroupLost(r.cause.message ?: "read error", expectedGeneration)
-                        return@launch
-                    }
-                }
-            }
-        }
+        readerGeneration = expectedGeneration
+        startReader(f)
     }
+
+    override fun isReaderActive(source: FramedSocket): Boolean =
+        operationGeneration.get() == readerGeneration &&
+            (_state.value == TransportState.CONNECTED ||
+                _state.value == TransportState.AUTHENTICATING)
+
+    override suspend fun onFrame(source: FramedSocket, frame: ByteArray): Boolean {
+        // A read can complete just as Stop/reconnect invalidates this
+        // generation. Never publish a frame from the old socket into a newly
+        // authenticated session.
+        if (!isCurrentIncomingFrame(
+                expectedGeneration = readerGeneration,
+                currentGeneration = operationGeneration.get(),
+                expectedSocket = source,
+                currentSocket = framed,
+                state = _state.value,
+            )
+        ) {
+            discardStaleFrame(frame)
+            AppLog.log(TAG, "discarding frame from stale Wi-Fi Direct socket generation")
+            return false
+        }
+        _incomingFrames.emit(frame)
+        return true
+    }
+
+    override suspend fun onClosed(source: FramedSocket) {
+        handleGroupLost(expectedGeneration = readerGeneration)
+    }
+
+    override suspend fun onReadError(reason: String, source: FramedSocket) {
+        handleGroupLost(reason, readerGeneration)
+    }
+
+    override fun isIgnorableReadError(cause: java.io.IOException): Boolean =
+        cause is SocketTimeoutException // idle read timeout
 
     private suspend fun handleGroupLost(
         reason: String = "connection lost",
@@ -1253,12 +1322,13 @@ class WifiDirectTransport(private val context: Context) : Transport {
             operationGeneration.incrementAndGet()
             listeningRequested = false
             closeSocketLocked()
+            releaseWifiLock()
             _state.value = TransportState.IDLE
         }
     }
 
     private fun closeSocketLocked() {
-        readerJob?.cancel(); readerJob = null
+        cancelReader()
         socketJob?.cancel(); socketJob = null
         connectWatchdog?.cancel(); connectWatchdog = null
         framed?.close(); framed = null
@@ -1288,6 +1358,10 @@ class WifiDirectTransport(private val context: Context) : Transport {
     override suspend fun disconnect() {
         // Invalidate first, before waiting for the mutex held by connect/socket
         // setup. Those callbacks must not publish CONNECTED after user Stop.
+        // Note: the mutex below can be held for up to ~3s (P2P radio teardown
+        // runs inside it). This is acceptable: disconnect() is suspending and
+        // never called from the UI thread, and holding the mutex guarantees no
+        // connect/listen callback interleaves with the teardown.
         operationGeneration.incrementAndGet()
         discoveryGeneration.incrementAndGet()
         listeningRequested = false
@@ -1300,9 +1374,11 @@ class WifiDirectTransport(private val context: Context) : Transport {
                 AppLog.log(TAG, "P2P mode cleanup during disconnect returned: $stopFailure")
             }
             closeSocketLocked()
-            try {
-                manager?.removeGroup(channel, null)
-            } catch (_: Exception) {}
+            releaseWifiLock()
+            val removeFailure = removeGroupAndAwait()
+            if (removeFailure != null) {
+                AppLog.log(TAG, "P2P group removal during disconnect: $removeFailure")
+            }
             try {
                 manager?.cancelConnect(channel, null)
             } catch (_: Exception) {}
@@ -1342,8 +1418,17 @@ class WifiDirectTransport(private val context: Context) : Transport {
                                 mgr.requestP2pState(ch) { state ->
                                     val enabled = state == WifiP2pManager.WIFI_P2P_STATE_ENABLED
                                     p2pEnabled = enabled
-                                    if (!enabled && _state.value != TransportState.IDLE) {
-                                        scope.launch { handleGroupLost("wi-fi direct disabled") }
+                                    val previousState = _state.value
+                                    if (!enabled && previousState != TransportState.IDLE) {
+                                        scope.launch {
+                                            handleGroupLost("wi-fi direct disabled")
+                                            // Discovery dying to a radio-off must be
+                                            // visible: otherwise the UI silently
+                                            // returns to IDLE with no explanation.
+                                            if (previousState == TransportState.DISCOVERING) {
+                                                _error.value = TransportError.RadioDisabled(TransportType.WIFI_DIRECT)
+                                            }
+                                        }
                                     }
                                 }
                             } catch (e: SecurityException) {
@@ -1356,8 +1441,14 @@ class WifiDirectTransport(private val context: Context) : Transport {
                         p2pEnabled = intent.getIntExtra(
                             WifiP2pManager.EXTRA_WIFI_STATE, -1,
                         ) == WifiP2pManager.WIFI_P2P_STATE_ENABLED
-                        if (!p2pEnabled && _state.value != TransportState.IDLE) {
-                            scope.launch { handleGroupLost("wi-fi direct disabled") }
+                        val previousState = _state.value
+                        if (!p2pEnabled && previousState != TransportState.IDLE) {
+                            scope.launch {
+                                handleGroupLost("wi-fi direct disabled")
+                                if (previousState == TransportState.DISCOVERING) {
+                                    _error.value = TransportError.RadioDisabled(TransportType.WIFI_DIRECT)
+                                }
+                            }
                         }
                     }
                 }

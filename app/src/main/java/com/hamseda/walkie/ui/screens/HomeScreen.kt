@@ -79,8 +79,7 @@ fun HomeScreen(
     val error by vm.error.collectAsStateWithLifecycle()
 
     val context = LocalContext.current
-    val vibrationEnabled by deps.settings.vibrationFlow
-        .collectAsStateWithLifecycle(initialValue = true)
+    val vibrationEnabled by vm.vibrationEnabled.collectAsStateWithLifecycle()
     val vibrator = rememberVibrator()
     val micLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),

@@ -14,6 +14,7 @@ import java.security.interfaces.ECPublicKey
 import java.security.spec.ECGenParameterSpec
 import java.security.spec.ECParameterSpec
 import java.security.spec.X509EncodedKeySpec
+import javax.security.auth.Destroyable
 import javax.crypto.Cipher
 import javax.crypto.KeyAgreement
 import javax.crypto.spec.GCMParameterSpec
@@ -40,9 +41,10 @@ import javax.crypto.spec.SecretKeySpec
  *    *detection*, not key material: a mismatch aborts the session.
  *
  * Frame encryption: AES-256-GCM with a fresh 96-bit random nonce per frame
- * (never reused under one key — new random nonce every seal). The 29-byte
- * frame header is passed as associated data, binding ciphertext to its
- * session/sequence/type.
+ * (a new random nonce every seal; uniqueness is probabilistic per the 96-bit
+ * birthday bound, and sequence numbers are additionally never reused within a
+ * session). The 29-byte frame header is passed as associated data, binding
+ * ciphertext to its session/sequence/type.
  *
  * Ephemeral session keys are wiped from memory when the session ends (see
  * [SessionKeys.wipe]). A separate long-term signing key is retained by Android
@@ -119,6 +121,25 @@ object SessionCrypto {
         ka.init(own.private)
         ka.doPhase(peerPublic, true)
         return ka.generateSecret()
+    }
+
+    /**
+     * Best-effort destruction of an ephemeral private key after use.
+     *
+     * Documented limitation: most JCA providers do NOT implement
+     * [Destroyable] for EC keys, and even when they do, provider-internal
+     * copies (e.g. inside the KeyAgreement) cannot be reached. Dropping the
+     * reference remains the primary mitigation; this only helps when the
+     * provider cooperates. See SECURITY.md "What is NOT protected".
+     */
+    fun destroyPrivateKey(key: java.security.PrivateKey) {
+        (key as? Destroyable)?.let {
+            try {
+                it.destroy()
+            } catch (_: Exception) {
+                // Best-effort only; the reference is dropped regardless.
+            }
+        }
     }
 
     // ------------------------------------------------------------- derivation

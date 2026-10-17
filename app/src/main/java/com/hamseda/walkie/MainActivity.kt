@@ -20,6 +20,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -141,7 +142,9 @@ private enum class Screen { HOME, DISCOVERY, PAIRING, SETTINGS, PRIVACY, DIAGNOS
 
 @Composable
 private fun HamSedaRoot(deps: VmDeps, onLanguageChanged: () -> Unit) {
-    var screen by remember { mutableStateOf(Screen.HOME) }
+    // Saveable: rotating the phone on the Settings screen must not kick the
+    // user back to Home.
+    var screen by rememberSaveable { mutableStateOf(Screen.HOME) }
     val phase by deps.manager.phase.collectAsStateWithLifecycle()
     val sasCode by deps.manager.sasCode.collectAsStateWithLifecycle()
     val peerIdentityTrusted by deps.manager.peerIdentityTrusted.collectAsStateWithLifecycle()

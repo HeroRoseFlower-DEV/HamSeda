@@ -18,10 +18,15 @@ enum class TransportState {
     DISCOVERING,
     /** Outgoing connection attempt in progress. */
     CONNECTING,
-    /** Socket established; session handshake running above. */
+    /**
+     * Optional transport-internal intermediate state: the link (e.g. the Wi-Fi
+     * Direct group) exists but the framed socket is not ready yet. Transports
+     * with atomic setup (Bluetooth RFCOMM) skip it and go CONNECTING directly
+     * to CONNECTED. Consumers must treat AUTHENTICATING as "connection in
+     * progress", never as a usable socket.
+     */
     AUTHENTICATING,
     CONNECTED,
-    RECONNECTING,
     FAILED,
 }
 
@@ -110,8 +115,9 @@ interface Transport {
 
     /**
      * Connects to [peer] and establishes the framed socket. On success the
-     * state becomes CONNECTED (or AUTHENTICATING while the session layer
-     * runs its handshake). Never blocks the caller indefinitely — bounded
+     * state becomes CONNECTED (transports may report the transport-internal
+     * AUTHENTICATING state while the session layer runs its handshake).
+     * Never blocks the caller indefinitely — bounded
      * by [com.hamseda.walkie.proto.Protocol.CONNECT_TIMEOUT_MS].
      */
     suspend fun connect(peer: PeerDevice)
@@ -156,6 +162,15 @@ internal fun isCurrentIncomingFrame(
     expectedGeneration == currentGeneration &&
         expectedSocket === currentSocket &&
         (state == TransportState.CONNECTED || state == TransportState.AUTHENTICATING)
+
+/**
+ * Wipe a frame buffer that is being discarded (stale generation, replaced
+ * socket). Discarded frames may hold ciphertext; never let them linger.
+ * Callers log the discard reason themselves.
+ */
+internal fun discardStaleFrame(frame: ByteArray) {
+    frame.fill(0)
+}
 
 /** User's transport preference (persisted in settings). */
 enum class TransportPreference {

@@ -97,9 +97,9 @@ android {
     }
     testOptions {
         unitTests.isIncludeAndroidResources = true
-        // android.util.Log (used in session/transport code paths under test)
-        // is a stub on the JVM; return defaults instead of throwing.
-        unitTests.isReturnDefaultValues = true
+        // android.util.Log is shadowed by app/src/test/java/android/util/Log.kt
+        // (explicit no-op). Do NOT re-enable isReturnDefaultValues: it would
+        // silently stub every android.* call and hide real failures.
     }
 }
 
