@@ -111,6 +111,12 @@ jobs:
             ls -la "$ANDROID_AVD_HOME" || true
             exit 1
           fi
+          # x86_64 emulation requires hardware acceleration (KVM). The runner
+          # user is not always in the kvm group on a fresh image; grant device
+          # access explicitly so the emulator does not exit immediately.
+          if [ -e /dev/kvm ]; then
+            sudo chmod 666 /dev/kvm 2>/dev/null || sudo gpasswd -a "$USER" kvm 2>/dev/null || true
+          fi
           "$ANDROID_HOME/emulator/emulator" \
             -avd hamseda-api35 -no-window -no-audio -no-boot-anim \
             -gpu swiftshader_indirect -accel on -wipe-data \
