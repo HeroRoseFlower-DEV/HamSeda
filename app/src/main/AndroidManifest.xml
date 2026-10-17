@@ -73,6 +73,7 @@
     <!-- Foreground voice service (mic type on API 29+) -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
 
     <!-- Ongoing session notification on Android 13+ -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
