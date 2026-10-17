@@ -160,9 +160,27 @@ class AudioEngine(private val context: Context) : AudioPipeline {
     // scoped to the guarded platform-builder calls rather than suppressing permission
     // diagnostics across the whole AudioEngine.
     @SuppressLint("MissingPermission")
-    private fun buildCaptureRecorder(format: AudioFormat, bufferBytes: Int): CaptureRecorder? {
+    private fun buildCaptureRecorder(
+        format: AudioFormat,
+        bufferBytes: Int,
+        allowUnprocessed: Boolean = true,
+    ): CaptureRecorder? {
+        // Android documents UNPROCESSED as a reliable request only when the device
+        // advertises support. Requesting it unconditionally can silently behave like
+        // DEFAULT/MIC on unsupported devices, so do not label that path "raw".
+        val unprocessedAdvertised = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            try {
+                audioManager.getProperty(AudioManager.PROPERTY_SUPPORT_AUDIO_SOURCE_UNPROCESSED)
+                    ?.equals("true", ignoreCase = true) == true
+            } catch (e: Exception) {
+                Log.w(TAG, "could not query UNPROCESSED source support: ${e.javaClass.simpleName}")
+                false
+            }
+        } else {
+            false
+        }
         val sources = buildList {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            if (allowUnprocessed && unprocessedAdvertised) {
                 add(MediaRecorder.AudioSource.UNPROCESSED to "UNPROCESSED")
             }
             add(MediaRecorder.AudioSource.MIC to "MIC_FALLBACK")
@@ -185,7 +203,11 @@ class AudioEngine(private val context: Context) : AudioPipeline {
                 false
             }
             if (initialized) {
-                AppLog.log(TAG, "raw capture source selected: $sourceName")
+                AppLog.log(
+                    TAG,
+                    "capture source selected: source=$sourceName, " +
+                        "unprocessedAdvertised=$unprocessedAdvertised",
+                )
                 return CaptureRecorder(candidate, sourceName)
             }
             try { candidate.release() } catch (_: Exception) {}
@@ -273,6 +295,10 @@ class AudioEngine(private val context: Context) : AudioPipeline {
             val frame = ShortArray(AudioCodec.FRAME_SAMPLES)
             // The stop path can win immediately after Thread.start(). Check the
             // generation and start the recorder under the same lifecycle lock.
+            // If a recorder initializes but refuses to start, retry MIC when the
+            // preferred UNPROCESSED source was selected. Keep the fallback inside
+            // the lifecycle lock so stop/release cannot race recorder replacement.
+            var activeRecorder = rec
             val startedRecording = synchronized(captureLifecycleLock) {
                 if (!captureRunning.get() || captureGeneration != generation || recorder !== rec) {
                     false
@@ -280,9 +306,39 @@ class AudioEngine(private val context: Context) : AudioPipeline {
                     try {
                         rec.startRecording()
                         true
-                    } catch (e: IllegalStateException) {
-                        Log.w(TAG, "microphone start failed: ${e.javaClass.simpleName}")
-                        false
+                    } catch (e: Exception) {
+                        Log.w(TAG, "microphone start failed for ${captureRecorder.sourceName}: ${e.javaClass.simpleName}")
+                        if (captureRecorder.sourceName != "UNPROCESSED") {
+                            false
+                        } else {
+                            val fallback = buildCaptureRecorder(
+                                format,
+                                requestedBufferBytes,
+                                allowUnprocessed = false,
+                            )
+                            if (fallback == null) {
+                                false
+                            } else {
+                                try {
+                                    fallback.recorder.startRecording()
+                                    recorder = fallback.recorder
+                                    activeRecorder = fallback.recorder
+                                    try { rec.release() } catch (_: Exception) {}
+                                    AppLog.log(
+                                        TAG,
+                                        "capture source switched to MIC_FALLBACK after UNPROCESSED start failure",
+                                    )
+                                    true
+                                } catch (fallbackError: Exception) {
+                                    try { fallback.recorder.release() } catch (_: Exception) {}
+                                    Log.w(
+                                        TAG,
+                                        "MIC_FALLBACK start failed: ${fallbackError.javaClass.simpleName}",
+                                    )
+                                    false
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -306,39 +362,69 @@ class AudioEngine(private val context: Context) : AudioPipeline {
             var encodeWindowTotalNanos = 0L
             var encodeWindowMaxNanos = 0L
             while (captureRunning.get() && captureGeneration == generation) {
-                val read = rec.read(frame, 0, frame.size)
-                if (read < 0) {
-                    consecutiveErrors++
-                    when (read) {
-                        AudioRecord.ERROR_DEAD_OBJECT -> {
-                            Log.w(TAG, "AudioRecord dead object; stopping capture")
-                            reportCaptureFailure(generation, "microphone disconnected")
-                            break
-                        }
-                        AudioRecord.ERROR_INVALID_OPERATION,
-                        AudioRecord.ERROR_BAD_VALUE -> {
-                            reportCaptureFailure(generation, "microphone read error ($read)")
-                            break
-                        }
-                        else -> {
-                            Log.w(TAG, "AudioRecord.read error: $read")
-                            if (consecutiveErrors > MAX_CONSECUTIVE_READ_ERRORS) {
+                // Fill the whole 20 ms frame. A short positive read is valid;
+                // discarding it would drop captured samples and create an audible gap.
+                var frameSamplesRead = 0
+                while (frameSamplesRead < frame.size &&
+                    captureRunning.get() && captureGeneration == generation
+                ) {
+                    val read = activeRecorder.read(
+                        frame,
+                        frameSamplesRead,
+                        frame.size - frameSamplesRead,
+                        AudioRecord.READ_BLOCKING,
+                    )
+                    if (read < 0) {
+                        consecutiveErrors++
+                        when (read) {
+                            AudioRecord.ERROR_DEAD_OBJECT -> {
+                                Log.w(TAG, "AudioRecord dead object; stopping capture")
+                                reportCaptureFailure(generation, "microphone disconnected")
+                                break
+                            }
+                            AudioRecord.ERROR_INVALID_OPERATION,
+                            AudioRecord.ERROR_BAD_VALUE -> {
                                 reportCaptureFailure(generation, "microphone read error ($read)")
                                 break
                             }
-                            try {
-                                Thread.sleep(READ_ERROR_BACKOFF_MS)
-                            } catch (_: InterruptedException) {
-                                break
+                            else -> {
+                                Log.w(TAG, "AudioRecord.read error: $read")
+                                if (consecutiveErrors > MAX_CONSECUTIVE_READ_ERRORS) {
+                                    reportCaptureFailure(generation, "microphone read error ($read)")
+                                    break
+                                }
+                                try {
+                                    Thread.sleep(READ_ERROR_BACKOFF_MS)
+                                } catch (_: InterruptedException) {
+                                    Thread.currentThread().interrupt()
+                                    break
+                                }
+                                continue
                             }
-                            continue
                         }
+                        // Fatal errors end capture via reportCaptureFailure().
+                        break
                     }
+                    if (read == 0) {
+                        consecutiveErrors++
+                        if (consecutiveErrors > MAX_CONSECUTIVE_READ_ERRORS) {
+                            reportCaptureFailure(generation, "microphone read made no progress")
+                            break
+                        }
+                        try {
+                            Thread.sleep(READ_ERROR_BACKOFF_MS)
+                        } catch (_: InterruptedException) {
+                            Thread.currentThread().interrupt()
+                            break
+                        }
+                        continue
+                    }
+                    consecutiveErrors = 0
+                    frameSamplesRead += read
                 }
-                consecutiveErrors = 0
-                if (read != frame.size) continue // wait for a full 20 ms frame
+                if (frameSamplesRead != frame.size) continue
 
-                // Do not modify PCM samples between AudioRecord.read() and the codec.
+                // Diagnostics inspect samples but never alter them before encoding.
                 var peak = 0
                 for (sample in frame) peak = maxOf(peak, abs(sample.toInt()))
                 val level = min(1f, peak / 32768f)

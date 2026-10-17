@@ -1,5 +1,13 @@
 # HamSeda Changelog
 
+## 2026-10-15 — Raw microphone capture path
+
+- Keep application-level PCM processing disabled between `AudioRecord.read()` and codec input; the capture loop computes a peak level only for UI telemetry and does not rewrite samples.
+- Request Android `UNPROCESSED` input only when the device advertises support; otherwise explicitly use `MIC_FALLBACK` and avoid claiming that the source name proves a processing-free hardware path.
+- Assemble a complete 20 ms frame across partial positive `AudioRecord.read()` results instead of dropping already-captured samples.
+- Retry `MIC_FALLBACK` if an initialized `UNPROCESSED` recorder fails at `startRecording()`. Opus remains lossy compression; device/OEM audio behavior still requires physical validation.
+
+
 ## 2026-10-15 — Bluetooth peer freshness and platform regression coverage
 
 - Track discovery sightings with monotonic elapsed-realtime timestamps. Remove
