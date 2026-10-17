@@ -4,6 +4,7 @@ import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.rule.GrantPermissionRule
+import com.hamseda.walkie.audio.AudioCodec
 import com.hamseda.walkie.audio.OpusCodec
 import com.hamseda.walkie.crypto.SessionCrypto
 import org.junit.Assert.assertEquals
@@ -84,9 +85,9 @@ class HamSedaInstrumentedTest {
     @Test
     fun opusCodec_roundtripOnDevice() {
         val codec = OpusCodec()
-        val pcm = ShortArray(320) { (it % 50).toShort() }
+        val pcm = ShortArray(AudioCodec.FRAME_SAMPLES) { (it % 50).toShort() }
         val decoded = codec.decode(codec.encode(pcm))
-        assertEquals(320, decoded.size)
+        assertEquals(AudioCodec.FRAME_SAMPLES, decoded.size)
         codec.close()
     }
 }
