@@ -240,14 +240,28 @@ runs cannot validate Wi-Fi Direct/Bluetooth audio — they only compile.
 - Wi-Fi Direct group-owner negotiation across vendors.
 
 
-### Microphone level and distant speech (physical-device check)
+### Raw microphone capture and distant speech (physical-device check)
 
-Use the same two phones, transport, room and receiver volume for each run. Hold
-PTT and speak the same phrase first at roughly 15–20 cm and then at 60–100 cm
-from the transmitting phone; repeat on both devices and both transports. Compare
-intelligibility, background-noise pumping, clipping, and the sender's
-`capture encode timing` fields: `avgInputRms`, `avgGain`, `maxGain`, and
-`nearSilenceFrames`. Also verify quiet-room silence does not become a loud hiss.
-This is a comparative manual check, not a calibrated microphone-sensitivity
-measurement. A gain increase cannot recover speech whose signal is below the
-microphone/noise-suppression floor.
+The application must not add software gain, normalization, filtering, noise
+suppression, echo cancellation, or other PCM transforms. On the same two phones,
+transport, room, and receiver volume, speak the same phrase at roughly 15–20 cm
+and then 60–100 cm from the transmitting phone; repeat on both devices and both
+transports. Compare intelligibility, clipping, dropouts, and room silence without
+changing software gain or enabling an app-level audio effect. Record the selected
+capture source (`UNPROCESSED` or `MIC_FALLBACK`), device model/API, transport,
+and observations. Source selection alone does not prove that the OEM microphone
+path or audio HAL applies no processing; Opus is also lossy compression. This is
+a qualitative device check, not a calibrated microphone-sensitivity measurement.
+
+
+## Phase 3 — Transport receive freshness and stale-session isolation
+
+The Wi-Fi Direct reader must validate the operation generation, current socket identity, and active transport state **after** a frame read completes and immediately before publishing the frame to the session flow. A generation check only at the top of the read loop is insufficient because the blocking read can complete concurrently with Stop/reconnect. Frames failing the guard are discarded and their byte arrays are zeroed before the obsolete reader exits.
+
+Automated JVM coverage: `IncomingFrameGuardTest` verifies current connected/authenticating frames are accepted and that stale generations, replaced sockets, and inactive states are rejected. This predicate test does not simulate Android's real socket scheduling race.
+
+Physical-device acceptance (NOT RUN until evidence is recorded):
+- [ ] At least 20 rapid Wi-Fi Direct stop/reconnect cycles while the peer sends continuously.
+- [ ] Stop during handshake/authentication and immediately reconnect; no prior-session frame is processed by the new session.
+- [ ] Repeat after abrupt peer shutdown; verify the next session starts cleanly.
+- [ ] Confirm Bluetooth Classic behavior and existing session-handshake regression tests remain unchanged.

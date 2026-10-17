@@ -141,6 +141,22 @@ interface Transport {
     fun close()
 }
 
+/**
+ * Guards a just-read socket frame against publication after the transport has
+ * moved to a newer connection attempt. The socket identity check matters even
+ * when a vendor callback or cancelled reader completes late.
+ */
+internal fun isCurrentIncomingFrame(
+    expectedGeneration: Long,
+    currentGeneration: Long,
+    expectedSocket: Any,
+    currentSocket: Any?,
+    state: TransportState,
+): Boolean =
+    expectedGeneration == currentGeneration &&
+        expectedSocket === currentSocket &&
+        (state == TransportState.CONNECTED || state == TransportState.AUTHENTICATING)
+
 /** User's transport preference (persisted in settings). */
 enum class TransportPreference {
     WIFI_DIRECT,

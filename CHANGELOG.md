@@ -1,3 +1,10 @@
+## 2026-10-15 — Transport stale-frame isolation
+
+- Re-check the Wi-Fi Direct operation generation, current socket identity, and transport state after a frame read completes and before publishing it. This closes a race where a blocking read could finish on an obsolete connection attempt.
+- Discard and zero frames that fail the stale-session guard.
+- Add deterministic JVM tests for current-session acceptance and stale generation/socket/state rejection.
+- Physical-device stop/reconnect race testing remains required; no microphone DSP or wire-protocol changes were made.
+
 # HamSeda Changelog
 
 ## 2026-10-15 — AudioTrack playback lifecycle hardening
