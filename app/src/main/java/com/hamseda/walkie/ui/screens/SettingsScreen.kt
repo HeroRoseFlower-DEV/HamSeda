@@ -17,7 +17,7 @@ import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -32,10 +32,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -47,7 +44,6 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.hamseda.walkie.BuildConfig
 import com.hamseda.walkie.R
-import com.hamseda.walkie.crypto.AndroidPeerIdentityStore
 import com.hamseda.walkie.data.SettingsRepository
 import com.hamseda.walkie.proto.CodecId
 import com.hamseda.walkie.session.SessionManager
@@ -68,7 +64,7 @@ fun SettingsScreen(
     vm: SettingsViewModel = viewModel(factory = VmFactory(deps)),
 ) {
     val transportPref by vm.transportPreference.collectAsStateWithLifecycle()
-    val activeTransportType by deps.transports.activeType.collectAsStateWithLifecycle()
+    val activeTransportType by vm.activeTransportType.collectAsStateWithLifecycle()
     val bluetoothVoiceOnly = activeTransportType == TransportType.BLUETOOTH
     val phase by vm.phase.collectAsStateWithLifecycle()
     val transportSelectionEnabled = phase == SessionManager.Phase.IDLE
@@ -77,9 +73,7 @@ fun SettingsScreen(
     val vibration by vm.vibration.collectAsStateWithLifecycle()
     val theme by vm.theme.collectAsStateWithLifecycle()
     val language by vm.language.collectAsStateWithLifecycle()
-    val identityStore = remember(deps.appContext) { AndroidPeerIdentityStore(deps.appContext) }
-    var trustedPeers by remember(identityStore) { mutableStateOf(identityStore.listTrustedPeers()) }
-    LaunchedEffect(identityStore) { trustedPeers = identityStore.listTrustedPeers() }
+    val trustedPeers by vm.trustedPeers.collectAsStateWithLifecycle()
 
     Scaffold(
         modifier = modifier,
@@ -88,7 +82,7 @@ fun SettingsScreen(
                 title = { Text(stringResource(R.string.settings_title), fontWeight = FontWeight.Bold) },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
-                        Icon(Icons.Filled.ArrowBack, contentDescription = stringResource(R.string.back))
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.back))
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
@@ -268,9 +262,7 @@ fun SettingsScreen(
                         OutlinedButton(
                             enabled = phase == SessionManager.Phase.IDLE,
                             onClick = {
-                                if (identityStore.forgetPeer(peer.identityIdHex)) {
-                                    trustedPeers = identityStore.listTrustedPeers()
-                                }
+                                vm.forgetPeer(peer.identityIdHex)
                             },
                         ) {
                             Text(stringResource(R.string.settings_trusted_forget))

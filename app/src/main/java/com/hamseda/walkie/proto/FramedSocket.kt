@@ -32,6 +32,16 @@ class FramedSocket(
     private val closed = AtomicBoolean(false)
     private val writeLock = Any()
 
+    /**
+     * Monotonic timestamp (System.nanoTime()) of the last successful socket
+     * read; 0 if nothing has been read yet. Transports use it for dead-peer
+     * idle detection: a peer that stops sending without closing the socket
+     * would otherwise look alive forever.
+     */
+    @Volatile
+    var lastReadAtNanos: Long = 0L
+        private set
+
     sealed interface ReadResult {
         data class Frame(val frame: ByteArray) : ReadResult
         /** Peer performed an orderly shutdown (read() returned -1). */
@@ -133,6 +143,7 @@ class FramedSocket(
                 throw EOFException("truncated frame: got $off of $n bytes before EOF")
             }
             off += r
+            lastReadAtNanos = System.nanoTime()
         }
         return buf
     }

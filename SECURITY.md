@@ -94,6 +94,7 @@ separator is intentionally changed.
 | `SessionCrypto.INFO` | `HamSeda-v5/session-keys` |
 | `SessionCrypto.SAS_INFO` | `HamSeda-v5/sas` |
 | `SessionCrypto.COMMIT_INFO` | `HamSeda-v5/key-commitment` |
+| `SessionCrypto.TRANSCRIPT_INFO` | `HamSeda-v5/key-confirm` |
 | `SessionCrypto.IDENTITY_PROOF_INFO` | `HamSeda-v5/identity-proof` |
 
 ## What is NOT protected / limitations
@@ -112,6 +113,11 @@ separator is intentionally changed.
   independent of (and does not rely on) Bluetooth system pairing.
 - **Physical proximity attacks:** an attacker within radio range can jam or
   DoS the link; availability is not guaranteed.
+- **Ephemeral private-key erasure:** after ECDH the app calls
+  `Destroyable.destroy()` on the ephemeral private key, but most JCA
+  providers do not implement it for EC keys, and provider-internal copies
+  cannot be reached. Dropping the reference is the primary mitigation;
+  memory forensics against a live process is not defended.
 - **No forward secrecy across reinstalls** is a non-issue: keys are ephemeral
   per session and wiped afterwards (`SessionKeys.wipe()` zeroes all material).
 

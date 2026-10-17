@@ -27,6 +27,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -56,10 +57,10 @@ fun StartupPermissionGate(content: @Composable () -> Unit) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     var refreshKey by remember { mutableIntStateOf(0) }
-    var shouldAutoRequest by remember { mutableStateOf(true) }
+    var shouldAutoRequest by rememberSaveable { mutableStateOf(true) }
     var requestInFlight by remember { mutableStateOf(false) }
-    var deniedByUser by remember { mutableStateOf(false) }
-    var requestedPermissions by remember { mutableStateOf(emptyList<String>()) }
+    var deniedByUser by rememberSaveable { mutableStateOf(false) }
+    var requestedPermissions by rememberSaveable { mutableStateOf(emptyList<String>()) }
 
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->

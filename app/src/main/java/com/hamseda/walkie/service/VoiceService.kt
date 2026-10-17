@@ -105,7 +105,11 @@ class VoiceService : Service() {
             }
             ACTION_START -> ensureForeground(sessionManager.phase.value)
         }
-        return START_STICKY
+        // NOT_STICKY: if the system kills the service, do not auto-resurrect
+        // it with a null intent. The UI restarts the service explicitly when
+        // the user wants voice; a phantom restart could hold the mic and the
+        // foreground notification without user intent.
+        return START_NOT_STICKY
     }
 
     override fun onBind(intent: Intent?): IBinder = binder
@@ -114,10 +118,10 @@ class VoiceService : Service() {
         setSessionCpuAwake(false)
         try {
             sessionManager.close()
-        } catch (_: Exception) {}
+        } catch (e: Exception) { Log.w(TAG, "onDestroy: session close failed: ${e.javaClass.simpleName}") }
         try {
             audioEngine.release()
-        } catch (_: Exception) {}
+        } catch (e: Exception) { Log.w(TAG, "onDestroy: audio release failed: ${e.javaClass.simpleName}") }
         serviceScope.cancel()
         super.onDestroy()
     }

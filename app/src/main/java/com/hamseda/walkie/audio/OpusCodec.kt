@@ -60,6 +60,9 @@ class OpusCodec(
             val n = native.encode(enc, pcm, frameSamples, encodeBuf)
             try {
                 require(n in 1..encodeBuf.size) { "opus encode failed (native result=$n)" }
+                // Allocation is intentional: ownership of the returned array
+                // transfers to the caller (capture worker -> outbound queue),
+                // so the scratch buffer cannot be reused here.
                 return encodeBuf.copyOf(n)
             } finally {
                 // The scratch array otherwise retains the last compressed voice frame.

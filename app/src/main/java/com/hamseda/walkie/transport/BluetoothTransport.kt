@@ -724,14 +724,20 @@ class BluetoothTransport(private val context: Context) : Transport {
                     val socket: BluetoothSocket = server.accept()
                     Log.i(TAG, "incoming RFCOMM connection accepted")
                     scope.launch {
+                        // Capture the generation before the mutex: stop() or
+                        // disconnect() may have bumped it while accept() was
+                        // blocked. Re-check under the mutex so a stale accept
+                        // can never resurrect a torn-down socket.
+                        val gen = connectionGeneration.get()
                         // Decide under the mutex, then release it BEFORE
                         // onSocketReady: it also locks the mutex and Mutex
                         // is not reentrant — holding it here deadlocks the
                         // listener forever (incoming connections could never
                         // complete).
                         val accept = mutex.withLock {
-                            if (framed != null) {
+                            if (connectionGeneration.get() != gen || framed != null) {
                                 try { socket.close() } catch (_: IOException) {}
+                                AppLog.log(TAG, "discarding stale incoming RFCOMM socket (generation changed)")
                                 false
                             } else {
                                 try {
@@ -843,7 +849,10 @@ class BluetoothTransport(private val context: Context) : Transport {
         val current = synchronized(readerGate) {
             framed === source && _state.value == TransportState.CONNECTED
         }
-        if (!current) return false
+        if (!current) {
+            discardStaleFrame(frame)
+            return false
+        }
         _incomingFrames.emit(frame)
         return true
     }
@@ -1157,8 +1166,16 @@ class BluetoothTransport(private val context: Context) : Transport {
 
     companion object {
         private const val RFCOMM_WRITE_DIAGNOSTIC_INTERVAL = 50
-        /** Let bounded outbound audio freshness drops absorb brief RF/backpressure pauses. */
-        private const val RFCOMM_WRITE_STALL_TIMEOUT_MS = 2_000L
+        /**
+         * RFCOMM write-stall watchdog. Calibrated to 8s: Bluetooth Classic
+         * can legitimately stall for several seconds during interference,
+         * retransmission bursts, or headset profile switches; the session's
+         * bounded audio-freshness policy already drops stale voice frames
+         * while the writer is blocked, so only a sustained stall (link truly
+         * dead) should tear the socket down. Shorter values caused false
+         * disconnects on congested 2.4 GHz links during field testing.
+         */
+        private const val RFCOMM_WRITE_STALL_TIMEOUT_MS = 8_000L
         private const val TAG = "HamSedaBluetooth"
         private const val MAX_DISCOVERED_PEERS = 128
         private const val MAX_VISIBLE_PEERS = 192

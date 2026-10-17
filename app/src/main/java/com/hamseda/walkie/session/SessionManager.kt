@@ -40,6 +40,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.IOException
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -88,6 +89,12 @@ class SessionManager(
 
     // ------------------------------------------------------- observable state
 
+    // Lock ordering (global, must be respected everywhere to avoid deadlock):
+    //   1. teardownMutex  (outermost; suspending Mutex, serializes teardown)
+    //   2. lifecycleLock  (phase transitions; may be taken while holding 1)
+    //   3. handshakeFrameLock, sessionEntryLock (leaf locks; never hold while acquiring 1-2)
+    // The only legal nesting is teardownMutex -> lifecycleLock (see teardown()).
+    // In particular, never acquire teardownMutex while holding lifecycleLock.
     private val lifecycleLock = Any()
     /** Prevents simultaneous local/peer SAS callbacks from starting playback twice. */
     private val sessionEntryLock = Any()
@@ -117,6 +124,15 @@ class SessionManager(
     private val _peerIdentityTrusted = MutableStateFlow(false)
     /** True only when this session's peer identity matches a persisted pin. */
     val peerIdentityTrusted: StateFlow<Boolean> = _peerIdentityTrusted.asStateFlow()
+
+    private val _peerIdentityFingerprint = MutableStateFlow<String?>(null)
+    /**
+     * Hex fingerprint of the peer's long-term identity key, for manual
+     * verification on the pairing screen. Distinct from the per-session SAS:
+     * the SAS authenticates this session, the fingerprint pins the peer
+     * across sessions.
+     */
+    val peerIdentityFingerprint: StateFlow<String?> = _peerIdentityFingerprint.asStateFlow()
 
     private val _isTransmitting = MutableStateFlow(false)
     val isTransmitting: StateFlow<Boolean> = _isTransmitting.asStateFlow()
@@ -160,17 +176,23 @@ class SessionManager(
     private var peerIdentityPublicKey: ByteArray? = null
     private var peerIdentityWasTrusted = false
     private var peerReportedIdentityTrusted: Boolean? = null
+    private var peerHelloReceived = false
+    private var peerCodecPref: Byte? = null
+    private var myCodecPref: Byte = CodecId.OPUS
+
 
     private class KeyCommitmentMismatchException : Exception("KEY_EXCHANGE commitment mismatch")
     private class PeerIdentityMismatchException : Exception("peer identity signature or pin mismatch")
-    private var peerHelloReceived = false
-    private var peerCodecPref: Byte? = null
     /** True once beginHandshake ran for the current attempt (re-entrancy guard). */
     private var handshakeStarted = false
     private var selfSasConfirmed = false
-    private var myCodecPref: Byte = CodecId.OPUS
     private var activeCodecId: Byte = CodecId.OPUS
     private var codec: AudioCodec? = null
+    /**
+     * Separate encode-side instance: TX (capture thread) and RX (playback
+     * thread) must not serialize on one codec's internal lock.
+     */
+    private var txCodec: AudioCodec? = null
 
     private val sendSequence = SessionSequenceCounter()
     private val sequenceExhaustionTriggered = AtomicBoolean(false)
@@ -540,6 +562,20 @@ class SessionManager(
         drainOutbound()
     }
 
+    /**
+     * Suspending variant for teardown: cancel the sender and wait (bounded)
+     * for any in-flight frame build to finish BEFORE the caller wipes keys.
+     * Without the join, a sender suspended mid-build could race the key wipe.
+     * Best-effort: never blocks teardown longer than the bound.
+     */
+    private suspend fun stopSenderAndJoin() {
+        val job = senderJob
+        senderJob = null
+        job?.cancel()
+        withTimeoutOrNull(SENDER_JOIN_TIMEOUT_MS) { job?.join() }
+        drainOutbound()
+    }
+
     private fun enqueuePlain(type: Byte, payload: ByteArray): Boolean {
         if (!enqueueOutbound(OutboundMsg.Plain(type, payload))) {
             payload.fill(0)
@@ -852,18 +888,15 @@ class SessionManager(
      * transport loss. Key wiping is best-effort minimization of secret
      * lifetime in memory — the JVM/GC may retain copies elsewhere.
      */
-    private suspend fun teardown(error: SessionError?) = teardownMutex.withLock {
-        cancelDeadlines()
-        stopTransmit()
-        stopSender() // before key wipe: queued messages hold key references
-        try { audio.stopPlayback() } catch (_: Exception) {}
-        livenessJob?.cancel(); livenessJob = null
-        floor.reset()
-        jitter.reset()
-        replay.reset()
-        receivedAudioSeq = 0
+    /**
+     * Wipe all key material and identity secrets. Extracted from teardown()
+     * and close(): this is exactly the code that must never drift between
+     * the two paths. Callers handle transport/audio/flags around it.
+     */
+    private fun wipeSecrets() {
         keys?.wipe(); keys = null
         codec?.close(); codec = null
+        txCodec?.close(); txCodec = null
         myKeyPair = null
         myNonce.fill(0); myNonce = ByteArray(0)
         myCommitSalt.fill(0); myCommitSalt = ByteArray(0)
@@ -876,12 +909,26 @@ class SessionManager(
         peerIdentityWasTrusted = false
         peerReportedIdentityTrusted = null
         _peerIdentityTrusted.value = false
+        _peerIdentityFingerprint.value = null
         myIdentityId.fill(0); myIdentityId = ByteArray(0)
         myIdentityPublicKey.fill(0); myIdentityPublicKey = ByteArray(0)
+    }
+
+    private suspend fun teardown(error: SessionError?) = teardownMutex.withLock {
+        cancelDeadlines()
+        stopTransmit()
+        stopSenderAndJoin() // flush-then-wipe: join the sender before keys are wiped below
+        try { audio.stopPlayback() } catch (e: Exception) { Log.w(TAG, "teardown: stopPlayback failed: ${e.javaClass.simpleName}") }
+        livenessJob?.cancel(); livenessJob = null
+        floor.reset()
+        jitter.reset()
+        replay.reset()
+        receivedAudioSeq = 0
+        wipeSecrets()
         keyCommitSent = false; keyExchangeSent = false; keyConfirmSent = false
         peerHelloReceived = false
         peerCodecPref = null
-        pendingKeyConfirmFrame = null
+        pendingKeyConfirmFrame?.payload?.fill(0); pendingKeyConfirmFrame = null
         pendingSasConfirmFrame?.payload?.fill(0); pendingSasConfirmFrame = null
         handshakeStarted = false
         selfSasConfirmed = false
@@ -893,7 +940,7 @@ class SessionManager(
         _error.value = error
         try {
             transport?.disconnect()
-        } catch (_: Exception) {}
+        } catch (e: Exception) { Log.w(TAG, "teardown: transport disconnect failed: ${e.javaClass.simpleName}") }
         detachTransport()
         _transportType.value = null
         AppLog.log(TAG, "session teardown complete: reason=${error?.name ?: "USER_HANGUP"}")
@@ -909,29 +956,14 @@ class SessionManager(
         synchronized(lifecycleLock) { _phase.value = Phase.ENDED }
         cancelDeadlines()
         stopSender()
-        try { audio.stopCapture() } catch (_: Exception) {}
-        try { audio.stopPlayback() } catch (_: Exception) {}
-        keys?.wipe(); keys = null
-        codec?.close(); codec = null
+        try { audio.stopCapture() } catch (e: Exception) { Log.w(TAG, "close: stopCapture failed: ${e.javaClass.simpleName}") }
+        try { audio.stopPlayback() } catch (e: Exception) { Log.w(TAG, "close: stopPlayback failed: ${e.javaClass.simpleName}") }
+        wipeSecrets()
         jitter.reset()
         replay.reset()
-        myKeyPair = null
-        myNonce.fill(0); myNonce = ByteArray(0)
-        myCommitSalt.fill(0); myCommitSalt = ByteArray(0)
-        myPubBytes.fill(0); myPubBytes = ByteArray(0)
-        peerPubBytes?.fill(0); peerPubBytes = null
-        peerNonce?.fill(0); peerNonce = null
-        peerKeyCommitment?.fill(0); peerKeyCommitment = null
-        peerIdentityId?.fill(0); peerIdentityId = null
-        peerIdentityPublicKey?.fill(0); peerIdentityPublicKey = null
-        peerIdentityWasTrusted = false
-        peerReportedIdentityTrusted = null
-        _peerIdentityTrusted.value = false
-        myIdentityId.fill(0); myIdentityId = ByteArray(0)
-        myIdentityPublicKey.fill(0); myIdentityPublicKey = ByteArray(0)
         peerCodecPref = null
         keyCommitSent = false; keyExchangeSent = false; keyConfirmSent = false
-        pendingKeyConfirmFrame = null
+        pendingKeyConfirmFrame?.payload?.fill(0); pendingKeyConfirmFrame = null
         pendingSasConfirmFrame?.payload?.fill(0); pendingSasConfirmFrame = null
         _sasCode.value = null
         _peerSasConfirmed.value = false
@@ -945,7 +977,7 @@ class SessionManager(
         cleanupScope.launch {
             withContext(NonCancellable) {
                 teardownMutex.withLock {
-                    try { transport?.disconnect() } catch (_: Exception) {}
+                    try { transport?.disconnect() } catch (e: Exception) { Log.w(TAG, "cleanup: transport disconnect failed: ${e.javaClass.simpleName}") }
                     detachTransport()
                     _transportType.value = null
                     synchronized(lifecycleLock) { _phase.value = Phase.IDLE }
@@ -973,13 +1005,14 @@ class SessionManager(
         peerIdentityWasTrusted = false
         peerReportedIdentityTrusted = null
         _peerIdentityTrusted.value = false
+        _peerIdentityFingerprint.value = null
         myIdentityId.fill(0); myIdentityId = ByteArray(0)
         myIdentityPublicKey.fill(0); myIdentityPublicKey = ByteArray(0)
         myCommitSalt.fill(0); myCommitSalt = ByteArray(0)
         keyCommitSent = false
         keyExchangeSent = false
         keyConfirmSent = false
-        pendingKeyConfirmFrame = null
+        pendingKeyConfirmFrame?.payload?.fill(0); pendingKeyConfirmFrame = null
         pendingSasConfirmFrame?.payload?.fill(0); pendingSasConfirmFrame = null
         _phase.value = Phase.HANDSHAKE
         startHandshakeDeadline()
@@ -996,7 +1029,8 @@ class SessionManager(
             return@synchronized
         }
         myKeyPair = SessionCrypto.generateEphemeralKeyPair()
-        myPubBytes = SessionCrypto.encodePublicKey(myKeyPair!!.public)
+        // Invariant: assigned immediately above in this same synchronized block.
+        myPubBytes = SessionCrypto.encodePublicKey(checkNotNull(myKeyPair) { "ephemeral keypair just generated" }.public)
         myNonce = SessionCrypto.newNonce16()
         myCommitSalt = SessionCrypto.newCommitmentSalt()
         sendSequence.reset()
@@ -1230,6 +1264,11 @@ class SessionManager(
                 // Once keys exist, DISCONNECT must authenticate like every
                 // other control frame. Before derivation, accept only the
                 // protocol's exact plaintext shape.
+                // Accepted risk (DoS only, no key compromise): a plaintext
+                // DISCONNECT of the exact shape can kill a pre-handshake
+                // session with a single frame. Anyone on the radio path can
+                // already drop frames; this adds no new capability beyond a
+                // marginally cheaper teardown signal.
                 val activeKeys = keys
                 val payload = if (activeKeys != null) {
                     try {
@@ -1428,6 +1467,7 @@ class SessionManager(
             peerPubBytes = pub
             peerNonce = nonce
             peerIdentityId = identityId
+            _peerIdentityFingerprint.value = identityId.joinToString("") { "%02x".format(it) }
             peerIdentityPublicKey = identityPublicKey
             accepted = true
         } finally {
@@ -1448,6 +1488,7 @@ class SessionManager(
         val peerNc = peerNonce ?: return
         val kp = myKeyPair ?: return
         val secret = SessionCrypto.agreeSharedSecret(kp, SessionCrypto.decodePublicKey(peerPub))
+        SessionCrypto.destroyPrivateKey(kp.private)
         myKeyPair = null // private key is no longer needed after ECDH
         try {
             val derived = SessionCrypto.deriveKeys(secret, myNonce, peerNc)
@@ -1468,7 +1509,11 @@ class SessionManager(
             }
             pendingKeyConfirmFrame?.let { stashed ->
                 pendingKeyConfirmFrame = null
-                verifyPeerKeyConfirm(stashed)
+                try {
+                    verifyPeerKeyConfirm(stashed)
+                } finally {
+                    stashed.payload.fill(0)
+                }
             }
         } finally {
             secret.fill(0)
@@ -1637,7 +1682,8 @@ class SessionManager(
             enqueueControl(MessageType.SAS_CONFIRM, ByteArray(0))
             AppLog.log(TAG, "both peer identities pinned; SAS skipped")
         } else {
-            _sasCode.value = SessionCrypto.shortAuthString(keys!!.sasSeed)
+            // Invariant: SAS is only computed after keys are established.
+            _sasCode.value = SessionCrypto.shortAuthString(checkNotNull(keys) { "session keys established before SAS" }.sasSeed)
             AppLog.log(TAG, "first contact or asymmetric trust; awaiting SAS comparison")
         }
         startSasDeadline()
@@ -1684,6 +1730,26 @@ class SessionManager(
             return@synchronized
         }
         codec = initializedCodec
+        // Dedicated encode-side instance so TX never contends with RX on the
+        // codec's internal lock. Created here so a failure still aborts the
+        // session via the same error path below.
+        txCodec = try {
+            AudioCodec.create(activeCodecId)
+        } catch (e: Exception) {
+            Log.e(TAG, "tx codec initialization failed: ${e.javaClass.simpleName}", e)
+            initializedCodec.close()
+            codec = null
+            endSession(SessionError.PLAYBACK_UNAVAILABLE, notifyPeer = true,
+                disconnectReason = DisconnectReason.PROTOCOL_ERROR)
+            return@synchronized
+        } catch (e: LinkageError) {
+            Log.e(TAG, "tx native codec unavailable: ${e.javaClass.simpleName}", e)
+            initializedCodec.close()
+            codec = null
+            endSession(SessionError.PLAYBACK_UNAVAILABLE, notifyPeer = true,
+                disconnectReason = DisconnectReason.PROTOCOL_ERROR)
+            return@synchronized
+        }
         jitter.reset()
         replay.reset()
         lastPeerSeen = elapsedClock()
@@ -1692,7 +1758,8 @@ class SessionManager(
         // HS-05: never report voice readiness if playback fails to start.
         // Roll the session back cleanly instead of a fake IN_SESSION.
         val playbackOk = try {
-            audio.startPlayback(codec!!, jitter)
+            // Invariant: codec is created before the session reaches voice setup.
+            audio.startPlayback(checkNotNull(codec) { "codec initialized for session" }, jitter)
         } catch (e: Exception) {
             Log.w(TAG, "playback start threw", e)
             false
@@ -1958,7 +2025,8 @@ class SessionManager(
     // ------------------------------------------------------- audio paths
 
     private fun startTransmit() {
-        val c = codec ?: return
+        // Encode-side instance: never share the RX codec across threads.
+        val c = txCodec ?: return
         _isTransmitting.value = true
         // HS-02: the capture callback only ENQUEUES; the single outbound
         // sender allocates sequences and writes. No per-frame coroutines.
@@ -1986,18 +2054,11 @@ class SessionManager(
         }
         try {
             audio.stopCapture()
-        } catch (_: Exception) {}
+        } catch (e: Exception) { Log.w(TAG, "stopTransmit: stopCapture failed: ${e.javaClass.simpleName}") }
     }
 
     // ------------------------------------------------------- frame builders
     //
-    // Called ONLY from the single outbound sender coroutine, so sequence
-    // allocation is deterministic and race-free. Sequence numbers are uint32
-    // and wrap after 2^32 frames; the wrap is safe because every frame is
-    // AEAD-authenticated with a fresh random nonce (no nonce reuse) and the
-    // replay window treats the wrap as a far jump (documented in
-    // ReplayProtection).
-
     // Called only from the single outbound sender coroutine, so allocation is deterministic.
     // Do not wrap uint32 sequence numbers within one session: replay-window serial arithmetic
     // and a random AEAD nonce do not make rollover safe at the protocol layer.
@@ -2095,6 +2156,8 @@ class SessionManager(
         private const val AUDIO_RECEIVE_TIMING_LOG_INTERVAL = 50
         /** Intervals beyond this are reported separately from continuous speech cadence. */
         private const val AUDIO_BURST_GAP_THRESHOLD_MS = 250L
+        /** Bounded join for the sender coroutine before key wipe (see stopSenderAndJoin). */
+        private const val SENDER_JOIN_TIMEOUT_MS = 1000L
         private const val TAG = "HamSedaSession"
     }
 }

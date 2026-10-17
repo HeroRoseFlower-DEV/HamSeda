@@ -38,6 +38,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -65,6 +66,8 @@ fun PairingScreen(
 ) {
     val sasCode by vm.sasCode.collectAsStateWithLifecycle()
     val peerConfirmed by vm.peerConfirmed.collectAsStateWithLifecycle()
+    val peerFingerprint by vm.peerIdentityFingerprint.collectAsStateWithLifecycle()
+    val peerTrusted by vm.peerIdentityTrusted.collectAsStateWithLifecycle()
 
     // Hide the one-time authentication string from screenshots and task snapshots.
     val context = LocalContext.current
@@ -136,6 +139,21 @@ fun PairingScreen(
                 )
             }
             Spacer(Modifier.height(16.dp))
+            // Long-term peer identity fingerprint. The SAS above authenticates
+            // this session; this fingerprint pins the peer across sessions.
+            // Compare it once via a trusted channel, then trust the pin.
+            peerFingerprint?.let { fp ->
+                Text(
+                    text = if (peerTrusted) "✓ " else "" +
+                        fp.chunked(8).joinToString(" "),
+                    style = MaterialTheme.typography.bodySmall,
+                    fontFamily = FontFamily.Monospace,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.padding(horizontal = 24.dp),
+                )
+                Spacer(Modifier.height(16.dp))
+            }
             if (peerConfirmed) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     CircularProgressIndicator(

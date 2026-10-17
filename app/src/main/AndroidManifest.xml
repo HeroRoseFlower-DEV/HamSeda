@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  HamSeda permission audit (see README "Permissions" table for the full rationale).
+  HamSeda permission audit (see docs/PHASE_5_PERMISSION_POLICY.md for the full rationale).
 
   INTERNET is declared ONLY because Android requires it to open local TCP
   sockets (Wi-Fi Direct peer-to-peer sockets). The app never opens a socket
@@ -113,6 +113,6 @@
         <service
             android:name=".service.VoiceService"
             android:exported="false"
-            android:foregroundServiceType="microphone" />
+            android:foregroundServiceType="microphone|connectedDevice" />
     </application>
 </manifest>
