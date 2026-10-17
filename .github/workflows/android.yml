@@ -90,6 +90,10 @@ jobs:
           ANDROID_HOME="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
           export ANDROID_HOME
           export PATH="$ANDROID_HOME/platform-tools:$ANDROID_HOME/emulator:$PATH"
+          # Pin the AVD location explicitly so avdmanager and the emulator
+          # cannot disagree about where hamseda-api35.ini lives.
+          export ANDROID_AVD_HOME="$RUNNER_TEMP/hamseda-avd"
+          mkdir -p "$ANDROID_AVD_HOME"
           if [ -d "$ANDROID_HOME/cmdline-tools/latest" ]; then
             CT="$ANDROID_HOME/cmdline-tools/latest"
           else
@@ -99,6 +103,14 @@ jobs:
             --name hamseda-api35 \
             --package "system-images;android-35;google_apis;x86_64" \
             --device pixel_2 --force
+          # Fail fast with diagnostics if the AVD was not created, instead of
+          # timing out 120s later in adb wait-for-device.
+          if ! "$ANDROID_HOME/emulator/emulator" -list-avds 2>/dev/null | grep -qx "hamseda-api35"; then
+            echo "::error::AVD hamseda-api35 was not created (ANDROID_AVD_HOME=$ANDROID_AVD_HOME)"
+            "$ANDROID_HOME/emulator/emulator" -list-avds || true
+            ls -la "$ANDROID_AVD_HOME" || true
+            exit 1
+          fi
           "$ANDROID_HOME/emulator/emulator" \
             -avd hamseda-api35 -no-window -no-audio -no-boot-anim \
             -gpu swiftshader_indirect -accel on -wipe-data \
