@@ -1,5 +1,14 @@
 # HamSeda Changelog
 
+## 2026-10-15 — AudioTrack playback lifecycle hardening
+
+- Reject a new playback start while a previous playback worker is still alive; clean up a dead worker's retained track before constructing another one.
+- Treat unexpected exceptions in the playback worker as playback failures and always clear the running state and zero temporary PCM buffers on exit.
+- Interrupt the playback worker during teardown, wait for it to exit before normal track release, and use a bounded forced-release fallback if a vendor call does not return promptly. Retain the worker reference if it is still alive so a new session cannot overlap its cleanup.
+- Register an AudioDeviceCallback to observe output-device additions/removals that are not consistently represented by headset-plug broadcasts, and unregister it on release.
+- Add JVM regression coverage for partial AudioTrack.write() accounting and repeated playback-head polling.
+- CI does not measure audible or mouth-to-ear latency; physical-device route switching, rapid teardown/restart, and stale-audio tests remain required.
+
 ## 2026-10-15 — Raw microphone capture path
 
 - Keep application-level PCM processing disabled between `AudioRecord.read()` and codec input; the capture loop computes a peak level only for UI telemetry and does not rewrite samples.

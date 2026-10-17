@@ -42,6 +42,18 @@ verifies instrumented sources compile. Run `OpusCodecInstrumentedTest` on an And
 emulator or physical device to verify the packaged native library and codec I/O; host-JVM
 tests intentionally do not load Android ABI-specific shared libraries.
 
+## Phase 2 — AudioTrack playback and latency
+
+Automated JVM coverage verifies queue accounting across partial AudioTrack.write() results, repeated playback-head polls, underrun clamping, unsigned playback-head wrap, and start-threshold alignment. CI compilation is not evidence that device output is correct.
+
+On each physical phone, test API 26–30 and API 31+ where available:
+- Start/stop/restart playback at least 20 times, including rapid stop during initial playback and immediately after a transport drop. Confirm no crash, stuck isPlaying, stale worker, or delayed audio from the prior session.
+- Test both Wi-Fi Direct and Bluetooth Classic; transmit normal speech, pause, then transmit again. Confirm old queued speech is not played after a pause/reconnect and record queue pacing, write timing, underrun count, jitter loss, and stale drops.
+- Plug/unplug wired headphones and connect/disconnect a Bluetooth audio output during a session. Confirm the selected route updates, playback continues or fails with a clear bounded error, and the previous global audio mode/device is restored after IDLE.
+- Compare speaker, earpiece, wired output, and Bluetooth SCO when the device exposes them. Do not treat the logical UI route as proof of the physical output route; capture the audio route and playback initialized logs.
+- Record device model, Android/API level, output route, actual AudioTrack performance mode, sample rate, buffer size/capacity, start threshold, queue limit, underruns, and subjective cutouts. Mouth-to-ear latency requires an external/recorded timing measurement; write-call duration and queue depth are diagnostic proxies, not end-to-end latency.
+- Verify no audio from a prior session survives stop, and no AudioTrack is left allocated after repeated session teardown. Keep any case without device evidence marked NOT RUN.
+
 ## 2. Manual two-device tests (cannot run on GitHub-hosted CI)
 
 ### AudioTrack startup-threshold regression
