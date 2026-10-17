@@ -1,19 +1,16 @@
 # HamSeda Test Plan
 
-## Microphone leveler validation
+## Raw microphone capture validation
 
-On each test phone, compare the same quiet phrase, normal speech, loud phrase,
-and room silence with software microphone gain enabled and disabled. Repeat
-while connected over Wi-Fi Direct and Bluetooth Classic. Inspect the 50-frame
-capture diagnostics (input RMS, average/maximum gain, near-silence count and
-enabled flag), and listen for background-noise pumping, clipping, tail
-suppression and intelligibility. Run at least ten PTT bursts after a 60-second
-session. Synthetic tests do not prove subjective quality on every microphone
-or vendor AGC implementation. Software gain defaults on for installs without
-an explicit preference, but users can disable it to compare raw input because
-a software leveler can amplify noise after hardware AGC/noise suppression.
+The application capture path must not apply software gain, level normalization, filtering, noise suppression, echo cancellation, or other PCM transformations. `AudioEngine` prefers Android's `UNPROCESSED` input source when the device initializes it successfully and falls back to `MIC` when necessary. The fallback can expose OEM/HAL processing that the application cannot reliably disable on every device.
 
-> **Physical-device baseline:** use [`docs/MAIN_BASELINE_AUDIT.md`](MAIN_BASELINE_AUDIT.md) for the reproducible two-phone setup, attempt counts, evidence capture, performance-measurement method, and result sheet. CI compilation is not a substitute for tests on real radios and audio hardware. Do not mark unrun cases as passed.
+Opus encoding remains lossy compression: decoded audio is not bit-identical to the PCM read from `AudioRecord`. Do not describe the transmitted stream as uncompressed or bit-exact raw audio.
+
+On each physical test phone, verify that the capture loop forwards each 20 ms PCM frame to the codec without modifying its samples. Use deterministic synthetic PCM in a unit test for any future capture-frame transformation boundary; the expected sample values before encoding must equal the values read from the recorder. On real phones, compare quiet speech, normal speech, loud speech, and room silence while connected over Wi-Fi Direct and Bluetooth Classic. Record the selected capture source (`UNPROCESSED` or `MIC_FALLBACK`), Android version, device model, audio route, and subjective intelligibility. Do not infer absence of hardware/OEM processing solely from the selected source name.
+
+Run at least ten PTT bursts after a 60-second session. Listen for clipping, noise pumping, tail suppression, gaps, and intelligibility; inspect the timing/queue/underrun diagnostics. Synthetic tests do not prove subjective quality on every microphone or vendor audio HAL implementation.
+
+> **Physical-device baseline:** use [`docs/MAIN_BASELINE_AUDIT.md`](MAIN_BASELINE_AUDIT.md) for historical log observations and [`docs/DEBUG_BASELINE.md`](DEBUG_BASELINE.md) for the current audit register and reproducible evidence requirements. CI compilation is not a substitute for tests on real radios and audio hardware. Do not mark unrun cases as passed.
 
 ## 1. Automated tests (run in CI)
 

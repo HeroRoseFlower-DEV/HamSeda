@@ -1,5 +1,7 @@
 # Main Branch Baseline Audit and Two-Device Validation
 
+> **Historical report warning (added 2026-10-15):** this document records observations from an earlier source snapshot, not a current-version audit. The source snapshot below is `80463e4e6ec095707d0d9de935b20f5668a6a3b9`, with app `1.1` / `versionCode=2` / wire protocol v3. The current source baseline is app `1.2` / `versionCode=3` / wire protocol v5; see [`DEBUG_BASELINE.md`](DEBUG_BASELINE.md). Do not attribute this report's device logs or outcomes to the current build unless tests are repeated against that build.
+
 **Status:** two physical-device log batches received. The earlier Wi-Fi Direct reconnect failures did not recur in the second batch; Bluetooth outbound-queue drops remain. Audio timing diagnostics have now been added to main; the exact diagnostic build still needs device validation. Formal 10-attempt baseline remains incomplete.  
 **Branch reviewed:** `main`  
 **Source snapshot at review start:** `80463e4e6ec095707d0d9de935b20f5668a6a3b9`  
