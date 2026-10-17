@@ -36,6 +36,46 @@ object PermissionHelper {
     const val LOCAL_NETWORK_SDK = 37
 
     /**
+     * Pure policy mapping, separated from permission-state checks so the API
+     * boundary can be regression-tested on any JVM/Android test runtime.
+     *
+     * The returned list is the set of runtime permissions the startup gate
+     * must have before showing the main UI. Keep this in sync with the
+     * individual discovery/connect helpers below.
+     */
+    internal fun startupRuntimePermissionNames(sdkInt: Int): List<String> {
+        val needed = mutableListOf<String>()
+
+        if (sdkInt >= 31) {
+            needed += Manifest.permission.BLUETOOTH_SCAN
+            needed += Manifest.permission.BLUETOOTH_CONNECT
+        } else if (sdkInt >= 23) {
+            needed += if (sdkInt >= 29) {
+                Manifest.permission.ACCESS_FINE_LOCATION
+            } else {
+                Manifest.permission.ACCESS_COARSE_LOCATION
+            }
+        }
+
+        if (sdkInt >= 33) {
+            needed += Manifest.permission.NEARBY_WIFI_DEVICES
+        } else {
+            needed += if (sdkInt >= 29) {
+                Manifest.permission.ACCESS_FINE_LOCATION
+            } else {
+                Manifest.permission.ACCESS_COARSE_LOCATION
+            }
+        }
+
+        if (sdkInt >= LOCAL_NETWORK_SDK) {
+            needed += Manifest.permission.ACCESS_LOCAL_NETWORK
+        }
+
+        needed += Manifest.permission.RECORD_AUDIO
+        return needed.distinct()
+    }
+
+    /**
      * Core runtime permissions used by the first-run gate. The separate
      * BLUETOOTH_ADVERTISE permission is requested only when the user explicitly
      * chooses to make this phone discoverable while waiting for an incoming
@@ -48,11 +88,8 @@ object PermissionHelper {
      * local-network access for the Wi-Fi Direct TCP socket.
      */
     fun missingStartupRuntimePermissions(context: Context): List<String> =
-        (
-            missingBluetoothPermissions(context, forDiscovery = true) +
-                missingWifiDirectConnectPermissions(context) +
-                missingMicrophonePermission(context)
-            ).distinct()
+        startupRuntimePermissionNames(Build.VERSION.SDK_INT)
+            .filter { !isGranted(context, it) }
 
     fun missingWifiDirectPermissions(context: Context): List<String> {
         val needed = when {

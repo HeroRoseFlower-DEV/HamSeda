@@ -51,6 +51,7 @@ class HamSedaInstrumentedTest {
         assertTrue("Bluetooth scan permission must be declared", requested.contains(android.Manifest.permission.BLUETOOTH_SCAN))
         assertTrue("Bluetooth connect permission must be declared", requested.contains(android.Manifest.permission.BLUETOOTH_CONNECT))
         assertTrue("wake lock permission must be declared", requested.contains(android.Manifest.permission.WAKE_LOCK))
+        assertTrue("Android 17 local-network permission must be declared", requested.contains(android.Manifest.permission.ACCESS_LOCAL_NETWORK))
     }
 
     @Test

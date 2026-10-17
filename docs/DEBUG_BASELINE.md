@@ -103,3 +103,13 @@ For each defect, record: **ID, exact file/symbol, reproduction steps, expected b
 - [ ] Confirm the Phase 4 GitHub Actions run completes successfully; do not infer success from workflow edits alone.
 - [ ] Run the separate two-physical-phone acceptance plan for Wi-Fi Direct, Bluetooth Classic, bidirectional audio, reconnect races, screen-off behavior, and real audio quality.
 - [ ] API 37-specific `ACCESS_LOCAL_NETWORK` enforcement is not proven by the API 35 emulator job and needs a compatible API 37 runtime test or device validation.
+
+
+## Phase 5 progress — startup permission policy
+
+- [x] Extracted API-level startup permission mapping into a pure policy function used by the runtime permission check.
+- [x] Added JVM regression cases for API 26, 29, 31, 33, 36, and 37, including future API behavior.
+- [x] Added an instrumentation assertion that the merged manifest declares `ACCESS_LOCAL_NETWORK`.
+- [ ] Run CI for the Phase 5 branch and confirm unit tests, lint, debug/release builds, and API 35 instrumentation all pass.
+- [ ] Validate the actual Android 17 permission dialog, deny/retry/settings recovery, and Wi-Fi Direct local TCP behavior on API 37. API 35 emulator results cannot satisfy this item.
+- [ ] Complete the two-physical-phone audio/radio matrix from earlier phases; no physical test is marked passed without recorded evidence.
