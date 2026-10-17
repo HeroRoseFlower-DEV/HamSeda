@@ -13,13 +13,13 @@ permissions:
 # L13: cancel superseded runs on the same branch so concurrent pushes don't
 # race artifact uploads.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}-emulator-v2
   cancel-in-progress: true
 
 jobs:
   build:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       # M2: third-party actions are pinned to full commit SHAs (version
       # comments for readability). A compromised mutable tag cannot inject
@@ -52,6 +52,7 @@ jobs:
           export PATH="$CT/bin:$PATH"
           yes | sdkmanager --licenses > /dev/null || true
           # API 37 platform: try the canonical path, fall back to the .0 variant.
+          sdkmanager "platform-tools" "emulator" "system-images;android-35;google_apis;x86_64"
           sdkmanager "platforms;android-37" "build-tools;36.0.0" "ndk;30.0.16248370" "cmake;3.31.6" \
             || sdkmanager "platforms;android-37.0" "build-tools;36.0.0" "ndk;30.0.16248370" "cmake;3.31.6"
 
@@ -79,10 +80,119 @@ jobs:
         run: ./gradlew :app:assembleRelease --no-daemon --stacktrace
 
       - name: Compile instrumented tests
-        # Compiles androidTest sources; execution needs an emulator/device
-        # (see docs/TEST_PLAN.md). Compilation is verified here.
+        # Keep a dedicated compile failure separate from emulator startup and execution.
         run: ./gradlew :app:assembleAndroidTest --no-daemon --stacktrace
 
+      - name: Start Android Emulator (API 35, x86_64)
+        timeout-minutes: 20
+        run: |
+          set -euo pipefail
+          ANDROID_HOME="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          export ANDROID_HOME
+          export PATH="$ANDROID_HOME/platform-tools:$ANDROID_HOME/emulator:$PATH"
+          # Pin the AVD location explicitly so avdmanager and the emulator
+          # cannot disagree about where hamseda-api35.ini lives.
+          export ANDROID_AVD_HOME="$RUNNER_TEMP/hamseda-avd"
+          mkdir -p "$ANDROID_AVD_HOME"
+          if [ -d "$ANDROID_HOME/cmdline-tools/latest" ]; then
+            CT="$ANDROID_HOME/cmdline-tools/latest"
+          else
+            CT="$(ls -d "$ANDROID_HOME"/cmdline-tools/*/ | sort -V | tail -n1)"
+          fi
+          echo "no" | "$CT/bin/avdmanager" create avd \
+            --name hamseda-api35 \
+            --package "system-images;android-35;google_apis;x86_64" \
+            --device pixel_2 --force
+          # Fail fast with diagnostics if the AVD was not created, instead of
+          # timing out 120s later in adb wait-for-device.
+          if ! "$ANDROID_HOME/emulator/emulator" -list-avds 2>/dev/null | grep -qx "hamseda-api35"; then
+            echo "::error::AVD hamseda-api35 was not created (ANDROID_AVD_HOME=$ANDROID_AVD_HOME)"
+            "$ANDROID_HOME/emulator/emulator" -list-avds || true
+            ls -la "$ANDROID_AVD_HOME" || true
+            exit 1
+          fi
+          # x86_64 emulation requires hardware acceleration (KVM). The runner
+          # user is not always in the kvm group on a fresh image; grant device
+          # access explicitly so the emulator does not exit immediately.
+          if [ -e /dev/kvm ]; then
+            sudo chmod 666 /dev/kvm 2>/dev/null || sudo gpasswd -a "$USER" kvm 2>/dev/null || true
+          fi
+          "$ANDROID_HOME/emulator/emulator" \
+            -avd hamseda-api35 -no-window -no-audio -no-boot-anim \
+            -gpu swiftshader_indirect -accel on -wipe-data \
+            > "$RUNNER_TEMP/hamseda-emulator.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/hamseda-emulator.pid"
+          adb start-server
+          # Do not let ADB wait indefinitely if the emulator process starts but
+          # never registers a device. Fail with diagnostics while the step is bounded.
+          if ! timeout 120s adb wait-for-device; then
+            echo "::error::ADB did not detect the Android Emulator within 120 seconds"
+            adb devices -l || true
+            cat "$RUNNER_TEMP/hamseda-emulator.log" || true
+            exit 1
+          fi
+          booted=""
+          for attempt in $(seq 1 180); do
+            if ! kill -0 "$(cat "$RUNNER_TEMP/hamseda-emulator.pid")" 2>/dev/null; then
+              cat "$RUNNER_TEMP/hamseda-emulator.log"
+              echo "::error::Android Emulator exited before boot completed"
+              exit 1
+            fi
+            booted="$(timeout 10s adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)"
+            if [ "$booted" = "1" ]; then break; fi
+            sleep 5
+          done
+          if [ "$booted" != "1" ]; then
+            cat "$RUNNER_TEMP/hamseda-emulator.log"
+            echo "::error::Android Emulator did not finish booting within 15 minutes"
+            exit 1
+          fi
+          adb shell settings put global window_animation_scale 0
+          adb shell settings put global transition_animation_scale 0
+          adb shell settings put global animator_duration_scale 0
+          # GrantPermissionRule in the instrumentation suite grants the app's
+          # declared runtime permissions immediately before each test that needs them.
+          adb devices -l
+
+      - name: Execute instrumented tests on Android Emulator
+        timeout-minutes: 20
+        run: ./gradlew :app:connectedDebugAndroidTest --no-daemon --stacktrace
+
+      - name: Capture emulator diagnostics
+        if: ${{ !cancelled() }}
+        run: |
+          set +e
+          ANDROID_HOME="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          export PATH="$ANDROID_HOME/platform-tools:$PATH"
+          timeout 15s adb logcat -d -t 12000 > "$RUNNER_TEMP/hamseda-emulator-logcat.txt" 2>&1 || true
+          timeout 10s adb shell getprop > "$RUNNER_TEMP/hamseda-emulator-getprop.txt" 2>&1 || true
+          if [ -f "$RUNNER_TEMP/hamseda-emulator.log" ]; then
+            cp "$RUNNER_TEMP/hamseda-emulator.log" "$RUNNER_TEMP/hamseda-emulator-console.log"
+          fi
+
+      - name: Upload instrumented test reports and emulator logs
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: HamSeda-instrumented-test-results
+          path: |
+            app/build/outputs/androidTest-results/connected/**
+            app/build/reports/androidTests/connected/**
+            ${{ runner.temp }}/hamseda-emulator-*.txt
+            ${{ runner.temp }}/hamseda-emulator-console.log
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Stop Android Emulator
+        if: always()
+        run: |
+          set +e
+          ANDROID_HOME="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          export PATH="$ANDROID_HOME/platform-tools:$PATH"
+          timeout 10s adb emu kill 2>/dev/null || true
+          if [ -f "$RUNNER_TEMP/hamseda-emulator.pid" ]; then
+            kill "$(cat "$RUNNER_TEMP/hamseda-emulator.pid")" 2>/dev/null || true
+          fi
       - name: Verify APK native ABIs and compute SHA-256
         id: apk
         run: |
