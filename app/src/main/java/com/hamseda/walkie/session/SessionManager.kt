@@ -45,13 +45,14 @@ import java.io.IOException
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.security.MessageDigest
+import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Authenticated one-to-one voice session over an attached [Transport].
  *
  * Session establishment (both sides run the same symmetric logic):
- * 1. Each endpoint generates ephemeral P-256 keys, a nonce and a random salt,
+ * 1. Each endpoint generates ephemeral P-256 hs.keys, a nonce and a random salt,
  *    then sends HELLO.
  * 2. Each sends KEY_COMMIT over its public key, nonce, HELLO and salt before
  *    either endpoint reveals its key share.
@@ -158,27 +159,31 @@ class SessionManager(
     /** True once the attached transport connected in this session attempt. */
     private var transportWasConnected = false
 
-    private var myKeyPair: java.security.KeyPair? = null
-    private var myNonce = ByteArray(0)
-    private var myPubBytes = ByteArray(0)
-    private var peerPubBytes: ByteArray? = null
-    private var peerNonce: ByteArray? = null
-    private var keys: SessionKeys? = null
-    private var myRole: Byte = 0
-    private var keyCommitSent = false
-    private var keyExchangeSent = false
-    private var keyConfirmSent = false
-    private var myCommitSalt = ByteArray(0)
-    private var peerKeyCommitment: ByteArray? = null
-    private var myIdentityId = ByteArray(0)
-    private var myIdentityPublicKey = ByteArray(0)
-    private var peerIdentityId: ByteArray? = null
-    private var peerIdentityPublicKey: ByteArray? = null
-    private var peerIdentityWasTrusted = false
-    private var peerReportedIdentityTrusted: Boolean? = null
-    private var peerHelloReceived = false
-    private var peerCodecPref: Byte? = null
-    private var myCodecPref: Byte = CodecId.OPUS
+    /** Handshake protocol state (extracted from the god class; SessionManager keeps the locks). */
+    private val hs = HandshakeStateMachine()
+
+    /**
+     * Dedicated single thread for audio bring-up/teardown (AudioRecord /
+     * AudioTrack creation can block 50-500 ms on the HAL). Never run these
+     * on the UI thread — PTT press/release must stay responsive. FIFO
+     * ordering keeps start/stop pairs serialized.
+     */
+    private val audioExecutor = Executors.newSingleThreadExecutor { r ->
+        Thread(r, "hamseda-audio-ctl").apply { isDaemon = true }
+    }
+
+    /**
+     * Run [block] on the audio executor. If close() already shut it down,
+     * run inline so teardown-after-close can never throw
+     * RejectedExecutionException.
+     */
+    private fun runOnAudioExecutor(block: () -> Unit) {
+        if (audioExecutor.isShutdown) {
+            block()
+        } else {
+            audioExecutor.execute(block)
+        }
+    }
 
 
     private class KeyCommitmentMismatchException : Exception("KEY_EXCHANGE commitment mismatch")
@@ -564,7 +569,7 @@ class SessionManager(
 
     /**
      * Suspending variant for teardown: cancel the sender and wait (bounded)
-     * for any in-flight frame build to finish BEFORE the caller wipes keys.
+     * for any in-flight frame build to finish BEFORE the caller wipes hs.keys.
      * Without the join, a sender suspended mid-build could race the key wipe.
      * Best-effort: never blocks teardown longer than the bound.
      */
@@ -587,7 +592,7 @@ class SessionManager(
 
     /** Takes ownership of the input buffer, which is cleared after copying. */
     private fun enqueueControl(type: Byte, plaintext: ByteArray) {
-        val k = keys
+        val k = hs.keys
         if (k == null) {
             plaintext.fill(0)
             return
@@ -597,7 +602,7 @@ class SessionManager(
             codecId = 0xFF.toByte(),
             sessionId = k.sessionId.copyOf(),
             key = k.controlKey,
-            role = myRole,
+            role = hs.myRole,
             plaintext = plaintext.copyOf(),
         )
         plaintext.fill(0)
@@ -612,13 +617,13 @@ class SessionManager(
      */
     /** Queue an isolated copy; AudioEngine clears its capture-owned buffer after this callback. */
     private fun enqueueAudio(codecId: Byte, plaintext: ByteArray) {
-        val k = keys ?: return
+        val k = hs.keys ?: return
         val msg = OutboundMsg.Sealed(
             type = MessageType.AUDIO,
             codecId = codecId,
             sessionId = k.sessionId.copyOf(),
             key = k.audioKey,
-            role = myRole,
+            role = hs.myRole,
             plaintext = plaintext.copyOf(),
         )
         if (!enqueueOutbound(msg)) {
@@ -650,7 +655,7 @@ class SessionManager(
     fun startOutgoing(t: Transport, peer: PeerDevice, codecPref: Byte = CodecId.OPUS) {
         if (!claimSessionStart("startOutgoing")) return
         AppLog.log(TAG, "outgoing session start via ${t.type}")
-        myCodecPref = if (t.type == com.hamseda.walkie.transport.TransportType.BLUETOOTH) {
+        hs.myCodecPref = if (t.type == com.hamseda.walkie.transport.TransportType.BLUETOOTH) {
             // PCM16 requires 768 kbps before protocol overhead and is not a
             // usable voice profile over Bluetooth Classic RFCOMM.
             CodecId.OPUS
@@ -685,7 +690,7 @@ class SessionManager(
     ) {
         if (!claimSessionStart("acceptIncoming")) return
         AppLog.log(TAG, "listening for incoming via ${t.type}")
-        myCodecPref = if (t.type == com.hamseda.walkie.transport.TransportType.BLUETOOTH) {
+        hs.myCodecPref = if (t.type == com.hamseda.walkie.transport.TransportType.BLUETOOTH) {
             // PCM16 requires 768 kbps before protocol overhead and is not a
             // usable voice profile over Bluetooth Classic RFCOMM.
             CodecId.OPUS
@@ -849,7 +854,7 @@ class SessionManager(
     /** Guards teardown: one ordered teardown at a time; the body is idempotent. */
     private val teardownMutex = Mutex()
 
-    /** Ends the session, wipes keys, stops audio, disconnects transport. */
+    /** Ends the session, wipes hs.keys, stops audio, disconnects transport. */
     fun endSession(
         error: SessionError? = null,
         notifyPeer: Boolean = true,
@@ -873,7 +878,7 @@ class SessionManager(
         )
         // Enqueue DISCONNECT while the sender is still running; the flush
         // delay below gives it a bounded window to go out.
-        if (notifyPeer && keys != null) {
+        if (notifyPeer && hs.keys != null) {
             enqueueControl(MessageType.DISCONNECT, byteArrayOf(disconnectReason))
         }
         scope.launch {
@@ -894,40 +899,29 @@ class SessionManager(
      * the two paths. Callers handle transport/audio/flags around it.
      */
     private fun wipeSecrets() {
-        keys?.wipe(); keys = null
+        hs.wipe()
         codec?.close(); codec = null
         txCodec?.close(); txCodec = null
-        myKeyPair = null
-        myNonce.fill(0); myNonce = ByteArray(0)
-        myCommitSalt.fill(0); myCommitSalt = ByteArray(0)
-        myPubBytes.fill(0); myPubBytes = ByteArray(0)
-        peerPubBytes?.fill(0); peerPubBytes = null
-        peerNonce?.fill(0); peerNonce = null
-        peerKeyCommitment?.fill(0); peerKeyCommitment = null
-        peerIdentityId?.fill(0); peerIdentityId = null
-        peerIdentityPublicKey?.fill(0); peerIdentityPublicKey = null
-        peerIdentityWasTrusted = false
-        peerReportedIdentityTrusted = null
         _peerIdentityTrusted.value = false
         _peerIdentityFingerprint.value = null
-        myIdentityId.fill(0); myIdentityId = ByteArray(0)
-        myIdentityPublicKey.fill(0); myIdentityPublicKey = ByteArray(0)
     }
 
     private suspend fun teardown(error: SessionError?) = teardownMutex.withLock {
         cancelDeadlines()
         stopTransmit()
-        stopSenderAndJoin() // flush-then-wipe: join the sender before keys are wiped below
-        try { audio.stopPlayback() } catch (e: Exception) { Log.w(TAG, "teardown: stopPlayback failed: ${e.javaClass.simpleName}") }
+        stopSenderAndJoin() // flush-then-wipe: join the sender before hs.keys are wiped below
+        runOnAudioExecutor {
+            try { audio.stopPlayback() } catch (e: Exception) { Log.w(TAG, "teardown: stopPlayback failed: ${e.javaClass.simpleName}") }
+        }
         livenessJob?.cancel(); livenessJob = null
         floor.reset()
         jitter.reset()
         replay.reset()
         receivedAudioSeq = 0
         wipeSecrets()
-        keyCommitSent = false; keyExchangeSent = false; keyConfirmSent = false
-        peerHelloReceived = false
-        peerCodecPref = null
+        hs.keyCommitSent = false; hs.keyExchangeSent = false; hs.keyConfirmSent = false
+        hs.peerHelloReceived = false
+        hs.peerCodecPref = null
         pendingKeyConfirmFrame?.payload?.fill(0); pendingKeyConfirmFrame = null
         pendingSasConfirmFrame?.payload?.fill(0); pendingSasConfirmFrame = null
         handshakeStarted = false
@@ -949,20 +943,23 @@ class SessionManager(
 
     /**
      * Fast synchronous path for Service.onDestroy (HS-03): stops audio and
-     * wipes keys immediately without depending on the service scope (which
+     * wipes hs.keys immediately without depending on the service scope (which
      * onDestroy is about to cancel). Transport close runs best-effort.
      */
     fun close() {
         synchronized(lifecycleLock) { _phase.value = Phase.ENDED }
         cancelDeadlines()
         stopSender()
-        try { audio.stopCapture() } catch (e: Exception) { Log.w(TAG, "close: stopCapture failed: ${e.javaClass.simpleName}") }
-        try { audio.stopPlayback() } catch (e: Exception) { Log.w(TAG, "close: stopPlayback failed: ${e.javaClass.simpleName}") }
+        runOnAudioExecutor {
+            try { audio.stopCapture() } catch (e: Exception) { Log.w(TAG, "close: stopCapture failed: ${e.javaClass.simpleName}") }
+            try { audio.stopPlayback() } catch (e: Exception) { Log.w(TAG, "close: stopPlayback failed: ${e.javaClass.simpleName}") }
+        }
+        audioExecutor.shutdown()
         wipeSecrets()
         jitter.reset()
         replay.reset()
-        peerCodecPref = null
-        keyCommitSent = false; keyExchangeSent = false; keyConfirmSent = false
+        hs.peerCodecPref = null
+        hs.keyCommitSent = false; hs.keyExchangeSent = false; hs.keyConfirmSent = false
         pendingKeyConfirmFrame?.payload?.fill(0); pendingKeyConfirmFrame = null
         pendingSasConfirmFrame?.payload?.fill(0); pendingSasConfirmFrame = null
         _sasCode.value = null
@@ -995,50 +992,50 @@ class SessionManager(
         // processing so the commitment/reveal exchange cannot overtake local HELLO.
         if (handshakeStarted) return
         handshakeStarted = true
-        peerHelloReceived = false
-        peerCodecPref = null
-        peerPubBytes?.fill(0); peerPubBytes = null
-        peerNonce?.fill(0); peerNonce = null
-        peerKeyCommitment?.fill(0); peerKeyCommitment = null
-        peerIdentityId?.fill(0); peerIdentityId = null
-        peerIdentityPublicKey?.fill(0); peerIdentityPublicKey = null
-        peerIdentityWasTrusted = false
-        peerReportedIdentityTrusted = null
+        hs.peerHelloReceived = false
+        hs.peerCodecPref = null
+        hs.peerPubBytes?.fill(0); hs.peerPubBytes = null
+        hs.peerNonce?.fill(0); hs.peerNonce = null
+        hs.peerKeyCommitment?.fill(0); hs.peerKeyCommitment = null
+        hs.peerIdentityId?.fill(0); hs.peerIdentityId = null
+        hs.peerIdentityPublicKey?.fill(0); hs.peerIdentityPublicKey = null
+        hs.peerIdentityWasTrusted = false
+        hs.peerReportedIdentityTrusted = null
         _peerIdentityTrusted.value = false
         _peerIdentityFingerprint.value = null
-        myIdentityId.fill(0); myIdentityId = ByteArray(0)
-        myIdentityPublicKey.fill(0); myIdentityPublicKey = ByteArray(0)
-        myCommitSalt.fill(0); myCommitSalt = ByteArray(0)
-        keyCommitSent = false
-        keyExchangeSent = false
-        keyConfirmSent = false
+        hs.myIdentityId.fill(0); hs.myIdentityId = ByteArray(0)
+        hs.myIdentityPublicKey.fill(0); hs.myIdentityPublicKey = ByteArray(0)
+        hs.myCommitSalt.fill(0); hs.myCommitSalt = ByteArray(0)
+        hs.keyCommitSent = false
+        hs.keyExchangeSent = false
+        hs.keyConfirmSent = false
         pendingKeyConfirmFrame?.payload?.fill(0); pendingKeyConfirmFrame = null
         pendingSasConfirmFrame?.payload?.fill(0); pendingSasConfirmFrame = null
         _phase.value = Phase.HANDSHAKE
         startHandshakeDeadline()
         try {
-            myIdentityId = peerIdentityStore.localIdentityId()
-            myIdentityPublicKey = peerIdentityStore.localPublicKey()
-            require(myIdentityId.size == SessionCrypto.IDENTITY_ID_BYTES) {
+            hs.myIdentityId = peerIdentityStore.localIdentityId()
+            hs.myIdentityPublicKey = peerIdentityStore.localPublicKey()
+            require(hs.myIdentityId.size == SessionCrypto.IDENTITY_ID_BYTES) {
                 "local identity ID must be 16 bytes"
             }
-            SessionCrypto.decodePublicKey(myIdentityPublicKey)
+            SessionCrypto.decodePublicKey(hs.myIdentityPublicKey)
         } catch (e: Exception) {
             Log.e(TAG, "local identity key unavailable: ${e.javaClass.simpleName}")
             fail(SessionError.PROTOCOL_ERROR, "local identity key unavailable")
             return@synchronized
         }
-        myKeyPair = SessionCrypto.generateEphemeralKeyPair()
+        hs.myKeyPair = SessionCrypto.generateEphemeralKeyPair()
         // Invariant: assigned immediately above in this same synchronized block.
-        myPubBytes = SessionCrypto.encodePublicKey(checkNotNull(myKeyPair) { "ephemeral keypair just generated" }.public)
-        myNonce = SessionCrypto.newNonce16()
-        myCommitSalt = SessionCrypto.newCommitmentSalt()
+        hs.myPubBytes = SessionCrypto.encodePublicKey(checkNotNull(hs.myKeyPair) { "ephemeral keypair just generated" }.public)
+        hs.myNonce = SessionCrypto.newNonce16()
+        hs.myCommitSalt = SessionCrypto.newCommitmentSalt()
         sendSequence.reset()
         sequenceExhaustionTriggered.set(false)
         lastPeerSeen = elapsedClock()
         // Queue our protocol preamble before another thread can process the
         // peer HELLO and enqueue KEY_COMMIT. The sender serializes this FIFO.
-        val hello = byteArrayOf(Protocol.VERSION, myCodecPref)
+        val hello = byteArrayOf(Protocol.VERSION, hs.myCodecPref)
         enqueuePlain(MessageType.HELLO, hello)
         Log.i(TAG, "handshake started, HELLO sent")
         val handshakeElapsedMs = attemptStartedAtMs
@@ -1047,7 +1044,7 @@ class SessionManager(
             TAG,
             "handshake started: attempt=$sessionGeneration, elapsedSinceAttemptMs=$handshakeElapsedMs, " +
                 "HELLO sent (localProtocolVersion=${Protocol.VERSION.toInt() and 0xFF}, " +
-                "codecPreference=${myCodecPref.toInt() and 0xFF})",
+                "codecPreference=${hs.myCodecPref.toInt() and 0xFF})",
         )
     }
 
@@ -1147,7 +1144,7 @@ class SessionManager(
         // A valid HELLO is the protocol preamble. TCP preserves send order, so
         // accepting KEY_EXCHANGE first would mean the peer skipped validation
         // of protocol version and codec negotiation.
-        if (!peerHelloReceived &&
+        if (!hs.peerHelloReceived &&
             frame.type != MessageType.HELLO &&
             frame.type != MessageType.DISCONNECT
         ) {
@@ -1159,7 +1156,7 @@ class SessionManager(
         }
         when (frame.type) {
             MessageType.HELLO -> {
-                if (peerHelloReceived) {
+                if (hs.peerHelloReceived) {
                     fail(SessionError.PROTOCOL_ERROR, "duplicate HELLO")
                     return
                 }
@@ -1181,38 +1178,38 @@ class SessionManager(
                     )
                     return
                 }
-                peerCodecPref = peerPref
-                peerHelloReceived = true
+                hs.peerCodecPref = peerPref
+                hs.peerHelloReceived = true
                 AppLog.log(
                     TAG,
                     "received compatible HELLO (protocolVersion=$peerVersion, codecPreference=$peerPrefValue)",
                 )
-                activeCodecId = minOf(myCodecPref, peerPref)
-                if (!keyCommitSent) sendKeyCommit()
+                activeCodecId = minOf(hs.myCodecPref, peerPref)
+                if (!hs.keyCommitSent) sendKeyCommit()
             }
             MessageType.KEY_COMMIT -> {
                 if (frame.payload.size != SessionCrypto.COMMITMENT_BYTES) {
                     fail(SessionError.PROTOCOL_ERROR, "invalid KEY_COMMIT length")
                     return
                 }
-                if (peerKeyCommitment != null) {
+                if (hs.peerKeyCommitment != null) {
                     fail(SessionError.PROTOCOL_ERROR, "duplicate KEY_COMMIT")
                     return
                 }
-                if (!keyCommitSent) {
+                if (!hs.keyCommitSent) {
                     fail(SessionError.PROTOCOL_ERROR, "peer KEY_COMMIT arrived before local commitment")
                     return
                 }
-                peerKeyCommitment = frame.payload.copyOf()
-                if (!keyExchangeSent) sendKeyExchange()
+                hs.peerKeyCommitment = frame.payload.copyOf()
+                if (!hs.keyExchangeSent) sendKeyExchange()
             }
             MessageType.KEY_EXCHANGE -> {
-                if (peerPubBytes != null) return // duplicate; ignore
-                if (peerKeyCommitment == null) {
+                if (hs.peerPubBytes != null) return // duplicate; ignore
+                if (hs.peerKeyCommitment == null) {
                     fail(SessionError.PROTOCOL_ERROR, "KEY_EXCHANGE received before KEY_COMMIT")
                     return
                 }
-                if (!keyExchangeSent) {
+                if (!hs.keyExchangeSent) {
                     fail(SessionError.PROTOCOL_ERROR, "peer reveal arrived before local reveal")
                     return
                 }
@@ -1242,7 +1239,7 @@ class SessionManager(
                 // A peer can verify our KEY_CONFIRM and send confirmation just
                 // before we process its KEY_CONFIRM. Defer until transcript
                 // verification makes the SAS-phase state transition.
-                if (keys == null) {
+                if (hs.keys == null) {
                     fail(SessionError.PROTOCOL_ERROR, "SAS_CONFIRM received before key derivation")
                     return
                 }
@@ -1254,14 +1251,14 @@ class SessionManager(
             }
             MessageType.KEY_CONFIRM -> {
                 // May arrive before we finished deriving (both sides race).
-                if (keys == null) {
+                if (hs.keys == null) {
                     pendingKeyConfirmFrame = frame
                 } else {
                     verifyPeerKeyConfirm(frame)
                 }
             }
             MessageType.DISCONNECT -> {
-                // Once keys exist, DISCONNECT must authenticate like every
+                // Once hs.keys exist, DISCONNECT must authenticate like every
                 // other control frame. Before derivation, accept only the
                 // protocol's exact plaintext shape.
                 // Accepted risk (DoS only, no key compromise): a plaintext
@@ -1269,7 +1266,7 @@ class SessionManager(
                 // session with a single frame. Anyone on the radio path can
                 // already drop frames; this adds no new capability beyond a
                 // marginally cheaper teardown signal.
-                val activeKeys = keys
+                val activeKeys = hs.keys
                 val payload = if (activeKeys != null) {
                     try {
                         openControl(frame, activeKeys)
@@ -1310,42 +1307,42 @@ class SessionManager(
     }
 
     private fun sendKeyCommit() {
-        if (keyCommitSent) return
-        val hello = byteArrayOf(Protocol.VERSION, myCodecPref)
+        if (hs.keyCommitSent) return
+        val hello = byteArrayOf(Protocol.VERSION, hs.myCodecPref)
         val commitment = try {
             SessionCrypto.keyCommitment(
-                myPubBytes, myNonce, hello, myCommitSalt, myIdentityId, myIdentityPublicKey,
+                hs.myPubBytes, hs.myNonce, hello, hs.myCommitSalt, hs.myIdentityId, hs.myIdentityPublicKey,
             )
         } finally {
             hello.fill(0)
         }
-        keyCommitSent = true
+        hs.keyCommitSent = true
         if (!enqueuePlain(MessageType.KEY_COMMIT, commitment)) {
             fail(SessionError.PROTOCOL_ERROR, "could not enqueue KEY_COMMIT")
         }
     }
 
     private fun sendKeyExchange() {
-        if (keyExchangeSent) return
-        if (peerKeyCommitment == null) {
+        if (hs.keyExchangeSent) return
+        if (hs.peerKeyCommitment == null) {
             fail(SessionError.PROTOCOL_ERROR, "cannot reveal before peer KEY_COMMIT")
             return
         }
-        val pub = myPubBytes
-        val salt = myCommitSalt
+        val pub = hs.myPubBytes
+        val salt = hs.myCommitSalt
         if (salt.size != SessionCrypto.COMMITMENT_SALT_BYTES) {
             fail(SessionError.PROTOCOL_ERROR, "local commitment salt unavailable")
             return
         }
-        if (myIdentityId.size != SessionCrypto.IDENTITY_ID_BYTES || myIdentityPublicKey.isEmpty()) {
+        if (hs.myIdentityId.size != SessionCrypto.IDENTITY_ID_BYTES || hs.myIdentityPublicKey.isEmpty()) {
             fail(SessionError.PROTOCOL_ERROR, "local identity material unavailable")
             return
         }
 
-        val hello = byteArrayOf(Protocol.VERSION, myCodecPref)
+        val hello = byteArrayOf(Protocol.VERSION, hs.myCodecPref)
         val proofInput = try {
             SessionCrypto.identityProofInput(
-                myIdentityId, myIdentityPublicKey, pub, myNonce, hello, salt,
+                hs.myIdentityId, hs.myIdentityPublicKey, pub, hs.myNonce, hello, salt,
             )
         } finally {
             hello.fill(0)
@@ -1358,7 +1355,7 @@ class SessionManager(
         if (signature.isEmpty() || signature.size > SessionCrypto.MAX_IDENTITY_SIGNATURE_BYTES) {
             signature.fill(0)
             salt.fill(0)
-            myCommitSalt = ByteArray(0)
+            hs.myCommitSalt = ByteArray(0)
             fail(SessionError.PROTOCOL_ERROR, "local identity signature size invalid")
             return
         }
@@ -1366,22 +1363,22 @@ class SessionManager(
         // v5 wire layout: ephLen(2)||ephKey||nonce16||salt32||identityId16||
         // identityKeyLen(2)||identityKey||signatureLen(2)||ECDSA signature.
         val payload = ByteBuffer.allocate(
-            2 + pub.size + myNonce.size + salt.size +
-                myIdentityId.size + 2 + myIdentityPublicKey.size + 2 + signature.size,
+            2 + pub.size + hs.myNonce.size + salt.size +
+                hs.myIdentityId.size + 2 + hs.myIdentityPublicKey.size + 2 + signature.size,
         ).order(ByteOrder.BIG_ENDIAN)
             .putShort(pub.size.toShort()).put(pub)
-            .put(myNonce).put(salt)
-            .put(myIdentityId)
-            .putShort(myIdentityPublicKey.size.toShort()).put(myIdentityPublicKey)
+            .put(hs.myNonce).put(salt)
+            .put(hs.myIdentityId)
+            .putShort(hs.myIdentityPublicKey.size.toShort()).put(hs.myIdentityPublicKey)
             .putShort(signature.size.toShort()).put(signature)
             .array()
 
-        keyExchangeSent = true
+        hs.keyExchangeSent = true
         val enqueued = try {
             enqueuePlain(MessageType.KEY_EXCHANGE, payload)
         } finally {
             salt.fill(0)
-            myCommitSalt = ByteArray(0)
+            hs.myCommitSalt = ByteArray(0)
             signature.fill(0)
         }
         if (!enqueued) fail(SessionError.PROTOCOL_ERROR, "could not enqueue KEY_EXCHANGE")
@@ -1423,7 +1420,7 @@ class SessionManager(
         try {
             SessionCrypto.decodePublicKey(pub)
             SessionCrypto.decodePublicKey(identityPublicKey)
-            val peerPref = peerCodecPref ?: error("peer HELLO codec preference absent")
+            val peerPref = hs.peerCodecPref ?: error("peer HELLO codec preference absent")
             val peerHello = byteArrayOf(Protocol.VERSION, peerPref)
             val expectedCommitment = try {
                 SessionCrypto.keyCommitment(
@@ -1433,7 +1430,7 @@ class SessionManager(
                 peerHello.fill(0)
             }
             try {
-                val committed = peerKeyCommitment ?: error("peer commitment absent")
+                val committed = hs.peerKeyCommitment ?: error("peer commitment absent")
                 if (!MessageDigest.isEqual(expectedCommitment, committed)) {
                     throw KeyCommitmentMismatchException()
                 }
@@ -1462,13 +1459,13 @@ class SessionManager(
                 throw PeerIdentityMismatchException()
             }
 
-            peerIdentityWasTrusted = pinnedKey != null
-            _peerIdentityTrusted.value = peerIdentityWasTrusted
-            peerPubBytes = pub
-            peerNonce = nonce
-            peerIdentityId = identityId
+            hs.peerIdentityWasTrusted = pinnedKey != null
+            _peerIdentityTrusted.value = hs.peerIdentityWasTrusted
+            hs.peerPubBytes = pub
+            hs.peerNonce = nonce
+            hs.peerIdentityId = identityId
             _peerIdentityFingerprint.value = identityId.joinToString("") { "%02x".format(it) }
-            peerIdentityPublicKey = identityPublicKey
+            hs.peerIdentityPublicKey = identityPublicKey
             accepted = true
         } finally {
             salt.fill(0)
@@ -1484,20 +1481,20 @@ class SessionManager(
     }
 
     private fun deriveAndConfirm() {
-        val peerPub = peerPubBytes ?: return
-        val peerNc = peerNonce ?: return
-        val kp = myKeyPair ?: return
+        val peerPub = hs.peerPubBytes ?: return
+        val peerNc = hs.peerNonce ?: return
+        val kp = hs.myKeyPair ?: return
         val secret = SessionCrypto.agreeSharedSecret(kp, SessionCrypto.decodePublicKey(peerPub))
         SessionCrypto.destroyPrivateKey(kp.private)
-        myKeyPair = null // private key is no longer needed after ECDH
+        hs.myKeyPair = null // private key is no longer needed after ECDH
         try {
-            val derived = SessionCrypto.deriveKeys(secret, myNonce, peerNc)
-            keys = derived
-            myRole = SessionCrypto.myRole(myPubBytes, peerPub)
-            val transcript = currentTranscriptHash(peerPub, peerNc)
-            if (!keyConfirmSent) {
-                keyConfirmSent = true
-                val confirmPayload = transcript + byteArrayOf(if (peerIdentityWasTrusted) 1 else 0)
+            val derived = SessionCrypto.deriveKeys(secret, hs.myNonce, peerNc)
+            hs.keys = derived
+            hs.myRole = SessionCrypto.myRole(hs.myPubBytes, peerPub)
+            val transcript = hs.transcriptHash()
+            if (!hs.keyConfirmSent) {
+                hs.keyConfirmSent = true
+                val confirmPayload = transcript + byteArrayOf(if (hs.peerIdentityWasTrusted) 1 else 0)
                 try {
                     enqueueControl(MessageType.KEY_CONFIRM, confirmPayload)
                 } finally {
@@ -1525,28 +1522,8 @@ class SessionManager(
     /** SAS confirmation can race ahead of local processing of peer KEY_CONFIRM. */
     private var pendingSasConfirmFrame: Frame? = null
 
-    private fun expectedTranscript(): ByteArray =
-        currentTranscriptHash(
-            peerPubBytes ?: error("peer public key absent"),
-            peerNonce ?: error("peer nonce absent"),
-        )
-
-    private fun currentTranscriptHash(peerPub: ByteArray, peerNc: ByteArray): ByteArray {
-        val peerPref = peerCodecPref ?: error("peer HELLO codec preference absent")
-        val ownHello = byteArrayOf(Protocol.VERSION, myCodecPref)
-        val peerHello = byteArrayOf(Protocol.VERSION, peerPref)
-        return try {
-            SessionCrypto.transcriptHash(
-                myPubBytes, peerPub, myNonce, peerNc, ownHello, peerHello,
-            )
-        } finally {
-            ownHello.fill(0)
-            peerHello.fill(0)
-        }
-    }
-
     private fun verifyPeerKeyConfirm(frame: Frame) {
-        val k = keys ?: return
+        val k = hs.keys ?: return
         val opened = try {
             openControl(frame, k)
         } catch (e: Exception) {
@@ -1555,7 +1532,7 @@ class SessionManager(
                 disconnectReason = DisconnectReason.AUTH_MISMATCH)
             return
         }
-        val expected = expectedTranscript()
+        val expected = hs.transcriptHash()
         try {
             verifyKeyConfirm(opened, expected)
         } finally {
@@ -1565,7 +1542,7 @@ class SessionManager(
     }
 
     private fun handleSasPhaseFrame(frame: Frame) {
-        val k = keys ?: return
+        val k = hs.keys ?: return
         when (frame.type) {
             MessageType.KEY_CONFIRM -> {
                 // Late/duplicate confirm — verify again, harmless.
@@ -1622,7 +1599,7 @@ class SessionManager(
     }
 
     private fun verifyKeyConfirmPayload(payload: ByteArray) {
-        val expected = expectedTranscript()
+        val expected = hs.transcriptHash()
         try {
             verifyKeyConfirm(payload, expected)
         } finally {
@@ -1658,14 +1635,14 @@ class SessionManager(
         }
 
         val reportedTrust = trustByte == 1
-        val priorReport = peerReportedIdentityTrusted
+        val priorReport = hs.peerReportedIdentityTrusted
         if (priorReport != null && priorReport != reportedTrust) {
             Log.w(TAG, "KEY_CONFIRM peer trust flag changed during session")
             endSession(SessionError.AUTH_MISMATCH, notifyPeer = true,
                 disconnectReason = DisconnectReason.AUTH_MISMATCH)
             return
         }
-        peerReportedIdentityTrusted = reportedTrust
+        hs.peerReportedIdentityTrusted = reportedTrust
         onKeyConfirmAccepted()
     }
 
@@ -1675,15 +1652,15 @@ class SessionManager(
         // Skip SAS only when both endpoints attest—inside authenticated
         // KEY_CONFIRM frames—that each has already pinned the other's identity.
         // If either pin is absent (e.g. local data loss), both show/compare SAS.
-        val mutuallyTrusted = peerIdentityWasTrusted && peerReportedIdentityTrusted == true
+        val mutuallyTrusted = hs.peerIdentityWasTrusted && hs.peerReportedIdentityTrusted == true
         if (mutuallyTrusted) {
             _sasCode.value = null
             selfSasConfirmed = true
             enqueueControl(MessageType.SAS_CONFIRM, ByteArray(0))
             AppLog.log(TAG, "both peer identities pinned; SAS skipped")
         } else {
-            // Invariant: SAS is only computed after keys are established.
-            _sasCode.value = SessionCrypto.shortAuthString(checkNotNull(keys) { "session keys established before SAS" }.sasSeed)
+            // Invariant: SAS is only computed after hs.keys are established.
+            _sasCode.value = SessionCrypto.shortAuthString(checkNotNull(hs.keys) { "session hs.keys established before SAS" }.sasSeed)
             AppLog.log(TAG, "first contact or asymmetric trust; awaiting SAS comparison")
         }
         startSasDeadline()
@@ -1775,9 +1752,9 @@ class SessionManager(
             return@synchronized
         }
         // Pin a new peer only after mutual SAS confirmation and successful playback setup.
-        if (!peerIdentityWasTrusted) {
-            val peerId = peerIdentityId
-            val peerKey = peerIdentityPublicKey
+        if (!hs.peerIdentityWasTrusted) {
+            val peerId = hs.peerIdentityId
+            val peerKey = hs.peerIdentityPublicKey
             if (peerId != null && peerKey != null) {
                 val stored = try {
                     peerIdentityStore.pinPeer(peerId, peerKey)
@@ -1786,7 +1763,7 @@ class SessionManager(
                     false
                 }
                 if (stored) {
-                    peerIdentityWasTrusted = true
+                    hs.peerIdentityWasTrusted = true
                     _peerIdentityTrusted.value = true
                     AppLog.log(TAG, "peer identity pinned after mutual SAS confirmation")
                 } else {
@@ -1838,7 +1815,7 @@ class SessionManager(
     // ------------------------------------------------------- session frames
 
     private fun handleSessionFrame(frame: Frame) {
-        val k = keys ?: return
+        val k = hs.keys ?: return
         // 1. Session binding (no state mutation).
         if (!MessageDigest.isEqual(frame.sessionId, k.sessionId)) {
             _authFailures.value += 1
@@ -2028,22 +2005,33 @@ class SessionManager(
         // Encode-side instance: never share the RX codec across threads.
         val c = txCodec ?: return
         _isTransmitting.value = true
-        // HS-02: the capture callback only ENQUEUES; the single outbound
-        // sender allocates sequences and writes. No per-frame coroutines.
-        val ok = audio.startCapture(c) { encoded, level ->
-            val now = elapsedClock()
-            if (now - lastLevelPush > 120) {
-                lastLevelPush = now
-                _voiceLevel.value = level
+        // AudioRecord creation blocks on the HAL; run it on the audio
+        // executor, never on the UI thread. The single thread keeps this
+        // serialized with stopTransmit's stopCapture below.
+        runOnAudioExecutor {
+            if (!_isTransmitting.value) return@execute // released while queued
+            // HS-02: the capture callback only ENQUEUES; the single outbound
+            // sender allocates sequences and writes. No per-frame coroutines.
+            val ok = try {
+                audio.startCapture(c) { encoded, level ->
+                    val now = elapsedClock()
+                    if (now - lastLevelPush > 120) {
+                        lastLevelPush = now
+                        _voiceLevel.value = level
+                    }
+                    if (_phase.value == Phase.IN_SESSION && _isTransmitting.value) {
+                        enqueueAudio(c.codecId, encoded)
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "startTransmit: startCapture failed: ${e.javaClass.simpleName}")
+                false
             }
-            if (_phase.value == Phase.IN_SESSION && _isTransmitting.value) {
-                enqueueAudio(c.codecId, encoded)
+            if (!ok) {
+                _isTransmitting.value = false
+                floor.releaseSelf()
+                _error.value = SessionError.MIC_UNAVAILABLE
             }
-        }
-        if (!ok) {
-            _isTransmitting.value = false
-            floor.releaseSelf()
-            _error.value = SessionError.MIC_UNAVAILABLE
         }
     }
 
@@ -2052,9 +2040,12 @@ class SessionManager(
             _isTransmitting.value = false
             _voiceLevel.value = 0f
         }
-        try {
-            audio.stopCapture()
-        } catch (e: Exception) { Log.w(TAG, "stopTransmit: stopCapture failed: ${e.javaClass.simpleName}") }
+        // Off the UI thread: AudioRecord teardown can block on the HAL.
+        runOnAudioExecutor {
+            try {
+                audio.stopCapture()
+            } catch (e: Exception) { Log.w(TAG, "stopTransmit: stopCapture failed: ${e.javaClass.simpleName}") }
+        }
     }
 
     // ------------------------------------------------------- frame builders
@@ -2095,7 +2086,7 @@ class SessionManager(
     }
 
     private fun aadForReceive(frame: Frame): ByteArray =
-        frame.headerBytes() + (1 - myRole).toByte()
+        frame.headerBytes() + (1 - hs.myRole).toByte()
 
     private fun openControl(frame: Frame, k: SessionKeys): ByteArray =
         SessionCrypto.open(k.controlKey, aadForReceive(frame), frame.payload)

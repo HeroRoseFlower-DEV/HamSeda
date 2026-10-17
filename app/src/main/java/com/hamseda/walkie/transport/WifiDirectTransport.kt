@@ -17,7 +17,6 @@ import android.net.wifi.p2p.WifiP2pManager
 import android.os.Build
 import android.os.Looper
 import android.util.Log
-import com.hamseda.walkie.proto.FrameException
 import com.hamseda.walkie.proto.FramedSocket
 import com.hamseda.walkie.proto.Protocol
 import com.hamseda.walkie.util.AppLog
@@ -83,7 +82,8 @@ internal object P2pListenRetryPolicy {
  * No internet, no access point, no router: the group is negotiated directly
  * between the two phones over the Wi-Fi radio.
  */
-class WifiDirectTransport(private val context: Context) : Transport {
+class WifiDirectTransport(private val context: Context) : AbstractFramedStreamTransport(), Transport {
+    override val tag: String = TAG
 
     override val type = TransportType.WIFI_DIRECT
 
@@ -104,7 +104,7 @@ class WifiDirectTransport(private val context: Context) : Transport {
     private val _incomingFrames = MutableSharedFlow<ByteArray>()
     override val incomingFrames: SharedFlow<ByteArray> = _incomingFrames.asSharedFlow()
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    override val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val mutex = Mutex()
 
     private var manager: WifiP2pManager? = null
@@ -1248,64 +1248,53 @@ class WifiDirectTransport(private val context: Context) : Transport {
         }
     }
 
-    private var readerJob: Job? = null
+    // Reader-loop hooks (shared loop lives in AbstractFramedStreamTransport).
+    // The generation is captured when the reader starts; the loop carries it
+    // so a stale reader can never publish into a newer session.
+
+    private var readerGeneration: Long = -1L
 
     private fun startReaderLocked(expectedGeneration: Long) {
-        readerJob?.cancel()
         val f = framed ?: return
-        readerJob = scope.launch {
-            while (operationGeneration.get() == expectedGeneration &&
-                (_state.value == TransportState.CONNECTED ||
-                    _state.value == TransportState.AUTHENTICATING)
-            ) {
-                // HS-04: readFrame() throws FrameException on protocol
-                // violation — route it through the common disconnect path
-                // instead of stranding the transport in CONNECTED.
-                val r = try {
-                    f.readFrame()
-                } catch (e: FrameException) {
-                    AppLog.log(TAG, "framing error: ${e.message}")
-                    handleGroupLost("framing error: ${e.message}", expectedGeneration)
-                    return@launch
-                } catch (e: CancellationException) {
-                    throw e // normal shutdown; not an error
-                } catch (e: Exception) {
-                    AppLog.log(TAG, "reader failed: ${e.javaClass.simpleName}")
-                    handleGroupLost("read error: ${e.message}", expectedGeneration)
-                    return@launch
-                }
-                when (r) {
-                    is FramedSocket.ReadResult.Frame -> {
-                        // A read can complete just as Stop/reconnect invalidates
-                        // this generation. Never publish a frame from the old
-                        // socket into a newly authenticated session.
-                        if (!isCurrentIncomingFrame(
-                                expectedGeneration = expectedGeneration,
-                                currentGeneration = operationGeneration.get(),
-                                expectedSocket = f,
-                                currentSocket = framed,
-                                state = _state.value,
-                            )
-                        ) {
-                            discardStaleFrame(r.frame)
-                            AppLog.log(TAG, "discarding frame from stale Wi-Fi Direct socket generation")
-                            return@launch
-                        }
-                        _incomingFrames.emit(r.frame)
-                    }
-                    is FramedSocket.ReadResult.Closed -> {
-                        handleGroupLost(expectedGeneration = expectedGeneration)
-                        return@launch
-                    }
-                    is FramedSocket.ReadResult.Error -> {
-                        if (r.cause is SocketTimeoutException) continue // idle read timeout
-                        handleGroupLost(r.cause.message ?: "read error", expectedGeneration)
-                        return@launch
-                    }
-                }
-            }
-        }
+        readerGeneration = expectedGeneration
+        startReader(f)
     }
+
+    override fun isReaderActive(source: FramedSocket): Boolean =
+        operationGeneration.get() == readerGeneration &&
+            (_state.value == TransportState.CONNECTED ||
+                _state.value == TransportState.AUTHENTICATING)
+
+    override suspend fun onFrame(source: FramedSocket, frame: ByteArray): Boolean {
+        // A read can complete just as Stop/reconnect invalidates this
+        // generation. Never publish a frame from the old socket into a newly
+        // authenticated session.
+        if (!isCurrentIncomingFrame(
+                expectedGeneration = readerGeneration,
+                currentGeneration = operationGeneration.get(),
+                expectedSocket = source,
+                currentSocket = framed,
+                state = _state.value,
+            )
+        ) {
+            discardStaleFrame(frame)
+            AppLog.log(TAG, "discarding frame from stale Wi-Fi Direct socket generation")
+            return false
+        }
+        _incomingFrames.emit(frame)
+        return true
+    }
+
+    override suspend fun onClosed(source: FramedSocket) {
+        handleGroupLost(expectedGeneration = readerGeneration)
+    }
+
+    override suspend fun onReadError(reason: String, source: FramedSocket) {
+        handleGroupLost(reason, readerGeneration)
+    }
+
+    override fun isIgnorableReadError(cause: java.io.IOException): Boolean =
+        cause is SocketTimeoutException // idle read timeout
 
     private suspend fun handleGroupLost(
         reason: String = "connection lost",
@@ -1339,7 +1328,7 @@ class WifiDirectTransport(private val context: Context) : Transport {
     }
 
     private fun closeSocketLocked() {
-        readerJob?.cancel(); readerJob = null
+        cancelReader()
         socketJob?.cancel(); socketJob = null
         connectWatchdog?.cancel(); connectWatchdog = null
         framed?.close(); framed = null
