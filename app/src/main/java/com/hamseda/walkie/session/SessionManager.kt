@@ -2009,7 +2009,7 @@ class SessionManager(
         // executor, never on the UI thread. The single thread keeps this
         // serialized with stopTransmit's stopCapture below.
         runOnAudioExecutor {
-            if (!_isTransmitting.value) return@execute // released while queued
+            if (!_isTransmitting.value) return@runOnAudioExecutor // released while queued
             // HS-02: the capture callback only ENQUEUES; the single outbound
             // sender allocates sequences and writes. No per-frame coroutines.
             val ok = try {
