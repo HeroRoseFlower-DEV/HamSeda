@@ -1,3 +1,14 @@
+# HamSeda Changelog
+
+## Phase 6 — Official release pipeline (2026-10-15)
+
+- Add a tag-triggered release workflow for signed APK and AAB artifacts; the workflow fails closed if required signing secrets or verified signatures are missing.
+- Keep the private signing keystore outside Git and use repository Actions secrets; decode it only into a restricted temporary runner file and remove it during cleanup.
+- Require an annotated version tag matching app versionName, reject out-of-order version tags, and require versionCode to increase beyond the previous version tag.
+- Verify APK/AAB signatures and publish SHA-256 checksums with the GitHub Release.
+- Document release notes, signing setup, the Android compatibility evidence matrix, and explicit production-readiness gates.
+- No release was published in this phase; signing secrets, successful CI on the final commit, API 37 runtime permission validation, and two-phone physical tests remain prerequisites.
+
 ## 2026-10-15 — Emulator-executed instrumented tests
 
 - Extend CI from compiling Android instrumentation tests to executing them on a clean API 35 Google APIs x86_64 emulator.
@@ -11,8 +22,6 @@
 - Discard and zero frames that fail the stale-session guard.
 - Add deterministic JVM tests for current-session acceptance and stale generation/socket/state rejection.
 - Physical-device stop/reconnect race testing remains required; no microphone DSP or wire-protocol changes were made.
-
-# HamSeda Changelog
 
 ## 2026-10-15 — AudioTrack playback lifecycle hardening
 

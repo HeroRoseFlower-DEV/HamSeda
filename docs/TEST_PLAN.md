@@ -285,3 +285,19 @@ Physical/API 37 acceptance remains **NOT RUN** until verified on an API 37 emula
 - [ ] Retry and grant from the system prompt; confirm the gate advances and Wi-Fi Direct can open the local socket.
 - [ ] Revoke local-network permission in system Settings during/after a session; verify connection failure and cleanup are bounded and no stale session is resurrected.
 - [ ] Confirm Bluetooth Classic permission/discoverability behavior remains independent of local-network permission.
+
+
+## Official release and compatibility evidence
+
+A successful build is recorded as build-only evidence unless the relevant runtime scenario was executed. Use the version-specific release gate in docs/RELEASE_PROCESS.md before publishing. Never mark API 37 permission enforcement or physical radio/audio cases as passed based only on the API 35 emulator job.
+
+| Android API range | Automated coverage currently intended | Physical-device status |
+|---|---|---|
+| 26–28 | JVM policy boundaries and build coverage | Not verified in this phase |
+| 29–30 | JVM policy boundaries and build coverage | Not verified in this phase |
+| 31–32 | JVM policy boundaries and build coverage | Not verified in this phase |
+| 33–35 | API 35 emulator instrumentation; runtime permission grants in test fixtures | Physical radio/audio behavior not verified |
+| 36 | Build/policy coverage only unless a device run is recorded | Not verified in this phase |
+| 37+ | Pure JVM policy boundary and merged-manifest declaration only | Actual system permission prompt and local-network socket enforcement NOT RUN |
+
+For every physical test, record the device model, Android build/API level, app versionCode/versionName, transport, permission decisions, result, and evidence link. Do not promote a row from not verified to tested without a reproducible run record.
