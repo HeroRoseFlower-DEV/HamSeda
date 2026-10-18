@@ -57,11 +57,13 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.hamseda.walkie.R
+import com.hamseda.walkie.proto.Protocol
 import com.hamseda.walkie.ui.components.PeerAvatar
 import com.hamseda.walkie.ui.theme.TelegramColors
 import com.hamseda.walkie.ui.vm.ProfileViewModel
 import com.hamseda.walkie.ui.vm.VmDeps
 import com.hamseda.walkie.ui.vm.VmFactory
+import com.hamseda.walkie.util.takeUtf8Bytes
 import kotlinx.coroutines.delay
 
 /**
@@ -190,7 +192,9 @@ fun ProfileScreen(
             // Display name editor.
             TextField(
                 value = name ?: "",
-                onValueChange = { name = it.take(64) },
+                // Byte-based cap: the wire limit is 64 UTF-8 bytes, and a
+                // 64-char Persian name is 128 bytes.
+                onValueChange = { name = it.takeUtf8Bytes(Protocol.PROFILE_MAX_NAME_BYTES) },
                 label = { Text(stringResource(R.string.profile_name_label)) },
                 placeholder = { Text(stringResource(R.string.profile_name_hint)) },
                 singleLine = true,

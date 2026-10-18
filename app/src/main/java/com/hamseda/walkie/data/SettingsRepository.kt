@@ -7,7 +7,9 @@ import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.hamseda.walkie.proto.CodecId
+import com.hamseda.walkie.proto.Protocol
 import com.hamseda.walkie.transport.TransportPreference
+import com.hamseda.walkie.util.takeUtf8Bytes
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -119,8 +121,13 @@ class SettingsRepository(private val context: Context) {
         context.dataStore.edit { it[Keys.READ_RECEIPTS] = v }
     }
 
-    /** Profile display name; trimmed, max 64 chars (matches wire limit). */
+    /**
+     * Profile display name; trimmed, max 64 UTF-8 bytes (the wire limit —
+     * a 64-char Persian name is 128 bytes, so this must be byte-based).
+     */
     suspend fun setProfileName(v: String) {
-        context.dataStore.edit { it[Keys.PROFILE_NAME] = v.trim().take(64) }
+        context.dataStore.edit {
+            it[Keys.PROFILE_NAME] = v.trim().takeUtf8Bytes(Protocol.PROFILE_MAX_NAME_BYTES)
+        }
     }
 }
