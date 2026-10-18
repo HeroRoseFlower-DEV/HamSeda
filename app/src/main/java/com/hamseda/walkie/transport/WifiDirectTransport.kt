@@ -30,6 +30,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -1150,7 +1151,7 @@ class WifiDirectTransport(private val context: Context) : AbstractFramedStreamTr
             // ownership moves and let the cancellation propagate, otherwise
             // the peer sees a half-open, unauthenticated connection.
             try {
-                coroutineContext.ensureActive()
+                currentCoroutineContext().ensureActive()
             } catch (e: CancellationException) {
                 try { accepted.close() } catch (_: IOException) {}
                 throw e
