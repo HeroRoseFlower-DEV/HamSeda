@@ -109,7 +109,9 @@ fun TelegramBubble(
                     style = TextStyle(fontSize = 12.sp, color = timeColor),
                     maxLines = 1,
                 )
-                if (isFromMe && state >= MessageState.SENT) {
+                // Exact states only: QUEUED/FAILED show a text label instead
+                // (see ChatScreen), and FAILED=4 must never render ticks.
+                if (isFromMe && (state == MessageState.SENT || state == MessageState.DELIVERED || state == MessageState.READ)) {
                     Spacer(Modifier.width(4.dp))
                     TelegramCheckmarks(state = state, tickSent = tickSent, tickRead = tickRead)
                 }
@@ -226,8 +228,9 @@ private fun TelegramCheckmarks(
     tickRead: Color,
     modifier: Modifier = Modifier,
 ) {
-    val color = if (state >= MessageState.READ) tickRead else tickSent
-    val double = state >= MessageState.DELIVERED
+    // Exact match: FAILED (4) sorts above READ and must not render ticks.
+    val color = if (state == MessageState.READ) tickRead else tickSent
+    val double = state == MessageState.DELIVERED || state == MessageState.READ
     Canvas(modifier = modifier.size(if (double) 20.dp else 12.dp, 12.dp)) {
         val stroke = 1.8f.dp.toPx()
         fun check(offsetX: Float) {
