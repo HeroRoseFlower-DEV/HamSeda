@@ -146,7 +146,7 @@ class MainActivity : ComponentActivity() {
                                     messaging = messaging,
                                 )
                             }
-                            HamSedaRoot(deps = deps, onLanguageChanged = { recreate() })
+                            HamSedaRoot(deps = deps, darkTheme = darkTheme, onLanguageChanged = { recreate() })
                         }
                     }
                 }
@@ -168,7 +168,7 @@ private enum class Screen {
 }
 
 @Composable
-private fun HamSedaRoot(deps: VmDeps, onLanguageChanged: () -> Unit) {
+private fun HamSedaRoot(deps: VmDeps, darkTheme: Boolean, onLanguageChanged: () -> Unit) {
     // Saveable: rotating the phone on the Settings screen must not kick the
     // user back to Home.
     var screen by rememberSaveable { mutableStateOf(Screen.HOME) }

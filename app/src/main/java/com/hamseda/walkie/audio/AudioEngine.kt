@@ -1006,7 +1006,7 @@ class AudioEngine(private val context: Context) : AudioPipeline {
         }
 
         val queueWaitNanos = (System.nanoTime() - queueWaitStartedNanos).coerceAtLeast(0L)
-        recordPlaybackQueueTiming(queueWaitNanos, maxObservedQueuedFrames, queueLimitFrames, generation)
+        recordPlaybackQueueTiming(queueWaitNanos, maxObservedQueuedFrames, queueLimitFrames, workerGeneration)
         if (!readyForWrite) {
             if (queueWaitTimedOut && playbackRunning.get()) {
                 AppLog.log(
