@@ -53,8 +53,8 @@ jobs:
           yes | sdkmanager --licenses > /dev/null || true
           # API 37 platform: try the canonical path, fall back to the .0 variant.
           sdkmanager "platform-tools" "emulator" "system-images;android-35;google_apis;x86_64"
-          sdkmanager "platforms;android-37" "build-tools;36.0.0" "ndk;30.0.16248370" "cmake;3.31.6" \
-            || sdkmanager "platforms;android-37.0" "build-tools;36.0.0" "ndk;30.0.16248370" "cmake;3.31.6"
+          sdkmanager "platforms;android-37" "build-tools;37.0.0" "ndk;30.0.16248370" "cmake;3.31.6" \
+            || sdkmanager "platforms;android-37.0" "build-tools;37.0.0" "ndk;30.0.16248370" "cmake;3.31.6"
 
       - name: Verify Gradle wrapper
         # The checked-in wrapper JAR is pinned to Gradle's published official 9.8.1 checksum.

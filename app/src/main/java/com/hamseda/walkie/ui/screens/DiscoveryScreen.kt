@@ -40,9 +40,11 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -67,6 +69,12 @@ import com.hamseda.walkie.ui.vm.VmDeps
 import com.hamseda.walkie.ui.vm.VmFactory
 import com.hamseda.walkie.util.PermissionHelper
 
+/** Descriptors for the action queued while a permission/system dialog is open. */
+private const val PENDING_SCAN = "scan"
+private const val PENDING_CONNECT = "connect"
+private const val PENDING_LISTEN = "listen"
+private const val PENDING_DISCOVERABLE = "discoverable"
+
 @Composable
 fun DiscoveryScreen(
     deps: VmDeps,
@@ -89,19 +97,25 @@ fun DiscoveryScreen(
     // LocalContext inside activity-result callbacks (configuration-aware Compose API).
     val permissionDeniedMessage = stringResource(R.string.perm_denied_hint)
     val discoverabilityDeclinedMessage = stringResource(R.string.discoverable_declined)
-    var pendingAction by remember { mutableStateOf<(() -> Unit)?>(null) }
+    // The action queued while a permission/system dialog is open, described
+    // as plain data (kind + peer id) instead of a lambda: lambdas cannot be
+    // saved, so the pre-fix version silently dropped the queued
+    // scan/connect/listen when the screen rotated with the dialog open.
+    var pendingActionKind by rememberSaveable { mutableStateOf<String?>(null) }
+    var pendingActionPeerId by rememberSaveable { mutableStateOf<String?>(null) }
+    // Bumped when a grant arrives; the LaunchedEffect below (defined after
+    // the do* helpers it invokes) consumes it and runs the queued action.
+    var grantNonce by remember { mutableStateOf(0) }
     val permLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
     ) { results ->
-        // Clear the old action BEFORE invoking it: the action can open a
-        // second system prompt and install a new pending action. Do not retry
-        // automatically when the user denied a permission; that would reopen
-        // the same system dialog in a loop.
-        val action = pendingAction
-        pendingAction = null
+        // Do not retry automatically when the user denied a permission; that
+        // would reopen the same system dialog in a loop.
         if (results.isNotEmpty() && results.values.all { it }) {
-            action?.invoke()
+            grantNonce++
         } else {
+            pendingActionKind = null
+            pendingActionPeerId = null
             android.widget.Toast.makeText(
                 context,
                 permissionDeniedMessage,
@@ -115,15 +129,15 @@ fun DiscoveryScreen(
     val discoverableLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
     ) { result ->
-        val action = pendingAction
-        pendingAction = null
         // ACTION_REQUEST_DISCOVERABLE returns the accepted duration in
         // seconds (e.g. 300), not Activity.RESULT_OK (-1). Any positive
         // result means Android accepted discoverability; 0 / RESULT_CANCELED
         // means it was denied or the system could not enable it.
         if (result.resultCode > 0) {
-            action?.invoke()
+            grantNonce++
         } else {
+            pendingActionKind = null
+            pendingActionPeerId = null
             // The RFCOMM listener is already active at this point. If the user
             // declines visibility, end the pending wait rather than leaving a
             // hidden server running with a misleading "waiting" state.
@@ -136,7 +150,7 @@ fun DiscoveryScreen(
         }
     }
 
-    fun requestDiscoverable(then: () -> Unit) {
+    fun requestDiscoverable() {
         val intent = android.content.Intent(
             android.bluetooth.BluetoothAdapter.ACTION_REQUEST_DISCOVERABLE,
         ).apply {
@@ -145,7 +159,8 @@ fun DiscoveryScreen(
                 300, // max the platform honors
             )
         }
-        pendingAction = then
+        pendingActionKind = PENDING_DISCOVERABLE
+        pendingActionPeerId = null
         discoverableLauncher.launch(intent)
     }
 
@@ -166,7 +181,8 @@ fun DiscoveryScreen(
     fun doScan() {
         val missing = missingForScan()
         if (missing.isNotEmpty()) {
-            pendingAction = { vm.startScan() }
+            pendingActionKind = PENDING_SCAN
+            pendingActionPeerId = null
             permLauncher.launch(missing.toTypedArray())
         } else {
             vm.startScan()
@@ -176,7 +192,8 @@ fun DiscoveryScreen(
     fun doConnectPeer(peer: com.hamseda.walkie.transport.PeerDevice) {
         val missing = missingForSessionStart()
         if (missing.isNotEmpty()) {
-            pendingAction = { vm.connectPeer(peer) }
+            pendingActionKind = PENDING_CONNECT
+            pendingActionPeerId = peer.id
             permLauncher.launch(missing.toTypedArray())
         } else {
             vm.connectPeer(peer)
@@ -188,7 +205,8 @@ fun DiscoveryScreen(
         if (missing.isNotEmpty()) {
             // Re-enter the full role setup after permission grant; Bluetooth
             // discoverability is requested once the listener is ready.
-            pendingAction = { doListen() }
+            pendingActionKind = PENDING_LISTEN
+            pendingActionPeerId = null
             permLauncher.launch(missing.toTypedArray())
             return
         }
@@ -199,7 +217,8 @@ fun DiscoveryScreen(
             val missingAdvertise =
                 PermissionHelper.missingBluetoothAdvertisePermission(context)
             if (missingAdvertise.isNotEmpty()) {
-                pendingAction = { doListen() }
+                pendingActionKind = PENDING_LISTEN
+                pendingActionPeerId = null
                 permLauncher.launch(missingAdvertise.toTypedArray())
                 return
             }
@@ -207,10 +226,30 @@ fun DiscoveryScreen(
             // discoverability is enabled first, a peer can see the phone and
             // tap Connect before the server socket has been created.
             vm.listenForIncoming {
-                requestDiscoverable { /* listener is already waiting */ }
+                requestDiscoverable()
             }
         } else {
             vm.listenForIncoming()
+        }
+    }
+
+    // Runs the action queued before a permission/system-dialog grant. The
+    // descriptor above is saveable, so a rotation while the dialog is open
+    // no longer drops the queued scan/connect/listen. Clearing BEFORE
+    // running matters: the action can open a second system prompt and queue
+    // a new action.
+    LaunchedEffect(grantNonce) {
+        if (grantNonce == 0) return@LaunchedEffect
+        val kind = pendingActionKind
+        val peerId = pendingActionPeerId
+        pendingActionKind = null
+        pendingActionPeerId = null
+        when (kind) {
+            PENDING_SCAN -> vm.startScan()
+            PENDING_CONNECT -> peers.find { it.id == peerId }?.let { vm.connectPeer(it) }
+            PENDING_LISTEN -> doListen()
+            // PENDING_DISCOVERABLE (or null): no follow-up needed.
+            else -> Unit
         }
     }
 
@@ -316,7 +355,8 @@ fun DiscoveryScreen(
                     PermissionRationaleCard(
                         message = stringResource(rationaleRes),
                         onGrant = {
-                            pendingAction = { vm.startScan() }
+                            pendingActionKind = PENDING_SCAN
+                            pendingActionPeerId = null
                             permLauncher.launch(
                                 (missingScan + missingLocalNet).distinct().toTypedArray(),
                             )

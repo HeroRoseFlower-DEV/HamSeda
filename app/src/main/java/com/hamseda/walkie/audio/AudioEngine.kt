@@ -79,12 +79,6 @@ class AudioEngine(private val context: Context) : AudioPipeline {
     /** Serializes AudioTrack creation/start/stop so teardown cannot race a late startup. */
     private val playbackLifecycleLock = Any()
     private var playbackThread: Thread? = null
-    /**
-     * Scratch for PLC synthesis in [conceal]. Only touched on the playback
-     * worker thread, so no synchronization is needed. Sized for the standard
-     * frame; [conceal] falls back to allocation if a frame ever differs.
-     */
-    private val plcScratch = ShortArray(AudioCodec.FRAME_SAMPLES)
     private var track: AudioTrack? = null
 
     // Playback worker owns these aggregates; they distinguish output write stalls
@@ -154,6 +148,23 @@ class AudioEngine(private val context: Context) : AudioPipeline {
                 AudioManager.ACTION_AUDIO_BECOMING_NOISY -> {
                     updateRoute(AudioRoute.SPEAKER)
                 }
+                // startBluetoothSco() is asynchronous (1-3s) and fire-and-
+                // forget: without this, a slow SCO link leaves early session
+                // audio on the fallback route with only a log line. When the
+                // link finally connects, re-apply routing so the BT headset
+                // actually carries the audio.
+                AudioManager.ACTION_SCO_AUDIO_STATE_UPDATED -> {
+                    val state = intent.getIntExtra(
+                        AudioManager.EXTRA_SCO_AUDIO_STATE,
+                        AudioManager.SCO_AUDIO_STATE_ERROR,
+                    )
+                    if (state == AudioManager.SCO_AUDIO_STATE_CONNECTED) {
+                        AppLog.log(TAG, "BT SCO link connected; re-applying audio routing")
+                        updateRoute(guessRoute())
+                    } else {
+                        AppLog.log(TAG, "BT SCO audio state changed: $state")
+                    }
+                }
             }
         }
     }
@@ -173,6 +184,7 @@ class AudioEngine(private val context: Context) : AudioPipeline {
         val filter = IntentFilter().apply {
             addAction(AudioManager.ACTION_HEADSET_PLUG)
             addAction(AudioManager.ACTION_AUDIO_BECOMING_NOISY)
+            addAction(AudioManager.ACTION_SCO_AUDIO_STATE_UPDATED)
         }
         // Be explicit on recent Android versions. Keep the fallback for older API levels.
         try {
@@ -530,6 +542,13 @@ class AudioEngine(private val context: Context) : AudioPipeline {
                             Log.w(TAG, "capture worker died unexpectedly; cleared stale running flag")
                             pipelineListener?.onCaptureError("capture worker died")
                         }
+                        // The normal release chain (onCaptureError ->
+                        // setPttPressed(false) -> stopTransmit -> stopCapture)
+                        // only runs while still transmitting; otherwise the
+                        // AudioRecord would leak until the next startCapture.
+                        // Release it here under the lifecycle lock.
+                        try { recorder?.release() } catch (_: Exception) {}
+                        recorder = null
                     }
                 }
             }
@@ -755,6 +774,7 @@ class AudioEngine(private val context: Context) : AudioPipeline {
             at?.release()
             Log.w(TAG, "AudioTrack could not initialize at ${AudioCodec.SAMPLE_RATE} Hz")
             restoreAudioModeIfIdle()
+            abandonFocus()
             return false
         }
         val playbackBuffer = configurePlaybackBuffer(at)
@@ -767,6 +787,7 @@ class AudioEngine(private val context: Context) : AudioPipeline {
             Log.w(TAG, "AudioTrack play failed: ${e.javaClass.simpleName}")
             try { at.release() } catch (_: Exception) {}
             restoreAudioModeIfIdle()
+            abandonFocus()
             return false
         }
         track = at
@@ -815,6 +836,11 @@ class AudioEngine(private val context: Context) : AudioPipeline {
                 reset(at.playbackHeadPosition)
             }
             val silence = ShortArray(AudioCodec.FRAME_SAMPLES)
+            // Worker-local PLC scratch (not shared): a zombie worker from an
+            // older generation can overlap the replacement worker, and a
+            // shared scratch would let one's finally-block wipe the other's
+            // in-progress synthesis.
+            val plcScratch = ShortArray(AudioCodec.FRAME_SAMPLES)
             var last: ShortArray? = null
             var plcCount = 0
             var fecRecoveredFrames = 0L
@@ -855,7 +881,7 @@ class AudioEngine(private val context: Context) : AudioPipeline {
                                 last = pcm
                                 plcCount = 0
                             } else {
-                                val next = conceal(at, queueTracker, last, silence, plcCount, playbackBuffer.queueLimitFrames)
+                                val next = conceal(at, queueTracker, last, silence, plcScratch, plcCount, playbackBuffer.queueLimitFrames)
                                 if (next == null) {
                                     reportPlaybackWriteFailure()
                                     break@playback
@@ -887,7 +913,7 @@ class AudioEngine(private val context: Context) : AudioPipeline {
                             } else {
                                 if (fecPayload != null) fecFallbackFrames++
                                 val next = conceal(
-                                    at, queueTracker, last, silence, plcCount,
+                                    at, queueTracker, last, silence, plcScratch, plcCount,
                                     playbackBuffer.queueLimitFrames,
                                 )
                                 if (next == null) {
@@ -916,10 +942,18 @@ class AudioEngine(private val context: Context) : AudioPipeline {
                 Log.e(TAG, "playback worker terminated unexpectedly: ${e.javaClass.simpleName}", e)
                 reportPlaybackWriteFailure()
             } finally {
-                playbackRunning.set(false)
+                // Guard shared-state mutations with the per-worker
+                // generation: a zombie worker from an older generation that
+                // wakes up after its replacement started must not clear
+                // playbackRunning (which would silently kill the new
+                // worker's loop) or reset the new session's jitter buffer
+                // mid-stream. Thread-locals (last/silence) are always wiped.
+                if (playbackGeneration == generation) {
+                    playbackRunning.set(false)
+                    buffer.reset()
+                }
                 last?.fill(0)
                 silence.fill(0)
-                buffer.reset()
             }
         }, "HamSeda-Playback").also { it.start() }
         return true
@@ -1132,6 +1166,7 @@ class AudioEngine(private val context: Context) : AudioPipeline {
         queueTracker: PlaybackQueueTracker,
         last: ShortArray?,
         silence: ShortArray,
+        plcScratch: ShortArray,
         plcCount: Int,
         queueLimitFrames: Int,
     ): Int? {
@@ -1351,6 +1386,11 @@ class AudioEngine(private val context: Context) : AudioPipeline {
         // Re-read the live state before restoring: if another app (e.g. an
         // incoming call) changed the audio mode while we were active, our
         // snapshot is stale — do not clobber their state, just drop ours.
+        // Best-effort limitation: if another app concurrently holds
+        // MODE_IN_COMMUNICATION itself (e.g. a VoIP call during our
+        // teardown), we cannot tell its mode apart from ours and will still
+        // restore our snapshot over it. There is no API to identify the
+        // last mode requester.
         val currentMode: Int? = try { audioManager.mode } catch (_: Exception) { null }
         if (currentMode != null && currentMode != AudioManager.MODE_IN_COMMUNICATION) {
             Log.w(TAG, "audio mode changed externally during session; skipping restore (current=$currentMode)")
@@ -1452,9 +1492,13 @@ class AudioEngine(private val context: Context) : AudioPipeline {
         }
     }
 
+    /**
+     * Release framework registrations. Must be safe to call on the main
+     * thread: it does NOT stop capture/playback synchronously — the
+     * session's teardown already queued those on the audio executor, and
+     * AudioRecord/AudioTrack teardown can block on the HAL.
+     */
     fun release() {
-        stopCapture()
-        stopPlayback()
         try {
             context.unregisterReceiver(routeReceiver)
         } catch (_: IllegalArgumentException) {}

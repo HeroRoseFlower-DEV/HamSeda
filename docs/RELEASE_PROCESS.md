@@ -15,7 +15,7 @@ The workflow verifies the APK signature with Android's apksigner, verifies the A
 
 Create a dedicated Android upload/release keystore on a trusted local machine. Keep a secure offline backup. Do not commit the keystore, passwords, exported private keys, or signing material to the repository, issues, pull requests, logs, or release assets.
 
-Add these four repository Actions secrets under Settings → Secrets and variables → Actions:
+Add these five repository Actions secrets under Settings → Secrets and variables → Actions:
 
 | Secret | Value |
 |---|---|
@@ -23,6 +23,9 @@ Add these four repository Actions secrets under Settings → Secrets and variabl
 | HAMSEDA_KEYSTORE_PASSWORD | Keystore password |
 | HAMSEDA_KEY_ALIAS | Alias of the signing key |
 | HAMSEDA_KEY_PASSWORD | Key password |
+| HAMSEDA_CERT_SHA256 | (Optional but recommended) SHA-256 fingerprint of the release signing certificate, hex without colons. Enables certificate pinning in the release workflow: a mismatched fingerprint fails the release. If unset, pinning is skipped with a warning. |
+
+Get the certificate fingerprint from your keystore with: `keytool -list -v -keystore hamseda-release.jks -alias <alias> | grep SHA256`. Copy only the hex fingerprint (no colons, no spaces) into the secret field.
 
 Encode the keystore locally without uploading it anywhere else; on Linux, use base64 -w 0 hamseda-release.jks to print a single-line value. Copy that output directly into the secret field. Do not paste it into a chat or a repository file. On platforms without -w, use the platform's equivalent single-line Base64 command.
 
@@ -38,7 +41,7 @@ Before creating a public tag:
 4. Validate the relevant platform-specific permission behavior on API 37 / Android 17 before claiming that gate is passed. The API 35 emulator suite does not prove API 37 runtime enforcement.
 5. Review CHANGELOG.md and fill in docs/RELEASE_NOTES_TEMPLATE.md by hand (the release workflow publishes it via --notes-file). Document known limitations; do not claim measured latency, guaranteed range, or independent security certification without evidence.
 6. Increase versionCode and set versionName in app/build.gradle.kts; keep the version name consistent with the release tag. Commit this change before tagging.
-7. Confirm all four Actions secrets are configured. Create and push an annotated version tag pointing at the reviewed commit, for example v1.2 for versionName = "1.2".
+7. Confirm all five Actions secrets are configured (the four signing secrets, plus HAMSEDA_CERT_SHA256 so certificate pinning actually runs instead of warn-and-skip). Create and push an annotated version tag pointing at the reviewed commit, for example v1.2 for versionName = "1.2".
 8. Wait for the Release workflow to finish. Confirm the APK and AAB signatures and SHA256SUMS are attached to the GitHub Release.
 9. Download the published APK and checksum manifest independently, run sha256sum --check SHA256SUMS, install on a clean device, and verify that an update from the previous signed build installs without signature mismatch.
 

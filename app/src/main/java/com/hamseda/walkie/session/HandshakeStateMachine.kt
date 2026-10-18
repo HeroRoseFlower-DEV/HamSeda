@@ -11,10 +11,19 @@ import java.security.KeyPair
  * commitments, peer identity material, and per-phase sent flags).
  *
  * Extracted from SessionManager (finding I8) to shrink the god class. This is
- * a STATE HOLDER, not a threading owner: SessionManager retains all locks
- * ([SessionManager.handshakeFrameLock]), the frame pump, and lifecycle. All
- * methods here are plain synchronous state transitions; callers must hold the
- * appropriate SessionManager lock.
+ * a STATE HOLDER, not a threading owner: SessionManager retains the frame
+ * pump, lifecycle, and all locking. All methods here are plain synchronous
+ * state transitions.
+ *
+ * Actual locking discipline (not "hold a SessionManager lock for everything"):
+ * - [wipe] runs under teardownMutex (teardown()) or uncontended at close();
+ *   teardown is the only writer at that point, so the wipe is serialized.
+ * - Handshake-path mutations (beginHandshake, frame handlers) run under
+ *   handshakeFrameLock.
+ * - Hot-path reads (enqueueControl/enqueueAudio reading keys/myRole) are
+ *   intentionally lock-free snapshots: the fields are only replaced (never
+ *   mutated in place) after the handshake completes, and a torn-down
+ *   session null-wipes them before any new handshake can repopulate them.
  *
  * The handshake's output is [SessionKeys] (plus peer identity); media and
  * session lifecycle stay in SessionManager.
@@ -45,9 +54,16 @@ class HandshakeStateMachine {
     /**
      * Wipe all key material and identity secrets. SessionManager calls this
      * from its teardown/close paths (previously the inline wipeSecrets()).
+     * The ephemeral private key is destroyed here (not just dereferenced) so
+     * every abort path — commit/signature mismatch, deadline, user cancel,
+     * transport loss, service destroy — gets the same treatment as the
+     * success path in deriveAndConfirm().
      */
     fun wipe() {
         keys?.wipe(); keys = null
+        // Best-effort destroy of the ephemeral private key; providers that
+        // cooperate zero the key material, otherwise the reference is dropped.
+        myKeyPair?.let { SessionCrypto.destroyPrivateKey(it.private) }
         myKeyPair = null
         myNonce.fill(0); myNonce = ByteArray(0)
         myCommitSalt.fill(0); myCommitSalt = ByteArray(0)

@@ -70,6 +70,15 @@ object Protocol {
      */
     const val HANDSHAKE_TIMEOUT_MS = 30_000L
     const val SAS_CONFIRM_TIMEOUT_MS = 120_000L
+
+    /**
+     * Transport-level dead-peer watchdog: a peer that dies without FIN
+     * leaves a half-open socket the reader would otherwise block on
+     * forever. Must exceed the longest legitimate quiet period
+     * ([SAS_CONFIRM_TIMEOUT_MS]) so slow SAS comparisons are never killed;
+     * in-session silence is already caught faster by [PEER_TIMEOUT_MS].
+     */
+    const val TRANSPORT_IDLE_TIMEOUT_MS = 150_000L
 }
 
 /** Wire message types. Values are stable; do not renumber. */

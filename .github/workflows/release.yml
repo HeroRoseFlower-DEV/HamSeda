@@ -167,9 +167,11 @@ jobs:
         run: |
           set -euo pipefail
           # Safety net: the CI gate above checks the main-branch run, but the
-          # tag itself never runs CI. Re-run unit tests and lint on the exact
-          # tagged source before building the release artifacts.
-          ./gradlew :app:testDebugUnitTest :app:lintDebug --no-daemon --stacktrace
+          # tag itself never runs CI. Re-run unit tests, release lint, and
+          # the consistency checks on the exact tagged source before
+          # building the release artifacts.
+          ./gradlew :app:testDebugUnitTest :app:lintRelease --no-daemon --stacktrace
+          bash .github/scripts/verify-consistency.sh
           ./gradlew :app:assembleRelease :app:bundleRelease --no-daemon --stacktrace
 
       - name: Verify release signatures and generate checksums
@@ -227,6 +229,28 @@ jobs:
             fi
           done
           echo "ABI check passed: all 4 native library directories present."
+          # ELF check (mirrors android.yml): Android 15+ devices can use
+          # 16 KiB memory pages. Confirm each packaged .so has a LOAD
+          # segment aligned to 16 KiB, matching the explicit
+          # -Wl,-z,max-page-size=16384 link option in CMakeLists.txt.
+          NATIVE_TMP="$(mktemp -d)"
+          trap 'rm -rf "$NATIVE_TMP"' EXIT
+          unzip -q "$APK" 'lib/*/libhamseda_opus_jni.so' -d "$NATIVE_TMP"
+          LLVM_READELF="$ANDROID_HOME/ndk/30.0.16248370/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
+          test -x "$LLVM_READELF"
+          for abi in arm64-v8a armeabi-v7a x86_64 x86; do
+            LIB="$NATIVE_TMP/lib/$abi/libhamseda_opus_jni.so"
+            if [ ! -s "$LIB" ]; then
+              echo "::error::Missing native Opus JNI library for ABI $abi in release $APK"
+              exit 1
+            fi
+            if ! "$LLVM_READELF" -lW "$LIB" | awk '$1 == "LOAD" && $NF ~ /^0x0*4000$/ { found=1 } END { exit !found }'; then
+              echo "::error::Release native library for $abi has no 16 KiB-aligned LOAD segment"
+              "$LLVM_READELF" -lW "$LIB"
+              exit 1
+            fi
+            echo "Verified release native Opus JNI: ABI=$abi, 16KiB ELF LOAD alignment"
+          done
 
           mkdir -p release-assets
           # Deterministic names: the publish step below references them
@@ -240,6 +264,24 @@ jobs:
             sha256sum --check SHA256SUMS
           )
           echo "Release artifacts verified; SHA-256 manifest generated."
+
+      - name: Validate release notes are filled in
+        shell: bash
+        run: |
+          set -euo pipefail
+          NOTES="docs/RELEASE_NOTES_TEMPLATE.md"
+          # The notes file is published verbatim; refuse to publish
+          # placeholders. HTML comments are author instructions, and an
+          # empty "- " bullet means a section was never filled in.
+          if grep -q '<!--' "$NOTES"; then
+            echo "::error::Release notes still contain unfilled '<!--' placeholders: $NOTES"
+            exit 1
+          fi
+          if grep -Eq '^[[:space:]]*-[[:space:]]*$' "$NOTES"; then
+            echo "::error::Release notes contain empty bullets; fill in every section: $NOTES"
+            exit 1
+          fi
+          echo "Release notes validated: no placeholders or empty bullets."
 
       - name: Publish GitHub Release
         env:

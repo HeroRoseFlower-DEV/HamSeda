@@ -46,6 +46,7 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.security.MessageDigest
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -76,7 +77,8 @@ class SessionManager(
     /** Wall clock is used only for wire timestamps; elapsed durations use a monotonic clock. */
     private val clock: () -> Long = System::currentTimeMillis,
     private val elapsedClock: () -> Long = { System.nanoTime() / 1_000_000L },
-    private val peerIdentityStore: PeerIdentityStore = MemoryPeerIdentityStore(),
+    /** Shared identity store (single instance with the service's); exposed for UI layers. */
+    val peerIdentityStore: PeerIdentityStore = MemoryPeerIdentityStore(),
 ) : FloorController.Listener, AudioPipeline.PipelineListener {
 
     enum class Phase {
@@ -182,6 +184,23 @@ class SessionManager(
             block()
         } else {
             audioExecutor.execute(block)
+        }
+    }
+
+    /**
+     * Barrier: wait until previously queued audio-executor tasks
+     * (stopCapture/stopPlayback) have run before this thread touches shared
+     * audio state (codec close in wipeSecrets()). Without it, a capture
+     * worker can still be encoding when the codec is closed — harmless
+     * (encode-after-close is caught per frame) but noisy and wasteful.
+     * Best-effort with a timeout; never throws.
+     */
+    private fun drainAudioExecutor(timeoutMs: Long = 5_000L) {
+        if (audioExecutor.isShutdown) return
+        try {
+            audioExecutor.submit { }.get(timeoutMs, TimeUnit.MILLISECONDS)
+        } catch (e: Exception) {
+            Log.w(TAG, "audio executor drain failed: ${e.javaClass.simpleName}")
         }
     }
 
@@ -821,7 +840,12 @@ class SessionManager(
         }
         selfSasConfirmed = true
         enqueueControl(MessageType.SAS_CONFIRM, ByteArray(0))
-        maybeEnterSession()
+        // enterSession() blocks on native codec init and the AudioTrack HAL
+        // (50-500ms). It is fully serialized on sessionEntryLock and safe
+        // from any thread — the inbound SAS_CONFIRM reader already calls it
+        // off the main thread. Dispatch here too so this UI-tap handler
+        // never freezes; the HS-05 rollback still applies inside enterSession().
+        cleanupScope.launch { maybeEnterSession() }
     }
 
     /** Push-to-talk button state. */
@@ -913,15 +937,17 @@ class SessionManager(
         runOnAudioExecutor {
             try { audio.stopPlayback() } catch (e: Exception) { Log.w(TAG, "teardown: stopPlayback failed: ${e.javaClass.simpleName}") }
         }
+        // Barrier: the queued stopCapture/stopPlayback above must finish
+        // before wipeSecrets() closes the codecs below.
+        drainAudioExecutor()
         livenessJob?.cancel(); livenessJob = null
         floor.reset()
         jitter.reset()
         replay.reset()
         receivedAudioSeq = 0
+        // hs.wipe() inside wipeSecrets() already reset all handshake flags
+        // (sent markers, hello/codec state); do not duplicate them here.
         wipeSecrets()
-        hs.keyCommitSent = false; hs.keyExchangeSent = false; hs.keyConfirmSent = false
-        hs.peerHelloReceived = false
-        hs.peerCodecPref = null
         pendingKeyConfirmFrame?.payload?.fill(0); pendingKeyConfirmFrame = null
         pendingSasConfirmFrame?.payload?.fill(0); pendingSasConfirmFrame = null
         handshakeStarted = false
@@ -954,12 +980,15 @@ class SessionManager(
             try { audio.stopCapture() } catch (e: Exception) { Log.w(TAG, "close: stopCapture failed: ${e.javaClass.simpleName}") }
             try { audio.stopPlayback() } catch (e: Exception) { Log.w(TAG, "close: stopPlayback failed: ${e.javaClass.simpleName}") }
         }
+        // Barrier (before shutdown): the queued stops must finish before
+        // wipeSecrets() closes the codecs below.
+        drainAudioExecutor()
         audioExecutor.shutdown()
+        // hs.wipe() inside wipeSecrets() already reset all handshake flags;
+        // do not duplicate them here.
         wipeSecrets()
         jitter.reset()
         replay.reset()
-        hs.peerCodecPref = null
-        hs.keyCommitSent = false; hs.keyExchangeSent = false; hs.keyConfirmSent = false
         pendingKeyConfirmFrame?.payload?.fill(0); pendingKeyConfirmFrame = null
         pendingSasConfirmFrame?.payload?.fill(0); pendingSasConfirmFrame = null
         _sasCode.value = null
@@ -992,7 +1021,10 @@ class SessionManager(
         // processing so the commitment/reveal exchange cannot overtake local HELLO.
         if (handshakeStarted) return
         handshakeStarted = true
-        hs.peerHelloReceived = false
+        // Per-attempt handshake flags: single source of truth is
+        // HandshakeStateMachine.resetForNewHandshake() (codec preference is
+        // negotiated fresh each attempt, hence the extra null).
+        hs.resetForNewHandshake()
         hs.peerCodecPref = null
         hs.peerPubBytes?.fill(0); hs.peerPubBytes = null
         hs.peerNonce?.fill(0); hs.peerNonce = null
@@ -1006,9 +1038,6 @@ class SessionManager(
         hs.myIdentityId.fill(0); hs.myIdentityId = ByteArray(0)
         hs.myIdentityPublicKey.fill(0); hs.myIdentityPublicKey = ByteArray(0)
         hs.myCommitSalt.fill(0); hs.myCommitSalt = ByteArray(0)
-        hs.keyCommitSent = false
-        hs.keyExchangeSent = false
-        hs.keyConfirmSent = false
         pendingKeyConfirmFrame?.payload?.fill(0); pendingKeyConfirmFrame = null
         pendingSasConfirmFrame?.payload?.fill(0); pendingSasConfirmFrame = null
         _phase.value = Phase.HANDSHAKE

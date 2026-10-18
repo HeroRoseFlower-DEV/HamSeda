@@ -4,9 +4,9 @@ import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
-import com.hamseda.walkie.data.SettingsRepository
-import com.hamseda.walkie.crypto.AndroidPeerIdentityStore
+import com.hamseda.walkie.crypto.PeerIdentityStore
 import com.hamseda.walkie.crypto.TrustedPeerIdentity
+import com.hamseda.walkie.data.SettingsRepository
 import com.hamseda.walkie.proto.CodecId
 import com.hamseda.walkie.service.VoiceService
 import com.hamseda.walkie.session.SessionManager
@@ -47,6 +47,10 @@ class HomeViewModel(private val deps: VmDeps) : ViewModel() {
     val floorHolder = deps.manager.floorHolder
     val voiceLevel = deps.manager.voiceLevel
     val error = deps.manager.error
+    /** Peer identity fingerprint, shown in the header during a call so the
+     * skip-SAS path still surfaces a cryptographic identity (finding 7). */
+    val peerIdentityFingerprint = deps.manager.peerIdentityFingerprint
+    val peerIdentityTrusted = deps.manager.peerIdentityTrusted
     /** Exposed so the screen does not reach past the VM into SettingsRepository. */
     val vibrationEnabled: StateFlow<Boolean> = deps.settings.vibrationFlow
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
@@ -233,7 +237,10 @@ class SettingsViewModel(private val deps: VmDeps) : ViewModel() {
     /** Active radio type; exposed so the screen does not reach into TransportManager directly. */
     val activeTransportType: StateFlow<TransportType> = deps.transports.activeType
 
-    private val identityStore = AndroidPeerIdentityStore(deps.appContext)
+    // Single shared instance via the session manager (created by the
+    // service), not a second store: both are SharedPreferences-backed, but
+    // one instance keeps the DI graph consistent.
+    private val identityStore: PeerIdentityStore = deps.manager.peerIdentityStore
     private val _trustedPeers = MutableStateFlow<List<TrustedPeerIdentity>>(emptyList())
     /** Trusted peer identities, loaded off the main thread (SharedPreferences I/O). */
     val trustedPeers: StateFlow<List<TrustedPeerIdentity>> = _trustedPeers.asStateFlow()

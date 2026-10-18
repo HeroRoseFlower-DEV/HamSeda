@@ -16,6 +16,7 @@
     <string name="no_peer_hint">Open “Find peer” to discover a nearby device and connect securely.</string>
     <string name="btn_find_peer">Find peer</string>
     <string name="connected_to">Connected to</string>
+    <string name="home_identity_fingerprint">Identity fingerprint</string>
     <string name="unknown_peer">Peer</string>
     <string name="ptt_label">Hold to talk</string>
     <string name="ptt_transmitting">Transmitting…</string>
@@ -63,6 +64,8 @@
     <string name="pairing_mismatch">Codes differ</string>
     <string name="pairing_waiting_peer">Waiting for peer confirmation…</string>
     <string name="pairing_cancel">Cancel connection</string>
+    <string name="pairing_trusted_mark">✓\u0020</string>
+    <string name="pairing_code_placeholder">···</string>
 
     <!-- Settings -->
     <string name="settings_title">Settings</string>

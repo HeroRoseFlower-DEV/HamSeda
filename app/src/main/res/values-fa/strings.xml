@@ -16,6 +16,7 @@
     <string name="no_peer_hint">از بخش «یافتن هم‌صحبت» دستگاه نزدیک را پیدا و امن وصل شو.</string>
     <string name="btn_find_peer">یافتن هم‌صحبت</string>
     <string name="connected_to">متصل به</string>
+    <string name="home_identity_fingerprint">اثر انگشت هویت</string>
     <string name="unknown_peer">هم‌صحبت</string>
     <string name="ptt_label">برای صحبت نگه دار</string>
     <string name="ptt_transmitting">در حال ارسال…</string>
@@ -63,6 +64,8 @@
     <string name="pairing_mismatch">کدها فرق دارند</string>
     <string name="pairing_waiting_peer">منتظر تأیید هم‌صحبت…</string>
     <string name="pairing_cancel">لغو اتصال</string>
+    <string name="pairing_trusted_mark">✓\u0020</string>
+    <string name="pairing_code_placeholder">···</string>
 
     <!-- Settings -->
     <string name="settings_title">تنظیمات</string>
