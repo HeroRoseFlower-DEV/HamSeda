@@ -116,7 +116,11 @@ class WifiDirectTransport(private val context: Context) : AbstractFramedStreamTr
     @Volatile private var p2pEnabled = false
     @Volatile private var p2pListenModeActive = false
     @Volatile private var p2pDiscoveryActive = false
-    private var framed: FramedSocket? = null
+    // Volatile: read lock-free by reader coroutines (onFrame). Every
+    // replacement bumps operationGeneration, and guards check the
+    // generation first, but the reference itself must also be safely
+    // published (mirrors Bluetooth's synchronized readerGate).
+    @Volatile private var framed: FramedSocket? = null
     @Volatile private var serverSocket: ServerSocket? = null
     /** Socket currently inside the blocking client connect loop; closed by Stop/disconnect. */
     @Volatile private var inFlightClientSocket: Socket? = null
@@ -611,6 +615,17 @@ class WifiDirectTransport(private val context: Context) : AbstractFramedStreamTr
         // connection racing the redundant call).
         if (listeningRequested) {
             AppLog.log(TAG, "listen() ignored: already listening")
+            return
+        }
+        // A listen() during a live session must not bump the generation:
+        // that would make isReaderActive() false forever for the live
+        // reader, which then exits silently with the state still CONNECTED
+        // (a zombie transport reporting itself healthy). Refuse with a log
+        // instead of killing the session invisibly; the state is untouched.
+        if (_state.value == TransportState.CONNECTED ||
+            _state.value == TransportState.AUTHENTICATING
+        ) {
+            AppLog.log(TAG, "listen() ignored: session already active")
             return
         }
         val attempt = operationGeneration.incrementAndGet()
@@ -1251,13 +1266,23 @@ class WifiDirectTransport(private val context: Context) : AbstractFramedStreamTr
             // transferred into FramedSocket under the transport mutex.
             if (inFlightClientSocket === socket) inFlightClientSocket = null
             framed?.close()
-            framed = FramedSocket.fromTcpSocket(socket) {
-                scope.launch { handleGroupLost(expectedGeneration = expectedGeneration) }
+            // Capture the new instance for the close callback so the
+            // teardown can require socket identity, like every other
+            // handleGroupLost call site.
+            var newFramed: FramedSocket? = null
+            newFramed = FramedSocket.fromTcpSocket(socket) {
+                scope.launch {
+                    handleGroupLost(
+                        expectedGeneration = expectedGeneration,
+                        expectedSocket = newFramed,
+                    )
+                }
             }
+            framed = newFramed
             _state.value = TransportState.CONNECTED
             _error.value = null
             acquireWifiLock()
-            startReaderLocked(expectedGeneration)
+            startReaderForCurrentSocket(expectedGeneration)
         }
     }
 
@@ -1267,7 +1292,9 @@ class WifiDirectTransport(private val context: Context) : AbstractFramedStreamTr
     // mutable field — so a stale reader can never publish into, or tear
     // down, a newer session.
 
-    private fun startReaderLocked(expectedGeneration: Long) {
+    // NOTE: the old name "startReaderLocked" was misleading — this takes no
+    // lock itself; the caller (onSocketReady) holds the transport mutex.
+    private fun startReaderForCurrentSocket(expectedGeneration: Long) {
         val f = framed ?: return
         startReader(f, expectedGeneration, Protocol.TRANSPORT_IDLE_TIMEOUT_MS)
     }

@@ -17,7 +17,6 @@ import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -29,8 +28,6 @@ import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
@@ -49,6 +46,7 @@ import com.hamseda.walkie.proto.CodecId
 import com.hamseda.walkie.session.SessionManager
 import com.hamseda.walkie.transport.TransportPreference
 import com.hamseda.walkie.transport.TransportType
+import com.hamseda.walkie.ui.components.HamSedaTopBar
 import com.hamseda.walkie.ui.vm.SettingsViewModel
 import com.hamseda.walkie.ui.vm.VmDeps
 import com.hamseda.walkie.ui.vm.VmFactory
@@ -79,17 +77,7 @@ fun SettingsScreen(
     Scaffold(
         modifier = modifier,
         topBar = {
-            TopAppBar(
-                title = { Text(stringResource(R.string.settings_title), fontWeight = FontWeight.Bold) },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.back))
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.background,
-                ),
-            )
+            HamSedaTopBar(title = stringResource(R.string.settings_title), onBack = onBack)
         },
     ) { padding ->
         Column(
@@ -255,7 +243,13 @@ fun SettingsScreen(
                                 style = MaterialTheme.typography.labelMedium,
                             )
                             Text(
-                                text = peer.fingerprintHex.chunked(4).joinToString(" ").toFaDigits(),
+                                // Show the identity-ID hex — the same value the
+                                // user compares out-of-band on the pairing
+                                // screen and during calls — so it can be
+                                // cross-checked here. (fingerprintHex is the
+                                // SHA-256 of the identity public key, a
+                                // different value for the same peer.)
+                                text = peer.identityIdHex.chunked(4).joinToString(" ").toFaDigits(),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )

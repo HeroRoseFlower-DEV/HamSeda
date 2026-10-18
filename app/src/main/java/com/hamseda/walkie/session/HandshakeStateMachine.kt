@@ -68,6 +68,19 @@ class HandshakeStateMachine {
         myNonce.fill(0); myNonce = ByteArray(0)
         myCommitSalt.fill(0); myCommitSalt = ByteArray(0)
         myPubBytes.fill(0); myPubBytes = ByteArray(0)
+        myIdentityId.fill(0); myIdentityId = ByteArray(0)
+        myIdentityPublicKey.fill(0); myIdentityPublicKey = ByteArray(0)
+        // Per-attempt state goes through the single source of truth below.
+        resetForNewHandshake()
+    }
+
+    /**
+     * Reset per-attempt handshake state for a new handshake. This is the
+     * single source of truth for everything that must not leak from one
+     * handshake attempt to the next; wipe() delegates here for the
+     * non-secret part. (Key material is wiped separately in wipe().)
+     */
+    fun resetForNewHandshake() {
         peerPubBytes?.fill(0); peerPubBytes = null
         peerNonce?.fill(0); peerNonce = null
         peerKeyCommitment?.fill(0); peerKeyCommitment = null
@@ -75,19 +88,12 @@ class HandshakeStateMachine {
         peerIdentityPublicKey?.fill(0); peerIdentityPublicKey = null
         peerIdentityWasTrusted = false
         peerReportedIdentityTrusted = null
-        myIdentityId.fill(0); myIdentityId = ByteArray(0)
-        myIdentityPublicKey.fill(0); myIdentityPublicKey = ByteArray(0)
-        keyCommitSent = false; keyExchangeSent = false; keyConfirmSent = false
-        peerHelloReceived = false
         peerCodecPref = null
-    }
-
-    /** Reset per-attempt flags for a new handshake (keys are wiped separately). */
-    fun resetForNewHandshake() {
         keyCommitSent = false
         keyExchangeSent = false
         keyConfirmSent = false
         peerHelloReceived = false
+        myRole = 0
     }
 
     /**

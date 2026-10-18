@@ -35,8 +35,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -54,6 +52,7 @@ import com.hamseda.walkie.R
 import com.hamseda.walkie.session.FloorController
 import com.hamseda.walkie.session.SessionManager
 import com.hamseda.walkie.ui.components.ErrorBanner
+import com.hamseda.walkie.ui.components.HamSedaTopBar
 import com.hamseda.walkie.ui.components.PttButton
 import com.hamseda.walkie.ui.components.StatusHeader
 import com.hamseda.walkie.ui.components.StatusLine
@@ -99,21 +98,13 @@ fun HomeScreen(
     Scaffold(
         modifier = modifier,
         topBar = {
-            TopAppBar(
-                title = {
-                    Text(
-                        stringResource(R.string.app_name),
-                        fontWeight = FontWeight.Bold,
-                    )
-                },
+            HamSedaTopBar(
+                title = stringResource(R.string.app_name),
                 actions = {
                     IconButton(onClick = onOpenSettings) {
                         Icon(Icons.Filled.Settings, contentDescription = stringResource(R.string.settings_title))
                     }
                 },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.background,
-                ),
             )
         },
     ) { padding ->

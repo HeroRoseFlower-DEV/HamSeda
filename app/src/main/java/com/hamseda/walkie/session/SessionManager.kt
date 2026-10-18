@@ -670,17 +670,19 @@ class SessionManager(
 
     // ------------------------------------------------------- public control
 
+    /**
+     * Codec policy, single source of truth: PCM16 requires 768 kbps before
+     * protocol overhead and is not a usable voice profile over Bluetooth
+     * Classic RFCOMM, so Bluetooth sessions always use Opus.
+     */
+    private fun resolveCodecPref(t: Transport, pref: Byte): Byte =
+        if (t.type == TransportType.BLUETOOTH) CodecId.OPUS else pref
+
     /** Outgoing session: connect the transport, then run the handshake. */
     fun startOutgoing(t: Transport, peer: PeerDevice, codecPref: Byte = CodecId.OPUS) {
         if (!claimSessionStart("startOutgoing")) return
         AppLog.log(TAG, "outgoing session start via ${t.type}")
-        hs.myCodecPref = if (t.type == com.hamseda.walkie.transport.TransportType.BLUETOOTH) {
-            // PCM16 requires 768 kbps before protocol overhead and is not a
-            // usable voice profile over Bluetooth Classic RFCOMM.
-            CodecId.OPUS
-        } else {
-            codecPref
-        }
+        hs.myCodecPref = resolveCodecPref(t, codecPref)
         attachTransport(t, peer.displayName)
         // The transport may already report CONNECTED (peer connected first);
         // the state-flow collector below only fires on *changes*.
@@ -709,13 +711,7 @@ class SessionManager(
     ) {
         if (!claimSessionStart("acceptIncoming")) return
         AppLog.log(TAG, "listening for incoming via ${t.type}")
-        hs.myCodecPref = if (t.type == com.hamseda.walkie.transport.TransportType.BLUETOOTH) {
-            // PCM16 requires 768 kbps before protocol overhead and is not a
-            // usable voice profile over Bluetooth Classic RFCOMM.
-            CodecId.OPUS
-        } else {
-            codecPref
-        }
+        hs.myCodecPref = resolveCodecPref(t, codecPref)
         attachTransport(t, "")
         val listenerGeneration = sessionGeneration
         // The transport may already report CONNECTED (peer connected first);
@@ -980,12 +976,13 @@ class SessionManager(
             try { audio.stopCapture() } catch (e: Exception) { Log.w(TAG, "close: stopCapture failed: ${e.javaClass.simpleName}") }
             try { audio.stopPlayback() } catch (e: Exception) { Log.w(TAG, "close: stopPlayback failed: ${e.javaClass.simpleName}") }
         }
-        // Barrier (before shutdown): the queued stops must finish before
-        // wipeSecrets() closes the codecs below.
-        drainAudioExecutor()
-        audioExecutor.shutdown()
-        // hs.wipe() inside wipeSecrets() already reset all handshake flags;
-        // do not duplicate them here.
+        // wipeSecrets() stays synchronous: it is fast (no HAL, no blocking)
+        // and must run before onDestroy returns. The drain/shutdown barrier
+        // moves off the main thread below: drainAudioExecutor() can block up
+        // to 5s (the ANR threshold) on a stuck HAL/worker, and the barrier
+        // is not needed for correctness — encode-after-close is caught per
+        // frame and OpusCodec.close() is serialized on the codec lock, so
+        // there is no native use-after-free.
         wipeSecrets()
         jitter.reset()
         replay.reset()
@@ -1009,6 +1006,14 @@ class SessionManager(
                     synchronized(lifecycleLock) { _phase.value = Phase.IDLE }
                 }
             }
+            // Off-main barrier (was on the main thread above): let the
+            // queued stopCapture/stopPlayback finish, then shut the executor
+            // down. Runs here — not on the main thread — because the drain
+            // can block up to 5s on a stuck HAL/worker (the ANR threshold).
+            // No self-deadlock: neither close() nor teardown() runs on the
+            // audio executor thread.
+            drainAudioExecutor()
+            audioExecutor.shutdown()
             cleanupJob.cancel()
         }
     }
@@ -1021,25 +1026,12 @@ class SessionManager(
         // processing so the commitment/reveal exchange cannot overtake local HELLO.
         if (handshakeStarted) return
         handshakeStarted = true
-        // Per-attempt handshake flags: single source of truth is
-        // HandshakeStateMachine.resetForNewHandshake() (codec preference is
-        // negotiated fresh each attempt, hence the extra null).
+        // Per-attempt handshake state: single source of truth is
+        // HandshakeStateMachine.resetForNewHandshake(). This only runs on
+        // the first handshake (fields already zero) or after teardown()
+        // (which ran hs.wipe() via wipeSecrets()), so nothing else needs
+        // clearing here.
         hs.resetForNewHandshake()
-        hs.peerCodecPref = null
-        hs.peerPubBytes?.fill(0); hs.peerPubBytes = null
-        hs.peerNonce?.fill(0); hs.peerNonce = null
-        hs.peerKeyCommitment?.fill(0); hs.peerKeyCommitment = null
-        hs.peerIdentityId?.fill(0); hs.peerIdentityId = null
-        hs.peerIdentityPublicKey?.fill(0); hs.peerIdentityPublicKey = null
-        hs.peerIdentityWasTrusted = false
-        hs.peerReportedIdentityTrusted = null
-        _peerIdentityTrusted.value = false
-        _peerIdentityFingerprint.value = null
-        hs.myIdentityId.fill(0); hs.myIdentityId = ByteArray(0)
-        hs.myIdentityPublicKey.fill(0); hs.myIdentityPublicKey = ByteArray(0)
-        hs.myCommitSalt.fill(0); hs.myCommitSalt = ByteArray(0)
-        pendingKeyConfirmFrame?.payload?.fill(0); pendingKeyConfirmFrame = null
-        pendingSasConfirmFrame?.payload?.fill(0); pendingSasConfirmFrame = null
         _phase.value = Phase.HANDSHAKE
         startHandshakeDeadline()
         try {

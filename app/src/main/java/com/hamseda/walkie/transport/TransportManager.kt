@@ -58,13 +58,13 @@ class TransportManager(context: Context) {
 
     private fun recommendedType(): TransportType {
         val wifi = wifiDirect.availability()
-        if (wifi.supported && wifi.enabled) return TransportType.WIFI_DIRECT
-        // Wi-Fi Direct present but radio off still outranks Bluetooth only
-        // when the user can enable it; otherwise fall through.
         val bt = bluetooth.availability()
-        if (bt.supported && bt.enabled) return TransportType.BLUETOOTH
-        if (wifi.supported) return TransportType.WIFI_DIRECT
-        return TransportType.BLUETOOTH
+        return recommendTransport(
+            wifiSupported = wifi.supported,
+            wifiEnabled = wifi.enabled,
+            btSupported = bt.supported,
+            btEnabled = bt.enabled,
+        )
     }
 
     private fun explainChoice(pref: TransportPreference, type: TransportType): String =
@@ -82,4 +82,26 @@ class TransportManager(context: Context) {
         wifiDirect.close()
         bluetooth.close()
     }
+}
+
+/**
+ * Pure transport-recommendation decision table, extracted from
+ * [TransportManager] so the matrix is unit-testable without Android radios.
+ *
+ * Policy: Wi-Fi Direct wins when its radio is on; a usable Bluetooth radio
+ * outranks a Wi-Fi Direct radio the user would have to enable manually;
+ * otherwise prefer Wi-Fi Direct when the hardware exists at all.
+ */
+fun recommendTransport(
+    wifiSupported: Boolean,
+    wifiEnabled: Boolean,
+    btSupported: Boolean,
+    btEnabled: Boolean,
+): TransportType {
+    if (wifiSupported && wifiEnabled) return TransportType.WIFI_DIRECT
+    // Wi-Fi Direct present but radio off still outranks Bluetooth only
+    // when the user can enable it; otherwise fall through.
+    if (btSupported && btEnabled) return TransportType.BLUETOOTH
+    if (wifiSupported) return TransportType.WIFI_DIRECT
+    return TransportType.BLUETOOTH
 }
