@@ -109,10 +109,20 @@ class SessionManager(
     // Lock ordering (global, must be respected everywhere to avoid deadlock):
     //   1. teardownMutex  (outermost; suspending Mutex, serializes teardown)
     //   2. lifecycleLock  (phase transitions; may be taken while holding 1)
-    //   3. handshakeFrameLock, sessionEntryLock (leaf locks; never hold while acquiring 1-2)
+    //   3. handshakeFrameLock, sessionEntryLock (leaf locks)
     // The only legal nesting is teardownMutex -> lifecycleLock (see teardown()).
     // In particular, never acquire teardownMutex while holding lifecycleLock.
+    //
+    // Leaf -> lifecycleLock nesting IS used (enterSession/fail paths call
+    // markEndedIfActive while holding a leaf lock). This is safe if and only
+    // if code holding lifecycleLock never blocks on a leaf lock: every
+    // synchronized(lifecycleLock) section is a brief, non-blocking phase
+    // check-and-set (claimSessionStart, markEndedIfActive, direct writes).
+    // Keep it that way — a blocking call or a leaf acquisition inside any of
+    // them would create a real deadlock cycle.
     private val lifecycleLock = Any()
+    /** Guards lastLoggedAudioDrops; never synchronize on `this` (publicly reachable). */
+    private val audioDropLogLock = Any()
     /** Prevents simultaneous local/peer SAS callbacks from starting playback twice. */
     private val sessionEntryLock = Any()
     /** Serializes handshake startup with inbound-frame processing on separate dispatcher threads. */
@@ -144,10 +154,12 @@ class SessionManager(
 
     private val _peerIdentityFingerprint = MutableStateFlow<String?>(null)
     /**
-     * Hex fingerprint of the peer's long-term identity key, for manual
-     * verification on the pairing screen. Distinct from the per-session SAS:
-     * the SAS authenticates this session, the fingerprint pins the peer
-     * across sessions.
+     * Hex of the peer's 16-byte identity ID, for manual verification on the
+     * pairing screen. Despite the name, this is NOT a fingerprint of the
+     * long-term identity key — it is the identity ID the peer advertises in
+     * its HELLO (see [SessionCrypto.IDENTITY_ID_BYTES]). Distinct from the
+     * per-session SAS: the SAS authenticates this session, the identity ID
+     * pins the peer across sessions.
      */
     val peerIdentityFingerprint: StateFlow<String?> = _peerIdentityFingerprint.asStateFlow()
 
@@ -688,7 +700,7 @@ class SessionManager(
         }
         val dropped = outboundQueue.droppedAudioFrames
         if (dropped >= lastLoggedAudioDrops + AUDIO_DROP_LOG_INTERVAL) {
-            synchronized(this) {
+            synchronized(audioDropLogLock) {
                 if (dropped >= lastLoggedAudioDrops + AUDIO_DROP_LOG_INTERVAL) {
                     lastLoggedAudioDrops = dropped
                     AppLog.log(
@@ -1004,6 +1016,13 @@ class SessionManager(
      * Fast synchronous path for Service.onDestroy (HS-03): stops audio and
      * wipes hs.keys immediately without depending on the service scope (which
      * onDestroy is about to cancel). Transport close runs best-effort.
+     *
+     * Residual race (intentional): unlike teardown()'s stopSenderAndJoin(),
+     * this cancels the sender without joining it — a sender suspended
+     * mid-frame-build may race wipeSecrets(). Joining here could block
+     * onDestroy past the ANR threshold on a stuck HAL, which is worse than
+     * the race: encode-after-close is caught per frame and OpusCodec.close()
+     * is serialized on the codec lock, so there is no native use-after-free.
      */
     fun close() {
         synchronized(lifecycleLock) { _phase.value = Phase.ENDED }
@@ -1025,6 +1044,7 @@ class SessionManager(
         replay.reset()
         pendingKeyConfirmFrame?.payload?.fill(0); pendingKeyConfirmFrame = null
         pendingSasConfirmFrame?.payload?.fill(0); pendingSasConfirmFrame = null
+        handshakeStarted = false
         _sasCode.value = null
         _peerSasConfirmed.value = false
         _isTransmitting.value = false
@@ -1310,6 +1330,9 @@ class SessionManager(
             MessageType.KEY_CONFIRM -> {
                 // May arrive before we finished deriving (both sides race).
                 if (hs.keys == null) {
+                    // Wipe the stashed payload before overwrite: it carries
+                    // key-confirmation material and must not linger.
+                    pendingKeyConfirmFrame?.payload?.fill(0)
                     pendingKeyConfirmFrame = frame
                 } else {
                     verifyPeerKeyConfirm(frame)
@@ -1829,7 +1852,25 @@ class SessionManager(
                 }
             }
         }
-        _phase.value = Phase.IN_SESSION
+        // M7 re-check: endSession()/fail() may have run during the blocking
+        // codec/playback bring-up above. Assigning IN_SESSION unconditionally
+        // would resurrect a phantom session (UI connected, wake lock, liveness
+        // job) after teardown. Check-and-set under lifecycleLock instead.
+        val entered = synchronized(lifecycleLock) {
+            if (_phase.value == Phase.AWAITING_SAS_CONFIRM) {
+                _phase.value = Phase.IN_SESSION
+                true
+            } else {
+                false
+            }
+        }
+        if (!entered) {
+            // Teardown (which moved the phase) already owns cleanup of the
+            // codec/playback brought up above; just don't go live.
+            Log.w(TAG, "session ended during codec bring-up; aborting enterSession")
+            AppLog.log(TAG, "session ended during codec bring-up; aborting enterSession")
+            return@synchronized
+        }
         val establishedAt = elapsedClock()
         sessionEstablishedAtMs = establishedAt
         AppLog.log(TAG, "session established (codec=$activeCodecId)")
@@ -2187,6 +2228,15 @@ class SessionManager(
         else -> SessionError.TRANSPORT_LOST
     }
 
+    /**
+     * Fails the session without notifying the peer. This is deliberate:
+     * - Auth failures (bad MAC, replay, identity mismatch) must not signal
+     *   an attacker that we are still listening.
+     * - Transport failures mean the peer likely already knows (the link is
+     *   down); a DISCONNECT would not be deliverable anyway.
+     * Use [endSession] with notifyPeer=true for user-initiated hangups where
+     * the peer should be told.
+     */
     private fun fail(error: SessionError, detail: String? = null) {
         // Mark ENDED synchronously before scheduling cleanup. A burst of bad
         // frames must not queue multiple teardowns that could affect a new session.

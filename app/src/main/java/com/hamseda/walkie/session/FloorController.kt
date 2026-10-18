@@ -14,6 +14,17 @@ import com.hamseda.walkie.proto.DenyReason
  *   self transmission at [MAX_SELF_TX_MS].
  * - Audio frames from the peer extend its lease (proof of liveness).
  *
+ * Thread safety: every method is synchronized on a private lock, because the
+ * controller is driven from the UI thread, the transport reader thread,
+ * liveness coroutines, teardown, and the audio executor. Without this, a PTT
+ * press racing an inbound FLOOR_REQUEST could grant the floor to both sides
+ * at once.
+ *
+ * Deadlock note: listener callbacks run while holding the controller lock.
+ * They only touch lock-free SessionManager paths (StateFlows, codec setup,
+ * outbound queue) — never teardownMutex/lifecycleLock and never back into
+ * FloorController — so no lock cycle is introduced.
+ *
  * Pure logic, no Android dependencies — fully unit-tested.
  */
 class FloorController(
@@ -38,16 +49,21 @@ class FloorController(
         fun onFloorEvent(event: Event)
     }
 
+    /** Guards every field below. */
+    private val lock = Any()
+
     var holder: Holder = Holder.NONE
+        get() = synchronized(lock) { field }
         private set
     var selfRequestPending: Boolean = false
+        get() = synchronized(lock) { field }
         private set
 
     private var leaseExpiresAt: Long = 0L
     private var selfTxStartedAt: Long = 0L
 
     /** Self pressed PTT. Returns false if a request is already in flight. */
-    fun requestFloor(): Boolean {
+    fun requestFloor(): Boolean = synchronized(lock) {
         if (selfRequestPending) return false
         if (holder == Holder.SELF) return true // already transmitting
         if (holder == Holder.PEER) {
@@ -59,12 +75,12 @@ class FloorController(
     }
 
     /** Self released PTT (or the UI cancelled). */
-    fun cancelRequest() {
+    fun cancelRequest(): Unit = synchronized(lock) {
         selfRequestPending = false
     }
 
     /** GRANT arrived from the peer. */
-    fun onGrant(leaseMs: Long) {
+    fun onGrant(leaseMs: Long): Unit = synchronized(lock) {
         if (!selfRequestPending || holder != Holder.NONE) return
         selfRequestPending = false
         holder = Holder.SELF
@@ -75,7 +91,7 @@ class FloorController(
     }
 
     /** DENY arrived from the peer. */
-    fun onDeny(reason: Byte) {
+    fun onDeny(reason: Byte): Unit = synchronized(lock) {
         if (!selfRequestPending) return
         selfRequestPending = false
         listener?.onFloorEvent(Event.Denied(reason))
@@ -85,7 +101,7 @@ class FloorController(
      * Peer's FLOOR_REQUEST arrived.
      * @return true if granted (caller must send GRANT), false if denied.
      */
-    fun onPeerRequest(): Boolean {
+    fun onPeerRequest(): Boolean = synchronized(lock) {
         if (holder != Holder.NONE || selfRequestPending) return false
         holder = Holder.PEER
         leaseExpiresAt = clock() + PEER_LEASE_MS
@@ -94,14 +110,14 @@ class FloorController(
     }
 
     /** Peer's audio frame arrived — proof the peer is alive; extend lease. */
-    fun onPeerAudio() {
+    fun onPeerAudio(): Unit = synchronized(lock) {
         if (holder == Holder.PEER) {
             leaseExpiresAt = clock() + PEER_LEASE_MS
         }
     }
 
     /** Self released the floor (PTT up / timeout). */
-    fun releaseSelf(): Boolean {
+    fun releaseSelf(): Boolean = synchronized(lock) {
         selfRequestPending = false
         if (holder != Holder.SELF) return false
         holder = Holder.NONE
@@ -110,8 +126,8 @@ class FloorController(
     }
 
     /** Peer's FLOOR_RELEASE arrived. */
-    fun onPeerRelease() {
-        if (holder != Holder.PEER) return
+    fun onPeerRelease(): Unit = synchronized(lock) {
+        if (holder == Holder.PEER) return
         holder = Holder.NONE
         listener?.onFloorEvent(Event.PeerReleasedFloor)
     }
@@ -121,7 +137,7 @@ class FloorController(
      * session. A silent peer loses the floor; an over-long self
      * transmission is cut.
      */
-    fun checkTimeouts() {
+    fun checkTimeouts(): Unit = synchronized(lock) {
         val now = clock()
         when (holder) {
             Holder.SELF -> if (now >= leaseExpiresAt) {
@@ -137,7 +153,7 @@ class FloorController(
         }
     }
 
-    fun reset() {
+    fun reset(): Unit = synchronized(lock) {
         holder = Holder.NONE
         selfRequestPending = false
         leaseExpiresAt = 0L

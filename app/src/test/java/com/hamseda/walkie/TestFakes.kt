@@ -26,6 +26,12 @@ import java.util.concurrent.atomic.AtomicInteger
 class LoopbackTransport(
     override val type: TransportType = TransportType.WIFI_DIRECT,
     private val intercept: ((ByteArray) -> ByteArray)? = null,
+    /**
+     * Incoming frame buffer. Production transports are unbuffered
+     * (rendezvous) so a slow reader backpressures the sender instead of
+     * queueing stale voice; pass 0 here to exercise that contract in tests.
+     */
+    bufferCapacity: Int = 256,
 ) : Transport {
     var linked: LoopbackTransport? = null
 
@@ -37,7 +43,7 @@ class LoopbackTransport(
     override val peers: StateFlow<List<PeerDevice>> = _peers.asStateFlow()
     override val discoverable: StateFlow<Boolean> =
         MutableStateFlow(true).asStateFlow()
-    private val _incoming = MutableSharedFlow<ByteArray>(extraBufferCapacity = 256)
+    private val _incoming = MutableSharedFlow<ByteArray>(extraBufferCapacity = bufferCapacity)
     override val incomingFrames: SharedFlow<ByteArray> = _incoming.asSharedFlow()
 
     /** Test hook: emulate a socket reader delivering HELLO before CONNECTED is observed. */
@@ -104,9 +110,10 @@ class LoopbackTransport(
         fun pair(
             interceptA: ((ByteArray) -> ByteArray)? = null,
             interceptB: ((ByteArray) -> ByteArray)? = null,
+            bufferCapacity: Int = 256,
         ): Pair<LoopbackTransport, LoopbackTransport> {
-            val a = LoopbackTransport(intercept = interceptA)
-            val b = LoopbackTransport(intercept = interceptB)
+            val a = LoopbackTransport(intercept = interceptA, bufferCapacity = bufferCapacity)
+            val b = LoopbackTransport(intercept = interceptB, bufferCapacity = bufferCapacity)
             a.linked = b
             b.linked = a
             return a to b

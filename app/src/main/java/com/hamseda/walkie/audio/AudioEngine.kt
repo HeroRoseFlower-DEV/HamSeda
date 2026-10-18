@@ -111,9 +111,15 @@ class AudioEngine(private val context: Context) : AudioPipeline {
     private var focusHolders = 0
     private val focusLock = Any()
     /** Audio routing is global to the device; restore the previous state when this app stops audio. */
-    private var previousAudioMode: Int? = null
-    private var previousSpeakerphoneOn: Boolean? = null
-    private var previousCommunicationDevice: AudioDeviceInfo? = null
+    /** Atomic snapshot of the pre-session audio routing; one volatile beats three racy fields. */
+    private data class AudioSnapshot(
+        val mode: Int,
+        val speakerphoneOn: Boolean,
+        val communicationDevice: AudioDeviceInfo?,
+    )
+
+    @Volatile
+    private var previousAudioState: AudioSnapshot? = null
     @Volatile
     var speakerphoneOn: Boolean = true
         private set
@@ -527,7 +533,9 @@ class AudioEngine(private val context: Context) : AudioPipeline {
                         encoded.fill(0)
                     }
                 } catch (e: Exception) {
-                    Log.w(TAG, "encode failed: ${e.javaClass.simpleName}")
+                    // The encode itself succeeded (bytes were produced above);
+                    // this is the delivery callback failing.
+                    Log.w(TAG, "capture frame delivery failed: ${e.javaClass.simpleName}")
                 }
             }
             frame.fill(0)
@@ -872,7 +880,7 @@ class AudioEngine(private val context: Context) : AudioPipeline {
                                 r.packet.payload.fill(0)
                             }
                             if (pcm != null) {
-                                if (!writePcm(at, pcm, queueTracker, playbackBuffer.queueLimitFrames)) {
+                                if (!writePcm(at, pcm, queueTracker, playbackBuffer.queueLimitFrames, generation)) {
                                     pcm.fill(0)
                                     reportPlaybackWriteFailure(generation)
                                     break@playback
@@ -881,7 +889,7 @@ class AudioEngine(private val context: Context) : AudioPipeline {
                                 last = pcm
                                 plcCount = 0
                             } else {
-                                val next = conceal(at, queueTracker, last, silence, plcScratch, plcCount, playbackBuffer.queueLimitFrames)
+                                val next = conceal(at, queueTracker, last, silence, plcScratch, plcCount, playbackBuffer.queueLimitFrames, generation)
                                 if (next == null) {
                                     reportPlaybackWriteFailure(generation)
                                     break@playback
@@ -901,7 +909,7 @@ class AudioEngine(private val context: Context) : AudioPipeline {
                             }
 
                             if (recovered != null) {
-                                if (!writePcm(at, recovered, queueTracker, playbackBuffer.queueLimitFrames)) {
+                                if (!writePcm(at, recovered, queueTracker, playbackBuffer.queueLimitFrames, generation)) {
                                     recovered.fill(0)
                                     reportPlaybackWriteFailure(generation)
                                     break@playback
@@ -914,7 +922,7 @@ class AudioEngine(private val context: Context) : AudioPipeline {
                                 if (fecPayload != null) fecFallbackFrames++
                                 val next = conceal(
                                     at, queueTracker, last, silence, plcScratch, plcCount,
-                                    playbackBuffer.queueLimitFrames,
+                                    playbackBuffer.queueLimitFrames, generation,
                                 )
                                 if (next == null) {
                                     reportPlaybackWriteFailure(generation)
@@ -972,6 +980,7 @@ class AudioEngine(private val context: Context) : AudioPipeline {
         pcm: ShortArray,
         queueTracker: PlaybackQueueTracker,
         queueLimitFrames: Int,
+        workerGeneration: Long,
     ): Boolean {
         val queueWaitStartedNanos = System.nanoTime()
         var maxObservedQueuedFrames = 0L
@@ -997,7 +1006,7 @@ class AudioEngine(private val context: Context) : AudioPipeline {
         }
 
         val queueWaitNanos = (System.nanoTime() - queueWaitStartedNanos).coerceAtLeast(0L)
-        recordPlaybackQueueTiming(queueWaitNanos, maxObservedQueuedFrames, queueLimitFrames)
+        recordPlaybackQueueTiming(queueWaitNanos, maxObservedQueuedFrames, queueLimitFrames, generation)
         if (!readyForWrite) {
             if (queueWaitTimedOut && playbackRunning.get()) {
                 AppLog.log(
@@ -1075,7 +1084,7 @@ class AudioEngine(private val context: Context) : AudioPipeline {
             succeeded = offset == pcm.size
             return succeeded
         } finally {
-            recordPlaybackWriteTiming(nativeWriteNanos, submissionWaitNanos, timedOut, succeeded)
+            recordPlaybackWriteTiming(nativeWriteNanos, submissionWaitNanos, timedOut, succeeded, workerGeneration)
         }
     }
 
@@ -1083,7 +1092,11 @@ class AudioEngine(private val context: Context) : AudioPipeline {
         waitNanos: Long,
         maxObservedQueuedFrames: Long,
         queueLimitFrames: Int,
+        workerGeneration: Long,
     ) {
+        // A zombie worker from an older generation can overlap the replacement;
+        // its samples must not corrupt the new window's counters.
+        if (workerGeneration != playbackGeneration) return
         playbackQueueWindowFrames++
         if (waitNanos >= 1_000_000L) playbackQueueWindowWaitedFrames++
         playbackQueueWindowTotalWaitNanos += waitNanos.coerceAtLeast(0L)
@@ -1114,7 +1127,10 @@ class AudioEngine(private val context: Context) : AudioPipeline {
         submissionWaitNanos: Long,
         timedOut: Boolean,
         succeeded: Boolean,
+        workerGeneration: Long,
     ) {
+        // See recordPlaybackQueueTiming: ignore zombie generations.
+        if (workerGeneration != playbackGeneration) return
         playbackWriteWindowFrames++
         if (succeeded) playbackWriteWindowSucceeded++ else playbackWriteWindowFailed++
         playbackWriteWindowTotalNanos += nativeWriteNanos.coerceAtLeast(0L)
@@ -1179,6 +1195,7 @@ class AudioEngine(private val context: Context) : AudioPipeline {
         plcScratch: ShortArray,
         plcCount: Int,
         queueLimitFrames: Int,
+        workerGeneration: Long,
     ): Int? {
         val lastFrame = last
         val generated = lastFrame != null && plcCount < MAX_PLC_FRAMES
@@ -1195,7 +1212,7 @@ class AudioEngine(private val context: Context) : AudioPipeline {
             silence
         }
         return try {
-            if (writePcm(at, pcm, queueTracker, queueLimitFrames)) plcCount + 1 else null
+            if (writePcm(at, pcm, queueTracker, queueLimitFrames, workerGeneration)) plcCount + 1 else null
         } finally {
             if (generated) pcm.fill(0)
         }
@@ -1276,13 +1293,14 @@ class AudioEngine(private val context: Context) : AudioPipeline {
         // device-wide routing until playback/capture actually starts.
         if (!force && !captureRunning.get() && !playbackRunning.get()) return
         try {
-            if (previousAudioMode == null) {
-                previousAudioMode = audioManager.mode
+            if (previousAudioState == null) {
                 @Suppress("DEPRECATION")
-                previousSpeakerphoneOn = audioManager.isSpeakerphoneOn
-                if (Build.VERSION.SDK_INT >= 31) {
-                    previousCommunicationDevice = audioManager.communicationDevice
-                }
+                previousAudioState = AudioSnapshot(
+                    mode = audioManager.mode,
+                    speakerphoneOn = audioManager.isSpeakerphoneOn,
+                    communicationDevice =
+                        if (Build.VERSION.SDK_INT >= 31) audioManager.communicationDevice else null,
+                )
             }
             if (audioManager.mode != AudioManager.MODE_IN_COMMUNICATION) {
                 audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
@@ -1389,10 +1407,12 @@ class AudioEngine(private val context: Context) : AudioPipeline {
 
     private fun restoreAudioModeIfIdle() {
         if (captureRunning.get() || playbackRunning.get()) return
-        val mode = previousAudioMode
-        val speaker = previousSpeakerphoneOn
-        val previousDevice = previousCommunicationDevice
-        if (mode == null && speaker == null && previousDevice == null) return
+        // Single volatile read: the snapshot is written atomically, so we can
+        // never observe a torn (mode-set, speaker-unset) state.
+        val snapshot = previousAudioState ?: return
+        val mode = snapshot.mode
+        val speaker = snapshot.speakerphoneOn
+        val previousDevice = snapshot.communicationDevice
         // Re-read the live state before restoring: if another app (e.g. an
         // incoming call) changed the audio mode while we were active, our
         // snapshot is stale — do not clobber their state, just drop ours.
@@ -1404,9 +1424,7 @@ class AudioEngine(private val context: Context) : AudioPipeline {
         val currentMode: Int? = try { audioManager.mode } catch (_: Exception) { null }
         if (currentMode != null && currentMode != AudioManager.MODE_IN_COMMUNICATION) {
             Log.w(TAG, "audio mode changed externally during session; skipping restore (current=$currentMode)")
-            previousAudioMode = null
-            previousSpeakerphoneOn = null
-            previousCommunicationDevice = null
+            previousAudioState = null
             return
         }
         try {
@@ -1424,11 +1442,11 @@ class AudioEngine(private val context: Context) : AudioPipeline {
                 if (!restored) {
                     try { audioManager.clearCommunicationDevice() } catch (_: Exception) {}
                 }
-            } else if (speaker != null) {
+            } else {
                 @Suppress("DEPRECATION")
                 audioManager.isSpeakerphoneOn = speaker
             }
-            if (mode != null) audioManager.mode = mode
+            audioManager.mode = mode
             // Session over: tear down the SCO link we may have brought up.
             updateBluetoothSco(false)
         } catch (e: SecurityException) {
@@ -1436,9 +1454,7 @@ class AudioEngine(private val context: Context) : AudioPipeline {
         } catch (e: IllegalStateException) {
             Log.w(TAG, "audio mode restore rejected: ${e.javaClass.simpleName}")
         } finally {
-            previousAudioMode = null
-            previousSpeakerphoneOn = null
-            previousCommunicationDevice = null
+            previousAudioState = null
         }
     }
 

@@ -29,6 +29,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -244,6 +245,7 @@ class SettingsViewModel(private val deps: VmDeps) : ViewModel() {
     private val _photoTick = MutableStateFlow(0L)
     val profilePhotoPath: StateFlow<String?> = _photoTick
         .map { photoStore.ownPhotoFile()?.absolutePath }
+        .flowOn(Dispatchers.IO) // disk stat off the main thread
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     fun refreshProfilePhoto() {

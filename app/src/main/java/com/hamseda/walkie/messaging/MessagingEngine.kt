@@ -133,6 +133,8 @@ class MessagingEngine(
     private val _peerTyping = MutableStateFlow(false)
     val peerTyping: StateFlow<Boolean> = _peerTyping.asStateFlow()
     private var typingTimeoutJob: Job? = null
+    /** Jobs launched by attach(); cancelled in detach() so a stale manager is never observed. */
+    private val attachJobs = mutableListOf<Job>()
 
     /** Whether any encrypted session is currently up. */
     private val _online = MutableStateFlow(false)
@@ -155,7 +157,7 @@ class MessagingEngine(
             onFrame(type, plaintext)
         }
         startAckBatcher()
-        scope.launch {
+        attachJobs += scope.launch {
             manager.phase.collect { phase ->
                 val up = phase == SessionManager.Phase.IN_SESSION
                 _online.value = up
@@ -172,7 +174,7 @@ class MessagingEngine(
             }
         }
         // Periodic retry sweep for backoff entries while online.
-        scope.launch {
+        attachJobs += scope.launch {
             while (true) {
                 delay(RETRY_SWEEP_MS)
                 if (_online.value) drainOutbox()
@@ -181,9 +183,15 @@ class MessagingEngine(
     }
 
     fun detach() {
+        attachJobs.forEach { it.cancel() }
+        attachJobs.clear()
         manager?.messagingListener = null
         manager = null
         _online.value = false
+        // Drop partial chunk reassemblies: they belong to the old session's
+        // key material and must never complete under a new one.
+        reassembly.clear()
+        photoReassembly.clear()
     }
 
     // ------------------------------------------------------------------ send
@@ -229,13 +237,14 @@ class MessagingEngine(
             for (item in due) {
                 if (item.senderSeq <= peerLastSeenSeq) {
                     // Peer already saw it (HELLO cursor); treat as delivered.
-                    dao.deleteOutbox(item.msgId)
-                    dao.advanceToDelivered(item.msgId)
+                    dao.ackDelivered(item.msgId)
                     continue
                 }
                 val ok = sendItem(mgr, item)
                 if (ok) {
-                    dao.setState(item.msgId, MessageState.SENT)
+                    // Guarded: a resend racing the ACK/read receipt must not
+                    // downgrade DELIVERED/READ back to SENT.
+                    dao.advanceToSent(item.msgId)
                     // At-least-once: keep it queued until the ACK arrives, but
                     // pace resends instead of hammering every drain pass.
                     dao.scheduleOutboxRetry(
@@ -246,8 +255,7 @@ class MessagingEngine(
                 } else {
                     val attempts = item.attempts + 1
                     if (attempts > MAX_ATTEMPTS) {
-                        dao.deleteOutbox(item.msgId)
-                        dao.setState(item.msgId, MessageState.FAILED)
+                        dao.failOutbox(item.msgId)
                     } else {
                         dao.scheduleOutboxRetry(
                             item.msgId,
@@ -390,7 +398,7 @@ class MessagingEngine(
 
     // ------------------------------------------------------ acks and receipts
 
-    /** Batches ACKs ~200ms so a burst of incoming messages sends few frames. */
+    /** Coalesces ACK timing: collects for ~200ms then flushes, one frame per id. */
     private val ackChannel = Channel<String>(Channel.UNLIMITED)
 
     @Volatile
@@ -423,13 +431,14 @@ class MessagingEngine(
 
     private suspend fun onAck(msgId: UUID) {
         val id = msgId.toString()
-        dao.deleteOutbox(id)
         // Advance forward only: never downgrade a READ back to DELIVERED.
-        dao.advanceToDelivered(id)
+        dao.ackDelivered(id)
     }
 
     private suspend fun onRead(msgId: UUID) {
-        dao.setState(msgId.toString(), MessageState.READ)
+        // Guarded: a remote peer may only advance our own outgoing messages
+        // forward to READ — never incoming, FAILED, or unknown ids.
+        dao.markReadByPeer(msgId.toString())
     }
 
     /**
@@ -495,8 +504,10 @@ class MessagingEngine(
     }
 
     private fun onTyping(typing: Boolean) {
-        // Only surface for the open chat; never persisted.
-        if (activePeer.value == null) return
+        // Only surface for the open chat, and only when it is the connected
+        // peer's chat — never leak a live peer's typing into another
+        // conversation's thread. Not persisted.
+        if (activePeer.value == null || activePeer.value != currentPeerId.value) return
         typingTimeoutJob?.cancel()
         if (typing) {
             _peerTyping.value = true
@@ -664,8 +675,19 @@ class MessagingEngine(
             }
             val file = photoStore.savePeerPhoto(peerId, bytes, state.expectedHash)
             if (file != null) {
-                dao.upsertPeer(peer.copy(photoPath = file.absolutePath, lastSeen = now))
-                refreshPeerProfile()
+                // Re-read after the (suspending) save: a PROFILE frame may
+                // have arrived mid-save with a new name, a changed photo hash,
+                // or a photo removal. Only link the file if the peer still
+                // advertises this exact hash; never overwrite with the stale
+                // snapshot taken before the save.
+                val fresh = dao.getPeer(peerId)
+                if (fresh != null && fresh.photoHash.contentEquals(state.expectedHash)) {
+                    dao.updatePeerPhoto(peerId, file.absolutePath, now)
+                    refreshPeerProfile()
+                } else {
+                    // Stale photo (changed/removed mid-transfer): drop it.
+                    file.delete()
+                }
             }
         }
     }

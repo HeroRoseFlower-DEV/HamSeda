@@ -76,6 +76,23 @@ interface MessageDao {
     @Query("DELETE FROM outbox WHERE msgId = :msgId")
     suspend fun deleteOutbox(msgId: String)
 
+    /**
+     * Atomically removes the outbox entry and advances the message state.
+     * The two writes must not be separated: a crash between them would leave
+     * the message queued forever (first) or lose the redelivery guard (second).
+     */
+    @Transaction
+    suspend fun ackDelivered(msgId: String) {
+        deleteOutbox(msgId)
+        advanceToDelivered(msgId)
+    }
+
+    @Transaction
+    suspend fun failOutbox(msgId: String) {
+        deleteOutbox(msgId)
+        setState(msgId, MessageState.FAILED)
+    }
+
     @Query("UPDATE outbox SET attempts = :attempts, nextRetryAt = :nextRetryAt WHERE msgId = :msgId")
     suspend fun scheduleOutboxRetry(msgId: String, attempts: Int, nextRetryAt: Long)
 
@@ -88,6 +105,16 @@ interface MessageDao {
     suspend fun setState(msgId: String, state: Int)
 
     /**
+     * Advances to SENT only from QUEUED (a READ/DELIVERED must never be
+     * downgraded by a resend that raced the ACK/read receipt).
+     */
+    @Query(
+        "UPDATE messages SET state = " + MessageState.SENT +
+            " WHERE id = :msgId AND state < " + MessageState.SENT,
+    )
+    suspend fun advanceToSent(msgId: String)
+
+    /**
      * Advances to DELIVERED only if the message has not already moved past
      * it (a READ must never be downgraded by a late ACK).
      */
@@ -96,6 +123,17 @@ interface MessageDao {
             " WHERE id = :msgId AND state < " + MessageState.DELIVERED,
     )
     suspend fun advanceToDelivered(msgId: String)
+
+    /**
+     * Applies a peer's MSG_READ receipt. Guarded so a remote peer can only
+     * move OUR OWN outgoing messages forward to READ: incoming messages,
+     * terminal FAILED rows, and unknown ids are never touched.
+     */
+    @Query(
+        "UPDATE messages SET state = " + MessageState.READ +
+            " WHERE id = :msgId AND isFromMe = 1 AND state < " + MessageState.READ,
+    )
+    suspend fun markReadByPeer(msgId: String)
 
     @Query(
         "SELECT id FROM messages WHERE peerId = :peerId AND isFromMe = 0 " +
@@ -150,4 +188,15 @@ interface MessageDao {
     /** Refreshes the denormalized display name on a peer's messages. */
     @Query("UPDATE messages SET peerName = :name WHERE peerId = :peerId")
     suspend fun updatePeerName(peerId: String, name: String)
+
+    /**
+     * Links a verified photo file to a peer without touching the other
+     * columns. Used after photo reassembly so a concurrent PROFILE update
+     * (new name / changed hash) is never clobbered by a stale snapshot.
+     */
+    @Query(
+        "UPDATE peers SET photoPath = :photoPath, lastSeen = :lastSeen " +
+            "WHERE fingerprint = :fingerprint",
+    )
+    suspend fun updatePeerPhoto(fingerprint: String, photoPath: String?, lastSeen: Long)
 }

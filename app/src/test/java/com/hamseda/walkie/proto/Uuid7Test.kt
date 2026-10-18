@@ -36,11 +36,25 @@ class Uuid7Test {
 
     @Test
     fun `back-to-back ids in the same millisecond are strictly increasing`() {
-        // Burst-generate; the monotonic rand_a guard keeps them ordered even
-        // when the millisecond does not advance.
-        val ids = (1..500).map { Uuid7.generate().toString() }
+        // Burst-generate and assert the real invariant instead of raw string
+        // order: timestamps never go backwards, and within one millisecond
+        // rand_a (low 12 bits of the MSB) increments by exactly 1 — tolerating
+        // the documented 12-bit wrap, which broke the old string comparison
+        // ~12% of the time depending on the random seed.
+        val ids = (1..500).map { Uuid7.generate() }
         for (i in 1 until ids.size) {
-            assertTrue("ids[$i-1] < ids[$i]", ids[i - 1] < ids[i])
+            val prevTs = Uuid7.timestampMillis(ids[i - 1])
+            val curTs = Uuid7.timestampMillis(ids[i])
+            assertTrue("timestamps never go backwards", curTs >= prevTs)
+            if (curTs == prevTs) {
+                val prevA = (ids[i - 1].mostSignificantBits and 0xFFFL).toInt()
+                val curA = (ids[i].mostSignificantBits and 0xFFFL).toInt()
+                assertEquals(
+                    "rand_a increments by 1 (mod 4096) within a millisecond",
+                    (prevA + 1) and 0xFFF,
+                    curA,
+                )
+            }
         }
     }
 

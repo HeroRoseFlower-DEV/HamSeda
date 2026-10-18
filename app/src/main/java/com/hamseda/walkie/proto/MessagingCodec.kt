@@ -31,7 +31,7 @@ import java.util.UUID
 object MessagingCodec {
     // ------------------------------------------------------------------ MSG
 
-    /** Encodes one message for a single MSG frame. @throws MsgCodecException if oversize. */
+    /** Encodes one message for a single MSG frame. @throws IllegalArgumentException if oversize. */
     fun encodeText(msgId: UUID, senderSeq: Long, timestamp: Long, text: String): ByteArray {
         val textBytes = text.toByteArray(Charsets.UTF_8)
         require(textBytes.size <= Protocol.MSG_CHUNK_PLAINTEXT - Header.SIZE) {
@@ -43,7 +43,7 @@ object MessagingCodec {
         return buf.array()
     }
 
-    /** Splits a long text into CHUNK payloads. @throws MsgCodecException if over [Protocol.MSG_MAX_BYTES]. */
+    /** Splits a long text into CHUNK payloads. @throws IllegalArgumentException if over [Protocol.MSG_MAX_BYTES]. */
     fun chunk(msgId: UUID, senderSeq: Long, timestamp: Long, text: String): List<ByteArray> {
         check(ChunkHeader.SIZE == Protocol.MSG_CHUNK_HEADER_BYTES) {
             "chunk header size drifted from Protocol constant"

@@ -17,7 +17,6 @@
     <string name="btn_find_peer">Find peer</string>
     <string name="connected_to">Connected to</string>
     <string name="home_identity_fingerprint">Identity fingerprint</string>
-    <string name="unknown_peer">Peer</string>
     <string name="ptt_label">Hold to talk</string>
     <string name="ptt_transmitting">Transmitting…</string>
     <string name="ptt_hint">Hold the button and speak; release to stop.</string>
@@ -31,7 +30,6 @@
     <string name="discovery_title">Find peer</string>
     <string name="mode_label">Connection mode</string>
     <string name="btn_scan">Scan</string>
-    <string name="btn_scanning">Scanning…</string>
     <string name="btn_stop_scan">Stop scan</string>
     <string name="discovery_no_peers">No devices found</string>
     <string name="discovery_no_peers_hint">Make sure your peer has this screen open and the right radio (Wi-Fi/Bluetooth) enabled.</string>
@@ -130,9 +128,7 @@
     <string name="perm_wifi_message">To find nearby phones with Wi-Fi Direct, Android requires this permission. Your location is never stored or sent anywhere.</string>
     <string name="perm_bt_message">To find and connect to a nearby phone with Bluetooth, Android requires these permissions.</string>
     <string name="perm_localnet_message">On Android 17, connecting to a nearby phone over Wi-Fi Direct needs local-network access. HamSeda only talks to the peer you choose — nothing is sent to the internet.</string>
-    <string name="perm_mic_message">To send voice, microphone access is needed; recording happens only while you hold the button.</string>
     <string name="perm_grant">Grant permission</string>
-    <string name="perm_open_settings">Open settings</string>
     <string name="perm_denied_hint">This cannot continue without the permission. You can enable it in the phone’s settings.</string>
 
     <!-- Errors -->
@@ -169,9 +165,7 @@
 
     <!-- Common -->
     <string name="ok">OK</string>
-    <string name="cancel">Cancel</string>
     <string name="retry">Retry</string>
-    <string name="close">Close</string>
     <string name="back">Back</string>
     <string name="discoverable_declined">Visibility declined — your phone will not be discoverable to Bluetooth scans.</string>
     <string name="err_playback">Speaker unavailable — could not start audio playback.</string>
@@ -188,13 +182,11 @@
     <string name="msg_offline">Offline</string>
     <string name="msg_input_hint">Message…</string>
     <string name="msg_send">Send</string>
-    <string name="msg_typing">typing…</string>
     <string name="msg_state_queued">Queued</string>
     <string name="msg_state_failed">Not delivered</string>
     <string name="msg_today">Today</string>
     <string name="msg_yesterday">Yesterday</string>
     <string name="msg_new_conversation">New conversation</string>
-    <string name="msg_no_peer">Connect to a peer first, then come back to chat.</string>
     <string name="settings_read_receipts">Read receipts</string>
     <string name="settings_read_receipts_desc">Let your peer see when you have read their messages. Receipts are only sent while the chat is open.</string>
     <string name="msg_typing_full">typing…</string>

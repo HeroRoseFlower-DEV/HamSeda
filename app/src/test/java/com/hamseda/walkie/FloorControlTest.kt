@@ -130,4 +130,40 @@ class FloorControlTest {
         assertEquals(FloorController.Holder.NONE, c.holder)
         assertTrue(events.last() is FloorController.Event.PeerReleasedFloor)
     }
+
+    @Test
+    fun `ptt press racing peer request never grants both sides`() {
+        // The audit's M6 scenario: requestFloor() setting selfRequestPending
+        // racing onPeerRequest() on another thread. Exactly one side must win:
+        // (peer holds, self denied) or (floor free, self pending) — never
+        // peer-holds with a live self request.
+        repeat(200) {
+            val clock = Clock()
+            val (c, _) = controller(clock)
+            val start = java.util.concurrent.CountDownLatch(1)
+            val t1 = Thread {
+                start.await()
+                c.requestFloor()
+            }
+            val t2 = Thread {
+                start.await()
+                c.onPeerRequest()
+            }
+            t1.start()
+            t2.start()
+            start.countDown()
+            t1.join(5000)
+            t2.join(5000)
+            val peerHolds = c.holder == FloorController.Holder.PEER
+            val selfPending = c.selfRequestPending
+            assertFalse(
+                "both sides granted: holder=PEER with selfRequestPending=true",
+                peerHolds && selfPending,
+            )
+            assertTrue(
+                "one side must win arbitration",
+                (peerHolds && !selfPending) || (!peerHolds && selfPending),
+            )
+        }
+    }
 }

@@ -37,27 +37,6 @@ object HamSedaColors {
 }
 
 /**
- * Messaging visual identity: deep violet/indigo, deliberately distinct from
- * the walkie-talkie's teal. Chat bubbles, unread badges and the send button
- * all draw from here so the messaging screens feel like their own space.
- */
-object MessagingColors {
-    // Light
-    val VioletPrimary = Color(0xFF6A3FD4)
-    val VioletDeep = Color(0xFF4B2A9E)
-    val VioletInk = Color(0xFFFFFFFF)
-    val VioletSoft = Color(0xFFEFE8FF)
-    val VioletFaint = Color(0xFFF6F1FF)
-    val TickRead = Color(0xFF6A3FD4)
-    val TickIdle = Color(0xFF9AA7C2)
-
-    // Dark
-    val VioletBright = Color(0xFFB79CFF)
-    val VioletNight = Color(0xFF2C1E5E)
-    val VioletNightSoft = Color(0xFF241A4D)
-}
-
-/**
  * Faithful Telegram palette, reverse-engineered from the official Android
  * source (DrKLO/Telegram, master @ Oct 2026). Color tokens come from
  * `ThemeColors.createDefaultColors()` (light base defaults) and
