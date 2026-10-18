@@ -1,10 +1,8 @@
 package com.hamseda.walkie.transport
 
 import com.hamseda.walkie.LoopbackTransport
-import java.util.concurrent.CountDownLatch
-import java.util.concurrent.TimeUnit
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertFalse
@@ -27,34 +25,25 @@ class LoopbackBackpressureTest {
         val frame = ByteArray(16) { it.toByte() }
 
         // No collector on b: the send must block (backpressure), not buffer.
-        val sendStarted = CountDownLatch(1)
-        val sendDone = CountDownLatch(1)
-        val job = launch(Dispatchers.IO) {
-            sendStarted.countDown()
+        var sendCompleted = false
+        val sendJob = launch {
             a.sendFrame(frame)
-            sendDone.countDown()
+            sendCompleted = true
         }
-        assertTrue("sender started", sendStarted.await(5, TimeUnit.SECONDS))
-        assertFalse(
-            "send must block while nobody collects (backpressure)",
-            sendDone.await(300, TimeUnit.MILLISECONDS),
-        )
+        advanceUntilIdle()
+        assertFalse("send must block while nobody collects (backpressure)", sendCompleted)
 
         // Start collecting: the blocked send must now complete and deliver.
-        val received = CountDownLatch(1)
         var got: ByteArray? = null
-        val collector = launch(Dispatchers.IO) {
-            b.incomingFrames.collect {
-                got = it
-                received.countDown()
-            }
+        val collectJob = launch {
+            b.incomingFrames.collect { got = it }
         }
-        assertTrue("blocked send completed once collected", sendDone.await(5, TimeUnit.SECONDS))
-        assertTrue("frame delivered", received.await(5, TimeUnit.SECONDS))
+        advanceUntilIdle()
+        assertTrue("blocked send completed once collected", sendCompleted)
         assertArrayEquals(frame, got)
 
-        job.cancel()
-        collector.cancel()
+        sendJob.cancel()
+        collectJob.cancel()
     }
 
     @Test
@@ -63,17 +52,21 @@ class LoopbackBackpressureTest {
         // behavior: sends complete even if nobody is collecting yet.
         val (a, b) = LoopbackTransport.pair(bufferCapacity = 256)
         val frame = ByteArray(8) { 7 }
-        a.sendFrame(frame) // must not suspend
-        val received = CountDownLatch(1)
-        var got: ByteArray? = null
-        val collector = launch(Dispatchers.IO) {
-            b.incomingFrames.collect {
-                got = it
-                received.countDown()
-            }
+
+        var sendCompleted = false
+        launch {
+            a.sendFrame(frame)
+            sendCompleted = true
         }
-        assertTrue("frame delivered", received.await(5, TimeUnit.SECONDS))
+        advanceUntilIdle()
+        assertTrue("buffered send must not block", sendCompleted)
+
+        var got: ByteArray? = null
+        val collectJob = launch {
+            b.incomingFrames.collect { got = it }
+        }
+        advanceUntilIdle()
         assertArrayEquals(frame, got)
-        collector.cancel()
+        collectJob.cancel()
     }
 }

@@ -127,7 +127,7 @@ class FloorController(
 
     /** Peer's FLOOR_RELEASE arrived. */
     fun onPeerRelease(): Unit = synchronized(lock) {
-        if (holder == Holder.PEER) return
+        if (holder != Holder.PEER) return
         holder = Holder.NONE
         listener?.onFloorEvent(Event.PeerReleasedFloor)
     }
