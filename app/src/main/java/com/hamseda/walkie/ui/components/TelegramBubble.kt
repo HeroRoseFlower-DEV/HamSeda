@@ -214,8 +214,8 @@ private fun DrawScope.telegramBubblePath(
         lineTo(pad + botR, h - pad)
         arcTo(Rect(pad, h - pad - 2 * botR, pad + 2 * botR, h - pad), 90f, 90f, false)
         // Left edge up.
-        lineTo(pad, pad + rad)
-        arcTo(Rect(pad, pad, pad + 2 * rad, pad + 2 * rad), 180f, 90f, false)
+        lineTo(pad, pad + topR)
+        arcTo(Rect(pad, pad, pad + 2 * topR, pad + 2 * topR), 180f, 90f, false)
         close()
     }
 }

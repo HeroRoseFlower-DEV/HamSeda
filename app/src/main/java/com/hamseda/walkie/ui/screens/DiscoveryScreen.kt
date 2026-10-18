@@ -2,6 +2,7 @@
 
 package com.hamseda.walkie.ui.screens
 
+import android.app.Activity
 import android.content.Intent
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -129,10 +130,10 @@ fun DiscoveryScreen(
         ActivityResultContracts.StartActivityForResult(),
     ) { result ->
         // ACTION_REQUEST_DISCOVERABLE returns the accepted duration in
-        // seconds (e.g. 300), not Activity.RESULT_OK (-1). Any positive
-        // result means Android accepted discoverability; 0 / RESULT_CANCELED
-        // means it was denied or the system could not enable it.
-        if (result.resultCode > 0) {
+        // seconds (e.g. 300), not Activity.RESULT_OK (-1) — but some devices
+        // return RESULT_OK instead. Accept either; 0 / RESULT_CANCELED means
+        // it was denied or the system could not enable it.
+        if (result.resultCode == Activity.RESULT_OK || result.resultCode > 0) {
             grantNonce++
         } else {
             pendingActionKind = null

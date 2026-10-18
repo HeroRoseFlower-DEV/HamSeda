@@ -63,9 +63,16 @@ fun DiagnosticsScreen(
     val entries by AppLog.entries.collectAsStateWithLifecycle()
     val listState = rememberLazyListState()
 
-    // Keep the view pinned to the newest entries.
+    // Keep the view pinned to the newest entries — but only if the user was
+    // already at the bottom. Hijacking the scroll while they read older
+    // entries is hostile.
     LaunchedEffect(entries.size) {
-        if (entries.isNotEmpty()) listState.animateScrollToItem(entries.size - 1)
+        if (entries.isNotEmpty()) {
+            val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index
+            if (lastVisible == null || lastVisible >= entries.size - 2) {
+                listState.animateScrollToItem(entries.size - 1)
+            }
+        }
     }
 
     Scaffold(
@@ -145,9 +152,10 @@ fun DiagnosticsScreen(
                     ) {
                         itemsIndexed(
                             entries,
-                            // L6: index-based key — two entries can share the
-                            // same millisecond timestamp, tag, and message.
-                            key = { index, _ -> index },
+                            // Stable per-entry key: the log is append-only, so
+                            // index + content hash uniquely identifies a row
+                            // even when two entries share a timestamp.
+                            key = { index, e -> "$index|${e.time}|${e.tag}|${e.message.hashCode()}" },
                         ) { _, e ->
                             Text(
                                 text = "${e.time} [${e.tag}] ${e.message}",

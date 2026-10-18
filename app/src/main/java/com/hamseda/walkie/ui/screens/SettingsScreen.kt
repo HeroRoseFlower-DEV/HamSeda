@@ -75,6 +75,8 @@ fun SettingsScreen(
     val theme by vm.theme.collectAsStateWithLifecycle()
     val language by vm.language.collectAsStateWithLifecycle()
     val trustedPeers by vm.trustedPeers.collectAsStateWithLifecycle()
+    val profileName by vm.profileName.collectAsStateWithLifecycle()
+    val profilePhotoPath by vm.profilePhotoPath.collectAsStateWithLifecycle()
 
     // Refresh the own-photo thumbnail when returning from the Profile screen.
     val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
@@ -105,8 +107,8 @@ fun SettingsScreen(
             Spacer(Modifier.height(4.dp))
 
             ProfileCard(
-                name = vm.profileName.collectAsStateWithLifecycle().value,
-                photoPath = vm.profilePhotoPath.collectAsStateWithLifecycle().value,
+                name = profileName,
+                photoPath = profilePhotoPath,
                 onClick = onOpenProfile,
             )
 

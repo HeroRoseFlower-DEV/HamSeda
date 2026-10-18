@@ -1143,12 +1143,10 @@ class WifiDirectTransport(private val context: Context) : AbstractFramedStreamTr
                     OWNER_BIND_RETRY_DELAY_MS,
                     (remainingNanos / 1_000_000L).coerceAtLeast(1L),
                 )
-                try {
-                    Thread.sleep(sleepMs)
-                } catch (interrupted: InterruptedException) {
-                    Thread.currentThread().interrupt()
-                    throw IOException("P2P listener bind retry interrupted", interrupted)
-                }
+                // Cancellable delay instead of Thread.sleep: this runs on
+                // Dispatchers.IO inside a coroutine; blocking the thread
+                // would pin it for the whole retry window.
+                delay(sleepMs)
             } catch (e: Exception) {
                 try { candidate.close() } catch (_: IOException) {}
                 if (serverSocket === candidate) serverSocket = null
@@ -1181,7 +1179,7 @@ class WifiDirectTransport(private val context: Context) : AbstractFramedStreamTr
         }
     }
 
-    private fun connectAsClient(info: WifiP2pInfo, expectedGeneration: Long): Socket {
+    private suspend fun connectAsClient(info: WifiP2pInfo, expectedGeneration: Long): Socket {
         val host = info.groupOwnerAddress?.hostAddress
             ?: throw IOException("group owner address unavailable")
         Log.i(TAG, "client: connecting to Wi-Fi Direct group owner")
@@ -1237,12 +1235,9 @@ class WifiDirectTransport(private val context: Context) : AbstractFramedStreamTr
                     loggedNotReady = true
                 }
                 if (deadlineNanos - System.nanoTime() <= 0L) break
-                try {
-                    Thread.sleep(200L)
-                } catch (e: InterruptedException) {
-                    Thread.currentThread().interrupt()
-                    throw IOException("client connection interrupted", e)
-                }
+                // Cancellable delay: this is called from a coroutine
+                // (see the withTimeout at the call site).
+                delay(200L)
             }
         }
         throw IOException(

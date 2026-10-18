@@ -33,10 +33,12 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -76,8 +78,20 @@ fun ChatScreen(
     deps: VmDeps,
     peerId: String,
     onBack: () -> Unit,
-    vm: ChatViewModel = viewModel(factory = ChatVmFactory(deps, peerId)),
+    // Keyed by peer: without key=, the ViewModelStore (activity-scoped,
+    // class-keyed) would return chat A's VM when opening chat B — rendering
+    // A's messages and sending to A. Each conversation gets its own VM.
+    vm: ChatViewModel = viewModel(key = "chat/$peerId", factory = ChatVmFactory(deps, peerId)),
 ) {
+    // The VM is activity-scoped, so onCleared never fires on back-navigation.
+    // Manage the engine's active peer with the composition lifecycle instead:
+    // set on enter (covers VM reuse — init ran only once), clear on leave so
+    // typing indicators and read receipts stop when the chat is not visible.
+    DisposableEffect(peerId) {
+        vm.activate()
+        onDispose { vm.clearActivePeer() }
+    }
+
     val messages by vm.messages.collectAsStateWithLifecycle()
     val peerTyping by vm.peerTyping.collectAsStateWithLifecycle()
     val online by vm.online.collectAsStateWithLifecycle()
@@ -89,10 +103,14 @@ fun ChatScreen(
     val displayName = peerProfile?.displayName?.takeIf { it.isNotEmpty() } ?: peerName
 
     // New arrivals while open count as read (drives read receipts).
+    // Auto-scroll only when already at the newest messages (index 0 in the
+    // reversed list) — never yank the scroll away from history being read.
     LaunchedEffect(messages.size) {
         if (messages.isNotEmpty()) {
             vm.onMessagesVisible()
-            listState.animateScrollToItem(0)
+            if (listState.firstVisibleItemIndex == 0) {
+                listState.animateScrollToItem(0)
+            }
         }
     }
 
@@ -239,7 +257,7 @@ private fun TelegramChatHeader(
             IconButton(onClick = onBack) {
                 Icon(
                     Icons.AutoMirrored.Filled.ArrowBack,
-                    contentDescription = null,
+                    contentDescription = stringResource(R.string.back),
                     tint = if (dark) TelegramColors.HeaderTitleDark else Color(0xFF222222),
                 )
             }
@@ -294,8 +312,11 @@ private fun TelegramOfflineStrip(dark: Boolean) {
 
 private sealed interface ChatItem {
     val key: String
-    data class Divider(val label: String) : ChatItem {
-        override val key: String = "div-$label"
+    // Keyed by day key, not the display label: dayLabel drops the year for
+    // old dates ("d MMMM"), so same-day-different-year dividers would collide
+    // and crash the lazy list on duplicate keys.
+    data class Divider(val day: String, val label: String) : ChatItem {
+        override val key: String = "div-$day"
     }
     data class Msg(
         val msg: MessagingEngine.MessageView,
@@ -338,7 +359,7 @@ private fun withDateDividers(
         val chronoIdx = chrono.size - 1 - revIdx
         val day = dayKey(m.timestamp)
         if (day != lastDay) {
-            out.add(ChatItem.Divider(dayLabel(m.timestamp, todayLabel, yesterdayLabel, locale)))
+            out.add(ChatItem.Divider(day, dayLabel(m.timestamp, todayLabel, yesterdayLabel, locale)))
             lastDay = day
         }
         out.add(ChatItem.Msg(m, firstInRun[chronoIdx], lastInRun[chronoIdx]))
@@ -395,7 +416,8 @@ private fun TelegramInput(
     onTyping: (Boolean) -> Unit,
     dark: Boolean,
 ) {
-    var text by remember { mutableStateOf("") }
+    // rememberSaveable: rotating the phone must not discard the typed draft.
+    var text by rememberSaveable { mutableStateOf("") }
 
     fun submit() {
         val t = text.trim()

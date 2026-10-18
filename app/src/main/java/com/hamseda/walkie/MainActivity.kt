@@ -146,7 +146,7 @@ class MainActivity : ComponentActivity() {
                                     messaging = messaging,
                                 )
                             }
-                            HamSedaRoot(deps = deps, onLanguageChanged = { recreate() })
+                            HamSedaRoot(deps = deps, darkTheme = darkTheme, onLanguageChanged = { recreate() })
                         }
                     }
                 }
@@ -168,7 +168,7 @@ private enum class Screen {
 }
 
 @Composable
-private fun HamSedaRoot(deps: VmDeps, onLanguageChanged: () -> Unit) {
+private fun HamSedaRoot(deps: VmDeps, darkTheme: Boolean, onLanguageChanged: () -> Unit) {
     // Saveable: rotating the phone on the Settings screen must not kick the
     // user back to Home.
     var screen by rememberSaveable { mutableStateOf(Screen.HOME) }
@@ -198,7 +198,7 @@ private fun HamSedaRoot(deps: VmDeps, onLanguageChanged: () -> Unit) {
         val inChat = screen == Screen.MESSAGES || screen == Screen.CHAT
         when (phase) {
             SessionManager.Phase.AWAITING_SAS_CONFIRM -> {
-                if (sasCode != null) screen = Screen.PAIRING
+                if (sasCode != null && !inChat) screen = Screen.PAIRING
                 else if (peerIdentityTrusted && !inChat) screen = Screen.HOME
             }
             SessionManager.Phase.IN_SESSION ->
@@ -215,6 +215,7 @@ private fun HamSedaRoot(deps: VmDeps, onLanguageChanged: () -> Unit) {
                 MainBottomBar(
                     screen = screen,
                     unreadTotal = unreadTotal,
+                    dark = darkTheme,
                     onSelect = { screen = it },
                 )
             }
@@ -270,7 +271,8 @@ private fun HamSedaRoot(deps: VmDeps, onLanguageChanged: () -> Unit) {
                             onBack = { screen = Screen.MESSAGES },
                         )
                     } else {
-                        screen = Screen.MESSAGES
+                        // Defer: assigning state during composition is a side effect.
+                        LaunchedEffect(Unit) { screen = Screen.MESSAGES }
                     }
                 }
             }
@@ -282,6 +284,7 @@ private fun HamSedaRoot(deps: VmDeps, onLanguageChanged: () -> Unit) {
 private fun MainBottomBar(
     screen: Screen,
     unreadTotal: Int,
+    dark: Boolean,
     onSelect: (Screen) -> Unit,
 ) {
     NavigationBar {
@@ -300,7 +303,10 @@ private fun MainBottomBar(
                 BadgedBox(
                     badge = {
                         if (unreadTotal > 0) {
-                            Badge(containerColor = TelegramColors.UnreadBadgeLight) {
+                            Badge(
+                                containerColor = if (dark) TelegramColors.UnreadBadgeDark
+                                else TelegramColors.UnreadBadgeLight,
+                            ) {
                                 Text(unreadTotal.toString().toFaDigits())
                             }
                         }

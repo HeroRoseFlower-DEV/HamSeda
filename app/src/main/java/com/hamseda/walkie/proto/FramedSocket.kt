@@ -132,12 +132,20 @@ class FramedSocket(
      * Reads exactly [n] bytes, or returns null if EOF is hit before any byte
      * could be read at the current position. A mid-frame EOF throws
      * [EOFException] (truncated peer stream = protocol error).
+     *
+     * A [SocketTimeoutException] (Wi-Fi Direct's SO_TIMEOUT) consumes no
+     * bytes, so the partial read is resumed instead of discarded — discarding
+     * would desync the length-prefixed stream and kill a recoverable session.
      */
     private fun readExactly(n: Int): ByteArray? {
         val buf = ByteArray(n)
         var off = 0
         while (off < n) {
-            val r = input.read(buf, off, n - off)
+            val r = try {
+                input.read(buf, off, n - off)
+            } catch (e: SocketTimeoutException) {
+                continue // idle timeout: no bytes consumed, keep `off`
+            }
             if (r == -1) {
                 if (off == 0) return null // clean EOF at a frame boundary
                 throw EOFException("truncated frame: got $off of $n bytes before EOF")

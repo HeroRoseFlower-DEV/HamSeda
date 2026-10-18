@@ -17,7 +17,6 @@
     <string name="btn_find_peer">یافتن هم‌صحبت</string>
     <string name="connected_to">متصل به</string>
     <string name="home_identity_fingerprint">اثر انگشت هویت</string>
-    <string name="unknown_peer">هم‌صحبت</string>
     <string name="ptt_label">برای صحبت نگه دار</string>
     <string name="ptt_transmitting">در حال ارسال…</string>
     <string name="ptt_hint">دکمه را نگه دار و صحبت کن؛ رها کن تا قطع شود.</string>
@@ -31,7 +30,6 @@
     <string name="discovery_title">یافتن هم‌صحبت</string>
     <string name="mode_label">حالت اتصال</string>
     <string name="btn_scan">جستجو</string>
-    <string name="btn_scanning">در حال جستجو…</string>
     <string name="btn_stop_scan">توقف جستجو</string>
     <string name="discovery_no_peers">دستگاهی پیدا نشد</string>
     <string name="discovery_no_peers_hint">مطمئن شو هم‌صحبت هم همین صفحه را باز کرده و رادیوی مناسب (وای‌فای/بلوتوث) روشن است.</string>
@@ -130,9 +128,7 @@
     <string name="perm_wifi_message">برای پیدا کردن گوشی‌های نزدیک با وای‌فای دایرکت، اندروید این دسترسی را می‌خواهد. موقعیت مکانی تو ذخیره یا ارسال نمی‌شود.</string>
     <string name="perm_bt_message">برای پیدا کردن و وصل شدن به گوشی نزدیک با بلوتوث، اندروید این دسترسی‌ها را می‌خواهد.</string>
     <string name="perm_localnet_message">در اندروید ۱۷، وصل شدن به گوشی نزدیک با وای‌فای دایرکت نیاز به دسترسی شبکه محلی دارد. هم‌صدا فقط با همان گوشی‌ای که انتخاب می‌کنی صحبت می‌کند — چیزی به اینترنت ارسال نمی‌شود.</string>
-    <string name="perm_mic_message">برای ارسال صدا، دسترسی میکروفون لازم است؛ فقط وقتی دکمه را نگه می‌داری ضبط می‌شود.</string>
     <string name="perm_grant">اعطای دسترسی</string>
-    <string name="perm_open_settings">باز کردن تنظیمات</string>
     <string name="perm_denied_hint">بدون این دسترسی امکان ادامه نیست. می‌توانی از تنظیمات گوشی دسترسی را فعال کنی.</string>
 
     <!-- Errors -->
@@ -169,9 +165,7 @@
 
     <!-- Common -->
     <string name="ok">باشه</string>
-    <string name="cancel">لغو</string>
     <string name="retry">تلاش دوباره</string>
-    <string name="close">بستن</string>
     <string name="back">بازگشت</string>
     <string name="discoverable_declined">قابل‌مشاهده شدن رد شد — گوشی شما برای اسکن بلوتوث قابل‌مشاهده نخواهد بود.</string>
     <string name="err_playback">بلندگو در دسترس نیست — پخش صدا شروع نشد.</string>
@@ -188,13 +182,11 @@
     <string name="msg_offline">آفلاین</string>
     <string name="msg_input_hint">پیام…</string>
     <string name="msg_send">ارسال</string>
-    <string name="msg_typing">در حال نوشتن…</string>
     <string name="msg_state_queued">در صف</string>
     <string name="msg_state_failed">ارسال نشد</string>
     <string name="msg_today">امروز</string>
     <string name="msg_yesterday">دیروز</string>
     <string name="msg_new_conversation">گفتگوی جدید</string>
-    <string name="msg_no_peer">اول به یک همتا وصل شو، بعد برگرد برای چت.</string>
     <string name="settings_read_receipts">رسید خواندن</string>
     <string name="settings_read_receipts_desc">همتا بفهمه پیام‌هاش رو خوندی. رسید فقط وقتی ارسال می‌شه که صفحهٔ گفتگو باز باشه.</string>
     <string name="msg_typing_full">در حال نوشتن…</string>

@@ -44,6 +44,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -82,8 +83,9 @@ fun ProfileScreen(
     val dark = isSystemInDarkTheme()
     val headerBg = if (dark) TelegramColors.InputBarDark else Color.White
 
-    var name by remember { mutableStateOf<String?>(null) }
-    var savedFlash by remember { mutableStateOf(false) }
+    // rememberSaveable: rotation must not lose an unsaved name edit.
+    var name by rememberSaveable { mutableStateOf<String?>(null) }
+    var savedFlash by rememberSaveable { mutableStateOf(false) }
 
     // Seed the editor from the persisted name once it loads.
     LaunchedEffect(savedName) {

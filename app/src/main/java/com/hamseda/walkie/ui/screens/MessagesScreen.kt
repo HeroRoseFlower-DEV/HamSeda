@@ -119,7 +119,13 @@ fun MessagesScreen(
             } else {
                 LazyColumn(modifier = Modifier.fillMaxSize()) {
                     items(conversations, key = { it.peerId }) { conv ->
-                        val profile by deps.messaging.observePeerProfile(conv.peerId)
+                        // Remember the Flow per peer: observePeerProfile builds a
+                        // fresh combine() each call, and re-collecting it on every
+                        // recomposition would re-subscribe (and re-query Room).
+                        val profileFlow = remember(conv.peerId) {
+                            deps.messaging.observePeerProfile(conv.peerId)
+                        }
+                        val profile by profileFlow
                             .collectAsStateWithLifecycle(initialValue = null)
                         TelegramConversationRow(
                             conv = conv,
@@ -343,7 +349,7 @@ private fun TelegramConversationRow(
 
 /** Short relative time for the conversation list, Persian digits. */
 @Composable
-fun formatListTime(ts: Long): String {
+private fun formatListTime(ts: Long): String {
     val yesterdayLabel = stringResource(R.string.msg_yesterday)
     // Compose-observable locale (lint NonObservableLocale forbids
     // java.util.Locale.getDefault() here).

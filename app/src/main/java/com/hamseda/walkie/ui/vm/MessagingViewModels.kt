@@ -10,6 +10,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -73,6 +74,19 @@ class ChatViewModel(
 
     fun onTyping(typing: Boolean) = engine.setTyping(typing)
 
+    /**
+     * Marks this chat as the visible one. Called from the screen's
+     * DisposableEffect on entering composition — init runs only on first VM
+     * creation, but the effect re-runs every time a cached VM is re-shown.
+     */
+    fun activate() = engine.setActivePeer(peerId)
+
+    /**
+     * Clears the visible-chat marker. Called from the screen's
+     * DisposableEffect on leaving composition; onCleared stays as backstop.
+     */
+    fun clearActivePeer() = engine.setActivePeer(null)
+
     /** Re-marks read when new messages arrive while the thread is open. */
     fun onMessagesVisible() {
         viewModelScope.launch { engine.markReadVisible(peerId) }
@@ -108,6 +122,7 @@ class ProfileViewModel(private val deps: VmDeps) : ViewModel() {
     private val _photoTick = MutableStateFlow(0L)
     val photoPath: StateFlow<String?> =
         _photoTick.map { photoStore.ownPhotoFile()?.absolutePath }
+            .flowOn(Dispatchers.IO) // disk stat off the main thread
             .stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
     fun setName(name: String) {
