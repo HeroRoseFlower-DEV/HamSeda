@@ -51,7 +51,7 @@ import com.hamseda.walkie.ui.screens.PrivacyScreen
 import com.hamseda.walkie.ui.screens.ProfileScreen
 import com.hamseda.walkie.ui.screens.SettingsScreen
 import com.hamseda.walkie.ui.theme.HamSedaTheme
-import com.hamseda.walkie.ui.theme.MessagingColors
+import com.hamseda.walkie.ui.theme.TelegramColors
 import com.hamseda.walkie.ui.screens.StartupPermissionGate
 import com.hamseda.walkie.ui.vm.VmDeps
 import com.hamseda.walkie.util.toFaDigits
@@ -300,7 +300,7 @@ private fun MainBottomBar(
                 BadgedBox(
                     badge = {
                         if (unreadTotal > 0) {
-                            Badge(containerColor = MessagingColors.VioletPrimary) {
+                            Badge(containerColor = TelegramColors.UnreadBadgeLight) {
                                 Text(unreadTotal.toString().toFaDigits())
                             }
                         }

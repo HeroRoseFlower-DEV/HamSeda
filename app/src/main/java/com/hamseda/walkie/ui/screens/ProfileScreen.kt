@@ -236,7 +236,7 @@ fun ProfileScreen(
             Text(
                 text = stringResource(R.string.profile_desc),
                 style = MaterialTheme.typography.bodySmall,
-                color = if (dark) TelegramColors.TimeInBubbleDark else TelegramColors.TimeInBubbleLight,
+                color = if (dark) TelegramColors.DialogMessageDark else TelegramColors.DialogMessageLight,
                 textAlign = TextAlign.Center,
             )
             Spacer(Modifier.height(8.dp))

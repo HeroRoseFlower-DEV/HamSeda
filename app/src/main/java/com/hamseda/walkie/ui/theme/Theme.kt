@@ -6,6 +6,7 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
 
 /**
  * HamSeda visual language: warm ivory surfaces, deep navy typography,
@@ -57,37 +58,77 @@ object MessagingColors {
 }
 
 /**
- * Telegram-style messaging palette (explicit user request — supersedes the
- * violet identity for the whole messaging section).
+ * Faithful Telegram palette, reverse-engineered from the official Android
+ * source (DrKLO/Telegram, master @ Oct 2026). Color tokens come from
+ * `ThemeColors.createDefaultColors()` (light base defaults) and
+ * `night.attheme` (dark); geometry from `MessageDrawable`
+ * (bubbleRadius=17dp, nearRad=6dp, 8dp tail zone) and `ChatMessageCell`
+ * (text 16sp, in-bubble time 12sp, date header 14sp).
+ *
+ * Notes on choices:
+ * - Out-bubble is the iconic light green 0xFFEFFFDE (base default), not the
+ *   "Blue" theme variant's light blue — the green is the recognized Telegram.
+ * - Read ticks are blue 0xFF1B9BE6 (from the Blue theme's check color): the
+ *   base theme uses the same green for sent and read, but the shipped app's
+ *   familiar sent→delivered→read progression is green→green→blue.
+ * - Date pills are white 14sp text on a dark translucent pill (the service
+ *   background is wallpaper-derived in Telegram; this matches its look).
  */
 object TelegramColors {
-    // Light theme
+    // ---- light ----
     val ChatBackgroundLight = Color(0xFFE7EBF0)
-    val IncomingBubbleLight = Color(0xFFFFFFFF)
-    val OutgoingBubbleLight = Color(0xFFEFFDDE)
-    val IncomingTextLight = Color(0xFF000000)
-    val OutgoingTextLight = Color(0xFF000000)
-    val TimeInBubbleLight = Color(0xFF6D7F8F)
-    val TickSent = Color(0xFF8A9BA8)
-    val TickRead = Color(0xFF5BB2F0)
-    val UnreadBadge = Color(0xFF2AABEE)
-    val SendButton = Color(0xFF2AABEE)
-    val DateDividerBgLight = Color(0xFFD4DEE7)
-    val DateDividerTextLight = Color(0xFF5A6E7F)
-    val InputBarLight = Color(0xFFFFFFFF)
-    val InputHintLight = Color(0xFF8A9BA8)
+    val InBubbleLight = Color(0xFFFFFFFF)          // chat_inBubble
+    val OutBubbleLight = Color(0xFFEFFFDE)         // chat_outBubble
+    val MessageTextLight = Color(0xFF000000)       // chat_messageTextIn/Out
+    val InTimeTextLight = Color(0xFFA1AAB3)        // chat_inTimeText
+    val OutTimeTextLight = Color(0xFF70B15C)       // chat_outTimeText
+    val TickSentLight = Color(0xFF5DB050)          // chat_outSentCheck
+    val TickReadLight = Color(0xFF1B9BE6)          // blue read check (Blue theme)
+    val DatePillBgLight = Color(0x80000000)        // dark translucent service pill
+    val DatePillTextLight = Color(0xFFFFFFFF)      // chat_serviceText, 14sp
+    val InputBarLight = Color(0xFFFFFFFF)          // chat_messagePanelBackground
+    val InputTextLight = Color(0xFF000000)         // chat_messagePanelText
+    val InputHintLight = Color(0xFF858A84)         // chat_messagePanelHint
+    val SendButton = Color(0xFF229AF0)             // chat_messagePanelSend
+    val UnreadBadgeLight = Color(0xFF229AF0)       // chats_unreadCounter
+    val DialogNameLight = Color(0xFF1A1D21)        // chats_name, 17sp
+    val DialogMessageLight = Color(0xFF75787A)     // chats_message, 16sp
+    val DialogDateLight = Color(0xFF848688)        // chats_date
+    val HeaderTitleLight = Color(0xFF222222)
+    val HeaderSubtitleLight = Color(0xFF79817E)    // actionBarDefaultSubtitle
+    val OnlineBlueLight = Color(0xFF298ACF)        // chat_status
+    val DividerLight = Color(0xFFD9D9D9)           // divider
 
-    // Dark theme (Telegram dark)
+    // ---- dark (night.attheme) ----
     val ChatBackgroundDark = Color(0xFF0E1621)
-    val IncomingBubbleDark = Color(0xFF182533)
-    val OutgoingBubbleDark = Color(0xFF2B5278)
-    val IncomingTextDark = Color(0xFFFFFFFF)
-    val OutgoingTextDark = Color(0xFFFFFFFF)
-    val TimeInBubbleDark = Color(0xFF8A9BA8)
-    val DateDividerBgDark = Color(0xFF242F3D)
-    val DateDividerTextDark = Color(0xFF8A9BA8)
-    val InputBarDark = Color(0xFF17212B)
-    val InputHintDark = Color(0xFF6D7F8F)
+    val InBubbleDark = Color(0xFF1F2123)           // chat_inBubble
+    val OutBubbleDark = Color(0xFF366CAF)          // chat_outBubble
+    val MessageTextDark = Color(0xFFFAFAFA)        // chat_messageTextIn/Out
+    val InTimeTextDark = Color(0xFF7D7F81)         // chat_inTimeText
+    val OutTimeTextDark = Color(0xFF94D3F6)        // chat_outTimeText
+    val TickSentDark = Color(0xE1C9F0FF)           // chat_outSentCheck
+    val TickReadDark = Color(0xFFA6DBFF)           // chat_outSentCheckSelected
+    val DatePillBgDark = Color(0x96373737)         // chat_serviceBackground
+    val DatePillTextDark = Color(0xFFFFFFFF)
+    val InputBarDark = Color(0xFF1E1E1F)           // chat_messagePanelBackground
+    val InputTextDark = Color(0xFFFFFFFF)
+    val InputHintDark = Color(0x64FFFFFF)          // chat_messagePanelHint
+    val UnreadBadgeDark = Color(0xFF399EF3)        // chats_unreadCounter
+    val DialogNameDark = Color(0xFFF1F1F1)         // chats_name
+    val DialogMessageDark = Color(0xFF828282)      // chats_message
+    val DialogDateDark = Color(0xFF787878)         // chats_date
+    val HeaderTitleDark = Color(0xFFFFFFFF)        // actionBarDefaultTitle
+    val HeaderSubtitleDark = Color(0x73F2F2F2)     // actionBarDefaultSubtitle
+    val OnlineBlueDark = Color(0xFF74BDF9)         // chat_status
+    val DividerDark = Color(0xFF242F3D)
+
+    // ---- bubble geometry (MessageDrawable; SharedConfig.bubbleRadius=17) ----
+    /** Default bubble corner radius. */
+    val BubbleRadius = 17.dp
+    /** Radius of corners adjacent to a grouped message. */
+    val BubbleNearRadius = 6.dp
+    /** Horizontal zone reserved for the tail on the outer edge. */
+    val BubbleTailZone = 8.dp
 }
 
 private val LightScheme = lightColorScheme(
