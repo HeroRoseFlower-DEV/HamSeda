@@ -1,7 +1,9 @@
 # HamSeda release notes — template
-<!-- Fill this in manually BEFORE pushing the release tag (it is committed,
-     then the release workflow publishes it via --notes-file). The
-     auto-generated changelog is appended by the workflow. -->
+<!-- NOTE TO THE RELEASE OPERATOR: fill in every section by hand BEFORE
+     pushing the release tag (see docs/RELEASE_PROCESS.md step 5). This file
+     is published VERBATIM via gh --notes-file; there is no auto-generated
+     changelog. Delete this comment block when the notes are complete —
+     the release workflow refuses to publish while any '<!--' remains. -->
 
 ## Highlights
 - 

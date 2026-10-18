@@ -9,9 +9,12 @@ import org.junit.Test
  * JVM tests for the transport state-machine guard logic using fake sockets.
  *
  * The full [BluetoothTransport]/[WifiDirectTransport] state machines need
- * Android framework classes and are covered by instrumentation tests; the
- * generation-guard protocol they both obey is extracted into pure functions
- * ([isCurrentIncomingFrame], [discardStaleFrame]) tested here.
+ * Android framework classes and are not covered by instrumentation tests
+ * (HamSedaInstrumentedTest only covers permissions, activity recreation,
+ * platform crypto and Opus). The generation-guard protocol they both obey
+ * is extracted into pure functions ([isCurrentIncomingFrame],
+ * [discardStaleFrame]) tested here, and the shared reader-loop dispatch is
+ * tested with fake sockets in [ReaderLoopTest].
  */
 class TransportStateMachineTest {
 

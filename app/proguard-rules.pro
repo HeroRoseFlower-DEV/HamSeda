@@ -1,10 +1,10 @@
-# HamSeda ProGuard rules (release builds keep minify disabled for v1.0;
+# HamSeda ProGuard rules (release builds keep minify disabled as of v1.2;
 # these rules exist so a future minified release stays correct).
 
-# Keep the vendored Concentus Opus codec (pure Java, reflection-free, but keep
-# the entry points stable for safety).
--keep class org.concentus.OpusEncoder { *; }
--keep class org.concentus.OpusDecoder { *; }
+# Keep the JNI entry points of the native Opus codec. Without this, a
+# minified build would mangle the native method names and every call would
+# die with UnsatisfiedLinkError at runtime (total audio loss).
+-keep class com.hamseda.walkie.audio.NativeOpusCodec { *; }
 
 # Keep serializable protocol/crypto entry points used across the session layer.
 -keep class com.hamseda.walkie.proto.** { *; }

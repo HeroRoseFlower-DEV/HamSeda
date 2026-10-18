@@ -36,8 +36,6 @@ class TransportManager(context: Context) {
     fun transportOf(type: TransportType): Transport =
         if (type == TransportType.WIFI_DIRECT) wifiDirect else bluetooth
 
-    fun allTransports(): List<Transport> = listOf(wifiDirect, bluetooth)
-
     fun setPreference(pref: TransportPreference) {
         _preference.value = pref
         val next = when (pref) {

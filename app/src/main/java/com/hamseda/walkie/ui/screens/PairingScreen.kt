@@ -49,6 +49,7 @@ import com.hamseda.walkie.R
 import com.hamseda.walkie.ui.vm.PairingViewModel
 import com.hamseda.walkie.ui.vm.VmDeps
 import com.hamseda.walkie.ui.vm.VmFactory
+import com.hamseda.walkie.util.toFaDigits
 
 /**
  * Short-Authentication-String comparison screen.
@@ -129,7 +130,8 @@ fun PairingScreen(
                 elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
             ) {
                 Text(
-                    text = sasCode?.chunked(3)?.joinToString(" ") ?: "···",
+                    text = sasCode?.chunked(3)?.joinToString(" ")?.toFaDigits()
+                        ?: stringResource(R.string.pairing_code_placeholder),
                     modifier = Modifier.padding(horizontal = 40.dp, vertical = 24.dp),
                     fontSize = 44.sp,
                     fontWeight = FontWeight.Bold,
@@ -144,8 +146,8 @@ fun PairingScreen(
             // Compare it once via a trusted channel, then trust the pin.
             peerFingerprint?.let { fp ->
                 Text(
-                    text = if (peerTrusted) "✓ " else "" +
-                        fp.chunked(8).joinToString(" "),
+                    text = (if (peerTrusted) stringResource(R.string.pairing_trusted_mark) else "") +
+                        fp.chunked(8).joinToString(" ").toFaDigits(),
                     style = MaterialTheme.typography.bodySmall,
                     fontFamily = FontFamily.Monospace,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,

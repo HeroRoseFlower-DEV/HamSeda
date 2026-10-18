@@ -41,6 +41,7 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
@@ -51,6 +52,7 @@ import com.hamseda.walkie.session.SessionManager
 import com.hamseda.walkie.transport.PeerDevice
 import com.hamseda.walkie.transport.TransportType
 import com.hamseda.walkie.ui.theme.HamSedaColors
+import com.hamseda.walkie.util.toFaDigits
 
 /** Connection status pill shown at the top of Home. */
 @Composable
@@ -59,6 +61,11 @@ fun StatusHeader(
     transportType: TransportType?,
     peerName: String,
     modifier: Modifier = Modifier,
+    // Peer identity fingerprint: surfaced during the call so the skip-SAS
+    // path (mutually pinned identities) still shows a cryptographic
+    // identity — the peer name alone is spoofable (see SECURITY.md).
+    peerFingerprint: String? = null,
+    peerTrusted: Boolean = false,
 ) {
     val (text, color) = when (phase) {
         SessionManager.Phase.IDLE -> stringResource(R.string.status_idle) to HamSedaColors.NavySoft
@@ -122,6 +129,25 @@ fun StatusHeader(
                         fontWeight = FontWeight.Bold,
                         textAlign = TextAlign.End,
                     )
+                    // Cryptographic peer identity. Always shown in-session
+                    // when available — most importantly when SAS was skipped
+                    // for mutually pinned peers, where this is the only
+                    // identity evidence on screen.
+                    peerFingerprint?.let { fp ->
+                        Text(
+                            text = stringResource(R.string.home_identity_fingerprint),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Text(
+                            text = (if (peerTrusted) stringResource(R.string.pairing_trusted_mark) else "") +
+                                fp.take(16).chunked(4).joinToString(" ").toFaDigits(),
+                            style = MaterialTheme.typography.bodySmall,
+                            fontFamily = FontFamily.Monospace,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.End,
+                        )
+                    }
                 }
             }
         }

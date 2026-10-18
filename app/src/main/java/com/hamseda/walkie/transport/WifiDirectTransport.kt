@@ -30,6 +30,8 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -1075,7 +1077,7 @@ class WifiDirectTransport(private val context: Context) : AbstractFramedStreamTr
         }
     }
 
-    private fun acceptAsOwner(info: WifiP2pInfo, expectedGeneration: Long): Socket {
+    private suspend fun acceptAsOwner(info: WifiP2pInfo, expectedGeneration: Long): Socket {
         // Bind only to the P2P group-owner interface. Never bind to 0.0.0.0:
         // the fixed listener must not be exposed on unrelated LAN/VPN interfaces.
         val groupAddress = info.groupOwnerAddress
@@ -1143,6 +1145,17 @@ class WifiDirectTransport(private val context: Context) : AbstractFramedStreamTr
         Log.i(TAG, "group owner: accepting on P2P interface (port ${Protocol.WIFI_DIRECT_PORT})")
         try {
             val accepted = listener.accept()
+            // The blocking accept() is not cancellable: it can return a
+            // socket after this job was cancelled (disconnect/group loss).
+            // Never hand such a socket to onSocketReady — close it before
+            // ownership moves and let the cancellation propagate, otherwise
+            // the peer sees a half-open, unauthenticated connection.
+            try {
+                currentCoroutineContext().ensureActive()
+            } catch (e: CancellationException) {
+                try { accepted.close() } catch (_: IOException) {}
+                throw e
+            }
             Log.i(TAG, "group owner: peer socket accepted; listener closed")
             return accepted
         } finally {
@@ -1249,28 +1262,31 @@ class WifiDirectTransport(private val context: Context) : AbstractFramedStreamTr
     }
 
     // Reader-loop hooks (shared loop lives in AbstractFramedStreamTransport).
-    // The generation is captured when the reader starts; the loop carries it
-    // so a stale reader can never publish into a newer session.
-
-    private var readerGeneration: Long = -1L
+    // The generation is bound per-reader in the reader coroutine's closure
+    // (see AbstractFramedStreamTransport.startReader) — never in a shared
+    // mutable field — so a stale reader can never publish into, or tear
+    // down, a newer session.
 
     private fun startReaderLocked(expectedGeneration: Long) {
         val f = framed ?: return
-        readerGeneration = expectedGeneration
-        startReader(f)
+        startReader(f, expectedGeneration, Protocol.TRANSPORT_IDLE_TIMEOUT_MS)
     }
 
-    override fun isReaderActive(source: FramedSocket): Boolean =
-        operationGeneration.get() == readerGeneration &&
+    override fun isReaderActive(source: FramedSocket, generation: Long): Boolean =
+        operationGeneration.get() == generation &&
             (_state.value == TransportState.CONNECTED ||
                 _state.value == TransportState.AUTHENTICATING)
 
-    override suspend fun onFrame(source: FramedSocket, frame: ByteArray): Boolean {
+    override suspend fun onFrame(
+        source: FramedSocket,
+        generation: Long,
+        frame: ByteArray,
+    ): Boolean {
         // A read can complete just as Stop/reconnect invalidates this
         // generation. Never publish a frame from the old socket into a newly
         // authenticated session.
         if (!isCurrentIncomingFrame(
-                expectedGeneration = readerGeneration,
+                expectedGeneration = generation,
                 currentGeneration = operationGeneration.get(),
                 expectedSocket = source,
                 currentSocket = framed,
@@ -1285,12 +1301,16 @@ class WifiDirectTransport(private val context: Context) : AbstractFramedStreamTr
         return true
     }
 
-    override suspend fun onClosed(source: FramedSocket) {
-        handleGroupLost(expectedGeneration = readerGeneration)
+    override suspend fun onClosed(source: FramedSocket, generation: Long) {
+        handleGroupLost(expectedGeneration = generation, expectedSocket = source)
     }
 
-    override suspend fun onReadError(reason: String, source: FramedSocket) {
-        handleGroupLost(reason, readerGeneration)
+    override suspend fun onReadError(
+        reason: String,
+        source: FramedSocket,
+        generation: Long,
+    ) {
+        handleGroupLost(reason, generation, expectedSocket = source)
     }
 
     override fun isIgnorableReadError(cause: java.io.IOException): Boolean =
@@ -1299,11 +1319,17 @@ class WifiDirectTransport(private val context: Context) : AbstractFramedStreamTr
     private suspend fun handleGroupLost(
         reason: String = "connection lost",
         expectedGeneration: Long? = null,
+        // When the loss is reported for a specific socket, require it to
+        // still be the live one: a defensive self-close without a generation
+        // bump must never tear down a newer connection (mirrors BT's
+        // `framed !== source` guard in handleLost).
+        expectedSocket: FramedSocket? = null,
     ) {
         mutex.withLock {
             if (expectedGeneration != null &&
                 expectedGeneration != operationGeneration.get()
             ) return@withLock
+            if (expectedSocket != null && framed !== expectedSocket) return@withLock
             val previousState = _state.value
             AppLog.log(
                 TAG,
@@ -1350,7 +1376,9 @@ class WifiDirectTransport(private val context: Context) : AbstractFramedStreamTr
                 f.writeFrame(frameBytes)
             }
         } catch (e: IOException) {
-            scope.launch { handleGroupLost(e.message ?: "write error", generation) }
+            scope.launch {
+                handleGroupLost(e.message ?: "write error", generation, expectedSocket = f)
+            }
             throw e
         }
     }
@@ -1358,10 +1386,12 @@ class WifiDirectTransport(private val context: Context) : AbstractFramedStreamTr
     override suspend fun disconnect() {
         // Invalidate first, before waiting for the mutex held by connect/socket
         // setup. Those callbacks must not publish CONNECTED after user Stop.
-        // Note: the mutex below can be held for up to ~3s (P2P radio teardown
-        // runs inside it). This is acceptable: disconnect() is suspending and
-        // never called from the UI thread, and holding the mutex guarantees no
-        // connect/listen callback interleaves with the teardown.
+        // Note: the mutex below can be held for up to ~10s in the worst case
+        // (stopP2pRadioModeAndAwait ~3s + removeGroupAndAwait ~6.5s: 3s
+        // timeout x 2 attempts + 500ms backoff). This is acceptable:
+        // disconnect() is suspending and never called from the UI thread,
+        // and holding the mutex guarantees no connect/listen callback
+        // interleaves with the teardown.
         operationGeneration.incrementAndGet()
         discoveryGeneration.incrementAndGet()
         listeningRequested = false

@@ -544,6 +544,10 @@ class BluetoothTransport(private val context: Context) : AbstractFramedStreamTra
                 return
             }
             cancelPendingConnectLocked()
+            // stopAcceptLocked() bumps the generation (see its contract), so
+            // the outgoing attempt must be captured AFTER it returns —
+            // otherwise the new attempt would instantly fail its own guard.
+            stopAcceptLocked()
             val attempt = connectionGeneration.incrementAndGet()
             val socketRef = AtomicReference<BluetoothSocket?>()
             pendingConnectSocket = socketRef
@@ -553,7 +557,6 @@ class BluetoothTransport(private val context: Context) : AbstractFramedStreamTra
             try {
                 a.cancelDiscovery()
             } catch (_: SecurityException) {}
-            stopAcceptLocked()
             // HS-06: the blocking connect() runs on Dispatchers.IO, and the
             // deadline is enforced by a watchdog that CLOSES the socket —
             // closing unblocks the pending connect(), which withTimeout
@@ -721,31 +724,24 @@ class BluetoothTransport(private val context: Context) : AbstractFramedStreamTra
             while (!Thread.currentThread().isInterrupted) {
                 try {
                     val socket: BluetoothSocket = server.accept()
+                    // Capture the generation SYNCHRONOUSLY on the accept
+                    // thread, immediately after accept() returns. disconnect()
+                    // or stop() may bump it before the coroutine below runs;
+                    // only the generation current right now may install this
+                    // socket. Validation happens inside onSocketReady's
+                    // single mutex critical section, so no window remains
+                    // between the check and the install.
+                    val gen = connectionGeneration.get()
                     Log.i(TAG, "incoming RFCOMM connection accepted")
                     scope.launch {
-                        // Capture the generation before the mutex: stop() or
-                        // disconnect() may have bumped it while accept() was
-                        // blocked. Re-check under the mutex so a stale accept
-                        // can never resurrect a torn-down socket.
-                        val gen = connectionGeneration.get()
-                        // Decide under the mutex, then release it BEFORE
-                        // onSocketReady: it also locks the mutex and Mutex
-                        // is not reentrant — holding it here deadlocks the
-                        // listener forever (incoming connections could never
-                        // complete).
-                        val accept = mutex.withLock {
-                            if (connectionGeneration.get() != gen || framed != null) {
-                                try { socket.close() } catch (_: IOException) {}
-                                AppLog.log(TAG, "discarding stale incoming RFCOMM socket (generation changed)")
-                                false
-                            } else {
-                                try {
-                                    adapter?.cancelDiscovery()
-                                } catch (_: SecurityException) {}
-                                true
-                            }
-                        }
-                        if (accept) onSocketReady(socket)
+                        try {
+                            adapter?.cancelDiscovery()
+                        } catch (_: SecurityException) {}
+                        onSocketReady(
+                            socket,
+                            expectedGeneration = gen,
+                            requireConnectingState = false,
+                        )
                     }
                 } catch (e: IOException) {
                     Log.i(TAG, "rfcomm accept ended: ${e.message}")
@@ -756,6 +752,13 @@ class BluetoothTransport(private val context: Context) : AbstractFramedStreamTra
     }
 
     private fun stopAcceptLocked() {
+        // Stopping the acceptor invalidates its generation: any socket the
+        // old accept thread already accepted (but has not installed yet)
+        // must fail the generation guard in onSocketReady. Bumping here —
+        // rather than relying on every caller to bump first — keeps the
+        // guard self-contained. Callers that capture a generation for a NEW
+        // operation (connect()) must do so AFTER this returns.
+        connectionGeneration.incrementAndGet()
         acceptThread?.interrupt()
         acceptThread = null
         try { serverSocket?.close() } catch (_: IOException) {}
@@ -767,16 +770,30 @@ class BluetoothTransport(private val context: Context) : AbstractFramedStreamTra
     private suspend fun onSocketReady(
         socket: BluetoothSocket,
         expectedGeneration: Long? = null,
+        // Incoming accepts arrive while IDLE/LISTENING, never CONNECTING,
+        // so the state requirement is skipped for that path. The generation
+        // check below still applies: only the generation that was current
+        // when accept() returned may install the socket.
+        requireConnectingState: Boolean = true,
     ) {
         mutex.withLock {
-            // A socket may finish connecting at the same moment as Stop or
-            // disconnect. Only the active outgoing attempt may publish it.
+            // A socket may finish connecting (or be accepted) at the same
+            // moment as Stop or disconnect. Validate generation AND install
+            // the socket inside this single critical section so no disconnect
+            // can slip between the check and the install and resurrect a
+            // stale socket as CONNECTED.
             if (expectedGeneration != null &&
                 (connectionGeneration.get() != expectedGeneration ||
-                    _state.value != TransportState.CONNECTING)
+                    (requireConnectingState && _state.value != TransportState.CONNECTING))
             ) {
                 try { socket.close() } catch (_: IOException) {}
                 AppLog.log(TAG, "discarding stale RFCOMM socket after disconnect/retry")
+                return@withLock
+            }
+            if (!requireConnectingState && framed != null) {
+                // An incoming socket must never displace a live connection.
+                try { socket.close() } catch (_: IOException) {}
+                AppLog.log(TAG, "discarding incoming RFCOMM socket: already connected")
                 return@withLock
             }
             closeSocketLocked()
@@ -792,27 +809,46 @@ class BluetoothTransport(private val context: Context) : AbstractFramedStreamTra
             synchronized(readerGate) { framed = newFramed }
             _state.value = TransportState.CONNECTED
             _error.value = null
-            startReader(newFramed)
+            // Bind the current generation to this reader's coroutine. BT's
+            // hooks ignore it (socket identity is the liveness check), but
+            // the per-reader binding keeps the shared loop's contract uniform.
+            // The idle watchdog also applies: RFCOMM reads have no socket
+            // timeout, so a half-open socket would block the reader forever.
+            startReader(
+                newFramed,
+                connectionGeneration.get(),
+                Protocol.TRANSPORT_IDLE_TIMEOUT_MS,
+            )
         }
     }
 
     // Reader-loop hooks (shared loop lives in AbstractFramedStreamTransport).
+    // Bluetooth guards on socket identity (framed === source), not on
+    // generation, so the per-reader generation is accepted and ignored here.
 
-    override fun isReaderActive(source: FramedSocket): Boolean =
+    override fun isReaderActive(source: FramedSocket, generation: Long): Boolean =
         isCurrentSocketConnected(source)
 
-    override suspend fun onFrame(source: FramedSocket, frame: ByteArray): Boolean {
+    override suspend fun onFrame(
+        source: FramedSocket,
+        generation: Long,
+        frame: ByteArray,
+    ): Boolean {
         if (!publishIncomingFrame(source, frame)) {
             return false // socket was replaced or closed
         }
         return true
     }
 
-    override suspend fun onClosed(source: FramedSocket) {
+    override suspend fun onClosed(source: FramedSocket, generation: Long) {
         handleLost("peer closed the connection", source)
     }
 
-    override suspend fun onReadError(reason: String, source: FramedSocket) {
+    override suspend fun onReadError(
+        reason: String,
+        source: FramedSocket,
+        generation: Long,
+    ) {
         handleLost(reason, source)
     }
 

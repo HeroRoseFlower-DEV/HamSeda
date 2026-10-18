@@ -18,7 +18,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.ChevronLeft
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
@@ -52,6 +52,7 @@ import com.hamseda.walkie.transport.TransportType
 import com.hamseda.walkie.ui.vm.SettingsViewModel
 import com.hamseda.walkie.ui.vm.VmDeps
 import com.hamseda.walkie.ui.vm.VmFactory
+import com.hamseda.walkie.util.toFaDigits
 
 @Composable
 fun SettingsScreen(
@@ -208,7 +209,7 @@ fun SettingsScreen(
                         fontWeight = FontWeight.Medium,
                         modifier = Modifier.weight(1f),
                     )
-                    Icon(Icons.Filled.ChevronLeft, contentDescription = null)
+                    Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null)
                 }
                 Row(
                     modifier = Modifier
@@ -223,7 +224,7 @@ fun SettingsScreen(
                         fontWeight = FontWeight.Medium,
                         modifier = Modifier.weight(1f),
                     )
-                    Icon(Icons.Filled.ChevronLeft, contentDescription = null)
+                    Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null)
                 }
             }
 
@@ -254,7 +255,7 @@ fun SettingsScreen(
                                 style = MaterialTheme.typography.labelMedium,
                             )
                             Text(
-                                text = peer.fingerprintHex.chunked(4).joinToString(" "),
+                                text = peer.fingerprintHex.chunked(4).joinToString(" ").toFaDigits(),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )

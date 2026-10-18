@@ -5,6 +5,7 @@ package com.hamseda.walkie.ui.screens
 import android.Manifest
 import android.os.VibrationEffect
 import android.os.Vibrator
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -72,6 +73,8 @@ fun HomeScreen(
 ) {
     val phase by vm.phase.collectAsStateWithLifecycle()
     val peerName by vm.peerName.collectAsStateWithLifecycle()
+    val peerFingerprint by vm.peerIdentityFingerprint.collectAsStateWithLifecycle()
+    val peerTrusted by vm.peerIdentityTrusted.collectAsStateWithLifecycle()
     val transportType by vm.transportType.collectAsStateWithLifecycle()
     val transmitting by vm.isTransmitting.collectAsStateWithLifecycle()
     val floorHolder by vm.floorHolder.collectAsStateWithLifecycle()
@@ -84,7 +87,13 @@ fun HomeScreen(
     val micLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { granted ->
-        if (granted) vm.setPtt(true)
+        if (granted) {
+            vm.setPtt(true)
+        } else {
+            // Denying the mic on the PTT button must not fail silently: the
+            // user pressed the big button and got zero feedback.
+            Toast.makeText(context, R.string.perm_denied_hint, Toast.LENGTH_LONG).show()
+        }
     }
 
     Scaffold(
@@ -117,7 +126,13 @@ fun HomeScreen(
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Spacer(Modifier.height(8.dp))
-            StatusHeader(phase = phase, transportType = transportType, peerName = peerName)
+            StatusHeader(
+                phase = phase,
+                transportType = transportType,
+                peerName = peerName,
+                peerFingerprint = peerFingerprint,
+                peerTrusted = peerTrusted,
+            )
 
             Spacer(Modifier.height(16.dp))
             error?.let { e ->
