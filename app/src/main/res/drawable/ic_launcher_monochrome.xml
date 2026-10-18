@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- HamSeda monochrome mark for Android 13+ themed icons: simplified echo of
+     the launcher glyph — heh bowl + ascender + three broadcast arcs.
+     Single color; the system applies the dynamic tint. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:strokeWidth="7"
+        android:strokeLineCap="round"
+        android:strokeColor="#FFFFFF"
+        android:pathData="M30,62 Q54,88 78,62" />
+    <path
+        android:strokeWidth="6"
+        android:strokeLineCap="round"
+        android:strokeColor="#FFFFFF"
+        android:pathData="M62,60 C58,48 60,38 66,28" />
+    <path
+        android:strokeWidth="6"
+        android:strokeLineCap="round"
+        android:strokeColor="#FFFFFF"
+        android:pathData="M74.6,43.7 A15,15 0 0 1 74.6,68.3" />
+    <path
+        android:strokeWidth="6"
+        android:strokeLineCap="round"
+        android:strokeColor="#FFFFFF"
+        android:pathData="M78.6,38.0 A22,22 0 0 1 78.6,74.0" />
+    <path
+        android:strokeWidth="6"
+        android:strokeLineCap="round"
+        android:strokeColor="#FFFFFF"
+        android:pathData="M82.6,32.2 A29,29 0 0 1 82.6,79.8" />
+</vector>
