@@ -2,7 +2,7 @@ package com.hamseda.walkie.transport
 
 import com.hamseda.walkie.LoopbackTransport
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertFalse
@@ -25,12 +25,13 @@ class LoopbackBackpressureTest {
         val frame = ByteArray(16) { it.toByte() }
 
         // No collector on b: the send must block (backpressure), not buffer.
+        // launch is undispatched in runTest: runs until first suspension.
         var sendCompleted = false
         val sendJob = launch {
             a.sendFrame(frame)
             sendCompleted = true
         }
-        advanceUntilIdle()
+        runCurrent()
         assertFalse("send must block while nobody collects (backpressure)", sendCompleted)
 
         // Start collecting: the blocked send must now complete and deliver.
@@ -38,7 +39,7 @@ class LoopbackBackpressureTest {
         val collectJob = launch {
             b.incomingFrames.collect { got = it }
         }
-        advanceUntilIdle()
+        runCurrent()
         assertTrue("blocked send completed once collected", sendCompleted)
         assertArrayEquals(frame, got)
 
@@ -58,14 +59,14 @@ class LoopbackBackpressureTest {
             a.sendFrame(frame)
             sendCompleted = true
         }
-        advanceUntilIdle()
+        runCurrent()
         assertTrue("buffered send must not block", sendCompleted)
 
         var got: ByteArray? = null
         val collectJob = launch {
             b.incomingFrames.collect { got = it }
         }
-        advanceUntilIdle()
+        runCurrent()
         assertArrayEquals(frame, got)
         collectJob.cancel()
     }
