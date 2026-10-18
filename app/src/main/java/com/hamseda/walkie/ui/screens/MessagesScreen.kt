@@ -17,7 +17,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material3.HorizontalDivider
@@ -41,7 +40,6 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.hamseda.walkie.R
-import com.hamseda.walkie.data.msg.MessageState
 import com.hamseda.walkie.messaging.MessagingEngine
 import com.hamseda.walkie.ui.components.PeerAvatar
 import com.hamseda.walkie.ui.theme.TelegramColors
@@ -54,9 +52,9 @@ import java.util.Calendar
 import java.util.Date
 
 /**
- * Conversations list, Telegram-style: circular avatars, name + time rows,
- * last-message previews, blue unread badges, hairline dividers.
- * Fully RTL, dark-mode aware.
+ * Conversations list, faithful to Telegram's DialogCell: 70dp rows, 56dp
+ * avatars, 17sp names, 16sp previews, 12sp dates, blue unread badges,
+ * hairline dividers with 72dp start inset. Fully RTL, dark-mode aware.
  */
 @Composable
 fun MessagesScreen(
@@ -86,9 +84,10 @@ fun MessagesScreen(
                 ) {
                     Text(
                         text = stringResource(R.string.msg_title),
-                        style = MaterialTheme.typography.titleLarge,
+                        fontSize = 20.sp,
                         fontWeight = FontWeight.Bold,
-                        color = if (dark) Color.White else Color(0xFF222222),
+                        color = if (dark) TelegramColors.HeaderTitleDark
+                        else TelegramColors.HeaderTitleLight,
                         modifier = Modifier.weight(1f),
                     )
                     TelegramOnlineDot(online = online, dark = dark)
@@ -129,9 +128,10 @@ fun MessagesScreen(
                             dark = dark,
                         )
                         HorizontalDivider(
-                            modifier = Modifier.padding(start = 82.dp),
+                            modifier = Modifier.padding(start = 72.dp),
                             thickness = 0.5.dp,
-                            color = if (dark) Color(0xFF242F3D) else Color(0xFFE6E9ED),
+                            color = if (dark) TelegramColors.DividerDark
+                            else TelegramColors.DividerLight,
                         )
                     }
                 }
@@ -149,15 +149,16 @@ private fun TelegramOnlineDot(online: Boolean, dark: Boolean) {
                 .clip(CircleShape)
                 .background(
                     if (online) Color(0xFF4CC38A)
-                    else (if (dark) TelegramColors.TimeInBubbleDark
-                    else TelegramColors.TimeInBubbleLight).copy(alpha = 0.5f),
+                    else (if (dark) TelegramColors.DialogMessageDark
+                    else TelegramColors.DialogMessageLight).copy(alpha = 0.5f),
                 ),
         )
         Spacer(Modifier.width(6.dp))
         Text(
             text = stringResource(if (online) R.string.msg_online else R.string.msg_offline),
             style = MaterialTheme.typography.labelLarge,
-            color = if (dark) TelegramColors.TimeInBubbleDark else TelegramColors.TimeInBubbleLight,
+            color = if (dark) TelegramColors.DialogMessageDark
+            else TelegramColors.DialogMessageLight,
         )
     }
 }
@@ -168,14 +169,14 @@ private fun TelegramOfflineBanner(onOpenDiscovery: () -> Unit, dark: Boolean) {
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onOpenDiscovery)
-            .background(if (dark) TelegramColors.DateDividerBgDark else TelegramColors.DateDividerBgLight)
+            .background(if (dark) TelegramColors.DatePillBgDark else TelegramColors.DatePillBgLight)
             .padding(horizontal = 16.dp, vertical = 10.dp),
         contentAlignment = Alignment.Center,
     ) {
         Text(
             text = stringResource(R.string.msg_offline_banner),
             style = MaterialTheme.typography.bodyMedium,
-            color = if (dark) TelegramColors.DateDividerTextDark else TelegramColors.DateDividerTextLight,
+            color = if (dark) TelegramColors.DatePillTextDark else TelegramColors.DatePillTextLight,
         )
     }
 }
@@ -206,13 +207,14 @@ private fun TelegramEmptyConversations(dark: Boolean) {
             text = stringResource(R.string.msg_empty_title),
             style = MaterialTheme.typography.titleLarge,
             fontWeight = FontWeight.Bold,
-            color = if (dark) Color.White else Color(0xFF222222),
+            color = if (dark) TelegramColors.HeaderTitleDark else TelegramColors.HeaderTitleLight,
         )
         Spacer(Modifier.height(8.dp))
         Text(
             text = stringResource(R.string.msg_empty_body),
             style = MaterialTheme.typography.bodyMedium,
-            color = if (dark) TelegramColors.TimeInBubbleDark else TelegramColors.TimeInBubbleLight,
+            color = if (dark) TelegramColors.DialogMessageDark
+            else TelegramColors.DialogMessageLight,
             modifier = Modifier.padding(horizontal = 40.dp),
         )
     }
@@ -233,19 +235,20 @@ private fun TelegramNewChatCard(
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        PeerAvatar(name = peerName, photoPath = photoPath, size = 52.dp)
-        Spacer(Modifier.width(14.dp))
+        PeerAvatar(name = peerName, photoPath = photoPath, size = 56.dp)
+        Spacer(Modifier.width(12.dp))
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = stringResource(R.string.msg_new_conversation),
-                style = MaterialTheme.typography.titleMedium,
+                fontSize = 17.sp,
                 fontWeight = FontWeight.SemiBold,
                 color = TelegramColors.SendButton,
             )
             Text(
                 text = peerName,
-                style = MaterialTheme.typography.bodyMedium,
-                color = if (dark) TelegramColors.TimeInBubbleDark else TelegramColors.TimeInBubbleLight,
+                fontSize = 16.sp,
+                color = if (dark) TelegramColors.DialogMessageDark
+                else TelegramColors.DialogMessageLight,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
@@ -253,6 +256,7 @@ private fun TelegramNewChatCard(
     }
 }
 
+/** Telegram DialogCell: 70dp row, 56dp avatar, 17sp name, 16sp preview. */
 @Composable
 private fun TelegramConversationRow(
     conv: MessagingEngine.ConversationView,
@@ -261,56 +265,53 @@ private fun TelegramConversationRow(
     dark: Boolean,
 ) {
     val name = profile?.displayName?.takeIf { it.isNotEmpty() } ?: conv.peerName
+    val nameColor = if (dark) TelegramColors.DialogNameDark else TelegramColors.DialogNameLight
+    val previewColor = if (dark) TelegramColors.DialogMessageDark else TelegramColors.DialogMessageLight
+    val dateColor = if (conv.unread > 0) TelegramColors.SendButton
+    else if (dark) TelegramColors.DialogDateDark else TelegramColors.DialogDateLight
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 10.dp),
+            .height(70.dp)
+            .padding(horizontal = 16.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        PeerAvatar(name = name, photoPath = profile?.photoPath, size = 54.dp)
-        Spacer(Modifier.width(14.dp))
-        Column(modifier = Modifier.weight(1f)) {
+        PeerAvatar(name = name, photoPath = profile?.photoPath, size = 56.dp)
+        Spacer(Modifier.width(12.dp))
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.Center,
+        ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
                     text = name,
-                    style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold,
-                    color = if (dark) Color.White else Color(0xFF222222),
-                    fontSize = 16.sp,
+                    color = nameColor,
+                    fontSize = 17.sp,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f),
                 )
                 Text(
                     text = formatListTime(conv.lastTimestamp),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = if (conv.unread > 0) TelegramColors.SendButton
-                    else if (dark) TelegramColors.TimeInBubbleDark
-                    else TelegramColors.TimeInBubbleLight,
+                    color = dateColor,
                     fontSize = 12.sp,
+                    maxLines = 1,
                 )
             }
-            Spacer(Modifier.height(3.dp))
+            Spacer(Modifier.height(4.dp))
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                if (conv.lastIsFromMe) {
-                    Text(
-                        text = "✓✓ ",
-                        fontSize = 13.sp,
-                        color = TelegramColors.TickSent,
-                    )
-                }
                 Text(
                     text = conv.lastBody,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = if (dark) TelegramColors.TimeInBubbleDark else TelegramColors.TimeInBubbleLight,
-                    fontSize = 15.sp,
+                    color = previewColor,
+                    fontSize = 16.sp,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f),
@@ -320,8 +321,11 @@ private fun TelegramConversationRow(
                     Box(
                         modifier = Modifier
                             .clip(CircleShape)
-                            .background(TelegramColors.UnreadBadge)
-                            .padding(horizontal = 7.dp, vertical = 2.dp),
+                            .background(
+                                if (dark) TelegramColors.UnreadBadgeDark
+                                else TelegramColors.UnreadBadgeLight,
+                            )
+                            .padding(horizontal = 7.dp, vertical = 3.dp),
                         contentAlignment = Alignment.Center,
                     ) {
                         Text(
