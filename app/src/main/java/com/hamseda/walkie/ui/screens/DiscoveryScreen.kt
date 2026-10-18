@@ -95,6 +95,7 @@ fun DiscoveryScreen(
     // LocalContext inside activity-result callbacks (configuration-aware Compose API).
     val permissionDeniedMessage = stringResource(R.string.perm_denied_hint)
     val discoverabilityDeclinedMessage = stringResource(R.string.discoverable_declined)
+    val peerNotFoundMessage = stringResource(R.string.err_peer_not_found)
     // The action queued while a permission/system dialog is open, described
     // as plain data (kind + peer id) instead of a lambda: lambdas cannot be
     // saved, so the pre-fix version silently dropped the queued
@@ -253,7 +254,7 @@ fun DiscoveryScreen(
                     // and this id is gone; don't swallow the tap silently.
                     android.widget.Toast.makeText(
                         context,
-                        context.getString(R.string.err_peer_not_found),
+                        peerNotFoundMessage,
                         android.widget.Toast.LENGTH_LONG,
                     ).show()
                 }
