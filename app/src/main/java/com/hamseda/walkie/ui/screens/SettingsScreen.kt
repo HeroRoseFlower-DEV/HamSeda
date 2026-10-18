@@ -70,6 +70,7 @@ fun SettingsScreen(
     val codecPref by vm.codecPref.collectAsStateWithLifecycle()
     val speakerphone by vm.speakerphone.collectAsStateWithLifecycle()
     val vibration by vm.vibration.collectAsStateWithLifecycle()
+    val readReceipts by vm.readReceipts.collectAsStateWithLifecycle()
     val theme by vm.theme.collectAsStateWithLifecycle()
     val language by vm.language.collectAsStateWithLifecycle()
     val trustedPeers by vm.trustedPeers.collectAsStateWithLifecycle()
@@ -144,6 +145,12 @@ fun SettingsScreen(
                     title = stringResource(R.string.settings_vibration),
                     checked = vibration,
                     onChecked = vm::setVibration,
+                )
+                SwitchRow(
+                    title = stringResource(R.string.settings_read_receipts),
+                    subtitle = stringResource(R.string.settings_read_receipts_desc),
+                    checked = readReceipts,
+                    onChecked = vm::setReadReceipts,
                 )
             }
 

@@ -176,4 +176,25 @@
     <string name="discoverable_declined">قابل‌مشاهده شدن رد شد — گوشی شما برای اسکن بلوتوث قابل‌مشاهده نخواهد بود.</string>
     <string name="err_playback">بلندگو در دسترس نیست — پخش صدا شروع نشد.</string>
     <string name="err_restart_timeout">نشست قبلی هنوز در حال بسته‌شدن است. کمی صبر کن و دوباره تلاش کن.</string>
+
+    <!-- پیام‌رسانی آفلاین -->
+    <string name="tab_walkie">واکی‌تاکی</string>
+    <string name="tab_messages">پیام‌ها</string>
+    <string name="msg_title">پیام‌ها</string>
+    <string name="msg_empty_title">هنوز گفتگویی نیست</string>
+    <string name="msg_empty_body">برای شروع گفتگو به یک همتا وصل شو. پیام‌ها روی همین گوشی ذخیره می‌شن و با وصل شدن دوباره خودکار ارسال می‌شن.</string>
+    <string name="msg_offline_banner">آفلاینی — برای چت از زبانهٔ واکی‌تاکی به یک همتا وصل شو.</string>
+    <string name="msg_online">آنلاین</string>
+    <string name="msg_offline">آفلاین</string>
+    <string name="msg_input_hint">پیام…</string>
+    <string name="msg_send">ارسال</string>
+    <string name="msg_typing">در حال نوشتن…</string>
+    <string name="msg_state_queued">در صف</string>
+    <string name="msg_state_failed">ارسال نشد</string>
+    <string name="msg_today">امروز</string>
+    <string name="msg_yesterday">دیروز</string>
+    <string name="msg_new_conversation">گفتگوی جدید</string>
+    <string name="msg_no_peer">اول به یک همتا وصل شو، بعد برگرد برای چت.</string>
+    <string name="settings_read_receipts">رسید خواندن</string>
+    <string name="settings_read_receipts_desc">همتا بفهمه پیام‌هاش رو خوندی. رسید فقط وقتی ارسال می‌شه که صفحهٔ گفتگو باز باشه.</string>
 </resources>

@@ -1,0 +1,583 @@
+package com.hamseda.walkie.messaging
+
+import android.content.Context
+import android.util.Log
+import com.hamseda.walkie.data.SettingsRepository
+import com.hamseda.walkie.data.msg.MessageDao
+import com.hamseda.walkie.data.msg.MessageDatabase
+import com.hamseda.walkie.data.msg.MessageEntity
+import com.hamseda.walkie.data.msg.MessageState
+import com.hamseda.walkie.data.msg.OutboxEntity
+import com.hamseda.walkie.data.msg.OutboxItem
+import com.hamseda.walkie.proto.MessageType
+import com.hamseda.walkie.proto.MessagingCodec
+import com.hamseda.walkie.proto.MsgCodecException
+import com.hamseda.walkie.proto.Protocol
+import com.hamseda.walkie.proto.Uuid7
+import com.hamseda.walkie.session.SessionManager
+import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
+import kotlin.math.min
+import kotlin.random.Random
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+
+/**
+ * Offline text messaging over the existing E2E-encrypted session pipes
+ * (Bluetooth Classic RFCOMM / Wi-Fi Direct). Briar-style architecture:
+ * the encrypted session is just a pipe; reliability semantics live here.
+ *
+ * - **Send:** persist + outbox row in ONE Room transaction → drain when a
+ *   transport is up → states QUEUED → SENT → DELIVERED (ACK) → READ.
+ * - **Receive:** idempotent inbox (INSERT OR IGNORE) → persist → batched ACK.
+ * - **Reconnect:** MSG_HELLO{lastSeenSeq} exchange; outbox replays seq >
+ *   lastSeen. Replay protection comes from the session's per-frame sequence
+ *   window — every messaging frame passes through it before reaching here.
+ * - **Typing:** ephemeral, never persisted, ≤1 frame/3s, 8s TTL, only while
+ *   a chat is open (which implies the app is foregrounded).
+ */
+class MessagingEngine(
+    appContext: Context,
+    private val settings: SettingsRepository,
+    private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
+) {
+    private val dao: MessageDao = MessageDatabase.get(appContext).messageDao()
+
+    private var manager: SessionManager? = null
+    private val sendMutex = Mutex()
+
+    /** Peer of the live session (identity fingerprint, else transport name). */
+    private val currentPeerId = MutableStateFlow("")
+
+    /** Public view of the live session peer; empty when offline. */
+    val livePeerId: StateFlow<String> = currentPeerId.asStateFlow()
+
+    /** Display name of the live peer, or empty when offline. */
+    val livePeerName: StateFlow<String> =
+        currentPeerId.map { if (it.isEmpty()) "" else peerDisplayName(it) }
+            .stateIn(scope, SharingStarted.Eagerly, "")
+
+    /** Chat currently open in the UI; null when no chat is visible. */
+    private val activePeer = MutableStateFlow<String?>(null)
+
+    /** Peer's last HELLO cursor: skip re-sending seq <= this on drain. */
+    @Volatile
+    private var peerLastSeenSeq: Long = 0L
+
+    // ------------------------------------------------------------ observables
+
+    data class ConversationView(
+        val peerId: String,
+        val peerName: String,
+        val lastBody: String,
+        val lastTimestamp: Long,
+        val lastIsFromMe: Boolean,
+        val unread: Int,
+    )
+
+    data class MessageView(
+        val id: String,
+        val isFromMe: Boolean,
+        val body: String,
+        val timestamp: Long,
+        val state: Int,
+    )
+
+    /** Conversations ordered by recency, with unread badges. */
+    val conversations: StateFlow<List<ConversationView>> =
+        combine(
+            dao.observeRecent(300),
+            dao.observeUnread(),
+        ) { recent, unreadRows ->
+            val unreadByPeer = unreadRows.associate { it.peerId to it.unread }
+            recent.groupBy { it.peerId }
+                .map { (peerId, msgs) ->
+                    val last = msgs.first()
+                    ConversationView(
+                        peerId = peerId,
+                        peerName = last.peerName.ifEmpty { shortId(peerId) },
+                        lastBody = last.body,
+                        lastTimestamp = last.timestamp,
+                        lastIsFromMe = last.isFromMe,
+                        unread = unreadByPeer[peerId] ?: 0,
+                    )
+                }
+        }.stateIn(scope, SharingStarted.Eagerly, emptyList())
+
+    val unreadTotal: StateFlow<Int> =
+        dao.observeUnread().map { rows -> rows.sumOf { it.unread } }
+            .stateIn(scope, SharingStarted.Eagerly, 0)
+
+    /** True while the peer's typing indicator is live (open chat only). */
+    private val _peerTyping = MutableStateFlow(false)
+    val peerTyping: StateFlow<Boolean> = _peerTyping.asStateFlow()
+    private var typingTimeoutJob: Job? = null
+
+    /** Whether any encrypted session is currently up. */
+    private val _online = MutableStateFlow(false)
+    val online: StateFlow<Boolean> = _online.asStateFlow()
+
+    fun observeMessages(peerId: String): Flow<List<MessageView>> =
+        dao.observeConversation(peerId).map { list ->
+            list.map {
+                MessageView(it.id, it.isFromMe, it.body, it.timestamp, it.state)
+            }
+        }
+
+    // ---------------------------------------------------------------- attach
+
+    fun attach(manager: SessionManager) {
+        if (this.manager === manager) return
+        detach()
+        this.manager = manager
+        manager.messagingListener = SessionManager.MessagingFrameListener { type, plaintext ->
+            onFrame(type, plaintext)
+        }
+        startAckBatcher()
+        scope.launch {
+            manager.phase.collect { phase ->
+                val up = phase == SessionManager.Phase.IN_SESSION
+                _online.value = up
+                if (up) {
+                    peerLastSeenSeq = 0L
+                    refreshPeerId()
+                    sendHello()
+                    drainOutbox()
+                } else {
+                    _peerTyping.value = false
+                    typingTimeoutJob?.cancel()
+                }
+            }
+        }
+        // Periodic retry sweep for backoff entries while online.
+        scope.launch {
+            while (true) {
+                delay(RETRY_SWEEP_MS)
+                if (_online.value) drainOutbox()
+            }
+        }
+    }
+
+    fun detach() {
+        manager?.messagingListener = null
+        manager = null
+        _online.value = false
+    }
+
+    // ------------------------------------------------------------------ send
+
+    /**
+     * Queues a text for [peerId]. Returns the message id. Throws
+     * [IllegalArgumentException] for blank or oversize input.
+     */
+    suspend fun sendText(peerId: String, text: String): String {
+        val trimmed = text.trim()
+        require(trimmed.isNotEmpty()) { "empty message" }
+        require(trimmed.toByteArray(Charsets.UTF_8).size <= Protocol.MSG_MAX_BYTES) {
+            "message exceeds ${Protocol.MSG_MAX_BYTES} bytes"
+        }
+        val msgId = Uuid7.generate()
+        val now = System.currentTimeMillis()
+        val entity: MessageEntity
+        sendMutex.withLock {
+            val seq = (dao.maxOwnSeq(peerId) ?: 0L) + 1
+            entity = MessageEntity(
+                id = msgId.toString(),
+                peerId = peerId,
+                peerName = peerDisplayName(peerId),
+                isFromMe = true,
+                senderSeq = seq,
+                body = trimmed,
+                timestamp = now,
+                state = MessageState.QUEUED,
+            )
+            dao.insertOutgoing(entity, OutboxEntity(msgId = msgId.toString()))
+        }
+        drainOutbox()
+        return entity.id
+    }
+
+    /** Drains due outbox entries while the session is up. Serialized. */
+    private suspend fun drainOutbox() {
+        val mgr = manager ?: return
+        if (!_online.value) return
+        sendMutex.withLock {
+            val now = System.currentTimeMillis()
+            val due = dao.dueOutbox(now, DRAIN_BATCH)
+            for (item in due) {
+                if (item.senderSeq <= peerLastSeenSeq) {
+                    // Peer already saw it (HELLO cursor); treat as delivered.
+                    dao.deleteOutbox(item.msgId)
+                    dao.advanceToDelivered(item.msgId)
+                    continue
+                }
+                val ok = sendItem(mgr, item)
+                if (ok) {
+                    dao.setState(item.msgId, MessageState.SENT)
+                    // At-least-once: keep it queued until the ACK arrives, but
+                    // pace resends instead of hammering every drain pass.
+                    dao.scheduleOutboxRetry(
+                        item.msgId,
+                        item.attempts,
+                        now + RESEND_DELAY_MS,
+                    )
+                } else {
+                    val attempts = item.attempts + 1
+                    if (attempts > MAX_ATTEMPTS) {
+                        dao.deleteOutbox(item.msgId)
+                        dao.setState(item.msgId, MessageState.FAILED)
+                    } else {
+                        dao.scheduleOutboxRetry(
+                            item.msgId,
+                            attempts,
+                            now + OutboxBackoff.delayMs(attempts),
+                        )
+                    }
+                    // Transport backpressure: stop this pass, retry later.
+                    break
+                }
+            }
+        }
+    }
+
+    private fun sendItem(
+        mgr: SessionManager,
+        item: OutboxItem,
+    ): Boolean {
+        val id = try {
+            UUID.fromString(item.msgId)
+        } catch (e: IllegalArgumentException) {
+            return false
+        }
+        // Single frame when it fits; chunked otherwise.
+        val single = try {
+            MessagingCodec.encodeText(id, item.senderSeq, item.timestamp, item.body)
+        } catch (e: IllegalArgumentException) {
+            null
+        }
+        if (single != null) {
+            return mgr.sendMessagingFrame(MessageType.MSG, single)
+        }
+        val chunks = try {
+            MessagingCodec.chunk(id, item.senderSeq, item.timestamp, item.body)
+        } catch (e: Exception) {
+            Log.w(TAG, "chunk encode failed", e)
+            return false
+        }
+        for (payload in chunks) {
+            if (!mgr.sendMessagingFrame(MessageType.CHUNK, payload)) return false
+        }
+        return true
+    }
+
+    // --------------------------------------------------------------- receive
+
+    private fun onFrame(type: Byte, plaintext: ByteArray) {
+        scope.launch {
+            try {
+                when (type) {
+                    MessageType.MSG -> onTextFrame(MessagingCodec.decodeText(plaintext))
+                    MessageType.CHUNK -> onChunkFrame(MessagingCodec.decodeChunk(plaintext))
+                    MessageType.MSG_ACK -> onAck(MessagingCodec.decodeId(plaintext))
+                    MessageType.MSG_READ -> onRead(MessagingCodec.decodeId(plaintext))
+                    MessageType.TYPING -> onTyping(MessagingCodec.decodeTyping(plaintext))
+                    MessageType.MSG_HELLO -> onHello(MessagingCodec.decodeHello(plaintext))
+                    else -> Unit
+                }
+            } catch (e: MsgCodecException) {
+                Log.w(TAG, "dropping malformed messaging frame", e)
+            } catch (e: Exception) {
+                Log.w(TAG, "messaging frame handling failed", e)
+            } finally {
+                plaintext.fill(0)
+            }
+        }
+    }
+
+    private suspend fun onTextFrame(decoded: MessagingCodec.DecodedText) {
+        val peerId = currentPeerId.value.ifEmpty { return }
+        val entity = MessageEntity(
+            id = decoded.msgId.toString(),
+            peerId = peerId,
+            peerName = peerDisplayName(peerId),
+            isFromMe = false,
+            senderSeq = decoded.senderSeq,
+            body = decoded.text,
+            timestamp = decoded.timestamp,
+            state = MessageState.DELIVERED,
+        )
+        // Idempotent: duplicates are ACKed but not stored twice.
+        dao.insertIncomingDedup(entity)
+        ackChannel.trySend(decoded.msgId.toString())
+        if (activePeer.value == peerId) {
+            maybeSendReadReceipt(decoded.msgId.toString())
+        }
+    }
+
+    // ---------------------------------------------------------- reassembly
+
+    private data class Reassembly(
+        val total: Int,
+        val parts: Array<ByteArray?>,
+        val senderSeq: Long,
+        val timestamp: Long,
+        var deadline: Long,
+    )
+
+    private val reassembly = ConcurrentHashMap<String, Reassembly>()
+
+    private suspend fun onChunkFrame(chunk: MessagingCodec.DecodedChunk) {
+        val key = chunk.msgId.toString()
+        val now = System.currentTimeMillis()
+        // Prune stale reassemblies on every chunk (cheap: usually 0-1 entries).
+        reassembly.entries.removeIf { it.value.deadline < now }
+        val state = reassembly.getOrPut(key) {
+            Reassembly(
+                total = chunk.total,
+                parts = arrayOfNulls(chunk.total),
+                senderSeq = chunk.senderSeq,
+                timestamp = chunk.timestamp,
+                deadline = now + Protocol.MSG_REASSEMBLY_TIMEOUT_MS,
+            )
+        }
+        if (state.total != chunk.total) {
+            reassembly.remove(key)
+            return
+        }
+        state.parts[chunk.index] = chunk.bytes
+        state.deadline = now + Protocol.MSG_REASSEMBLY_TIMEOUT_MS
+        if (state.parts.all { it != null }) {
+            reassembly.remove(key)
+            var size = 0
+            for (p in state.parts) size += p!!.size
+            if (size > Protocol.MSG_MAX_BYTES) return
+            val bytes = ByteArray(size)
+            var off = 0
+            for (p in state.parts) {
+                p!!.copyInto(bytes, off)
+                off += p.size
+            }
+            onTextFrame(
+                MessagingCodec.DecodedText(chunk.msgId, state.senderSeq, state.timestamp, bytes.toString(Charsets.UTF_8)),
+            )
+        }
+    }
+
+    // ------------------------------------------------------ acks and receipts
+
+    /** Batches ACKs ~200ms so a burst of incoming messages sends few frames. */
+    private val ackChannel = Channel<String>(Channel.UNLIMITED)
+
+    @Volatile
+    private var ackBatcherStarted = false
+
+    private fun startAckBatcher() {
+        if (ackBatcherStarted) return
+        ackBatcherStarted = true
+        scope.launch {
+            while (true) {
+                val first = ackChannel.receive()
+                val batch = mutableListOf(first)
+                delay(ACK_BATCH_MS)
+                while (true) {
+                    batch.add(ackChannel.tryReceive().getOrNull() ?: break)
+                }
+                // A lost ACK is harmless: the sender retries until it gets one.
+                val mgr = manager ?: continue
+                for (id in batch) {
+                    runCatching {
+                        mgr.sendMessagingFrame(
+                            MessageType.MSG_ACK,
+                            MessagingCodec.encodeId(UUID.fromString(id)),
+                        )
+                    }.onFailure { Log.w(TAG, "ack send failed", it) }
+                }
+            }
+        }
+    }
+
+    private suspend fun onAck(msgId: UUID) {
+        val id = msgId.toString()
+        dao.deleteOutbox(id)
+        // Advance forward only: never downgrade a READ back to DELIVERED.
+        dao.advanceToDelivered(id)
+    }
+
+    private suspend fun onRead(msgId: UUID) {
+        dao.setState(msgId.toString(), MessageState.READ)
+    }
+
+    /**
+     * Marks this peer's incoming messages read and, if the user allows read
+     * receipts, tells the peer about each. Called only while the chat thread
+     * is visibly open — never from the background or notifications.
+     */
+    suspend fun markReadVisible(peerId: String) {
+        if (!settings.readReceiptsFlow.first()) return
+        val ids = dao.unreadIncomingIds(peerId)
+        if (ids.isEmpty()) return
+        dao.markPeerRead(peerId)
+        val mgr = manager ?: return
+        for (id in ids) {
+            runCatching {
+                mgr.sendMessagingFrame(
+                    MessageType.MSG_READ,
+                    MessagingCodec.encodeId(UUID.fromString(id)),
+                )
+            }.onFailure { Log.w(TAG, "read receipt send failed", it) }
+        }
+    }
+
+    private suspend fun maybeSendReadReceipt(msgId: String) {
+        if (!settings.readReceiptsFlow.first()) return
+        dao.setState(msgId, MessageState.READ)
+        runCatching {
+            manager?.sendMessagingFrame(
+                MessageType.MSG_READ,
+                MessagingCodec.encodeId(UUID.fromString(msgId)),
+            )
+        }.onFailure { Log.w(TAG, "read receipt send failed", it) }
+    }
+
+    // ---------------------------------------------------------------- typing
+
+    private var lastTypingSentAt = 0L
+    private val typingMutex = Mutex()
+
+    /**
+     * Called by the chat UI as the user types. Rate-limited to one frame per
+     * 3 s; only sent while a chat is open (foreground) and the session is up.
+     */
+    fun setTyping(typing: Boolean) {
+        scope.launch {
+            val send = typingMutex.withLock {
+                val now = System.currentTimeMillis()
+                if (typing && now - lastTypingSentAt < TYPING_MIN_INTERVAL_MS) {
+                    false
+                } else {
+                    lastTypingSentAt = now
+                    true
+                }
+            }
+            if (!send || activePeer.value == null || !_online.value) return@launch
+            runCatching {
+                manager?.sendMessagingFrame(
+                    MessageType.TYPING,
+                    MessagingCodec.encodeTyping(typing),
+                )
+            }.onFailure { Log.w(TAG, "typing send failed", it) }
+        }
+    }
+
+    private fun onTyping(typing: Boolean) {
+        // Only surface for the open chat; never persisted.
+        if (activePeer.value == null) return
+        typingTimeoutJob?.cancel()
+        if (typing) {
+            _peerTyping.value = true
+            typingTimeoutJob = scope.launch {
+                delay(TYPING_TTL_MS)
+                _peerTyping.value = false
+            }
+        } else {
+            _peerTyping.value = false
+        }
+    }
+
+    /** Which chat the UI currently shows; drives typing + read routing. */
+    fun setActivePeer(peerId: String?) {
+        activePeer.value = peerId
+        if (peerId == null) {
+            _peerTyping.value = false
+            typingTimeoutJob?.cancel()
+        }
+    }
+
+    // ----------------------------------------------------------------- hello
+
+    private fun sendHello() {
+        scope.launch {
+            val peerId = currentPeerId.value
+            if (peerId.isEmpty()) return@launch
+            val lastSeen = dao.maxPeerSeq(peerId) ?: 0L
+            runCatching {
+                manager?.sendMessagingFrame(
+                    MessageType.MSG_HELLO,
+                    MessagingCodec.encodeHello(lastSeen),
+                )
+            }.onFailure { Log.w(TAG, "hello send failed", it) }
+        }
+    }
+
+    private fun onHello(lastSeenSeq: Long) {
+        // The peer has seen everything up to lastSeenSeq; don't resend it.
+        if (lastSeenSeq > peerLastSeenSeq) peerLastSeenSeq = lastSeenSeq
+        scope.launch { drainOutbox() }
+    }
+
+    // ---------------------------------------------------------------- helpers
+
+    private fun refreshPeerId() {
+        val mgr = manager ?: return
+        val id = mgr.peerIdentityFingerprint.value?.takeIf { it.isNotEmpty() }
+            ?: mgr.peerName.value.takeIf { it.isNotEmpty() }
+            ?: "peer"
+        currentPeerId.value = id
+    }
+
+    private fun peerDisplayName(peerId: String): String {
+        val mgr = manager
+        val live = mgr?.peerName?.value
+        return if (mgr != null && currentPeerId.value == peerId && !live.isNullOrEmpty()) live
+        else shortId(peerId)
+    }
+
+    companion object {
+        private const val TAG = "MessagingEngine"
+        private const val DRAIN_BATCH = 20
+        private const val MAX_ATTEMPTS = 12
+        /** Pacing for re-sending an unacked message (at-least-once). */
+        private const val RESEND_DELAY_MS = 15_000L
+        private const val RETRY_SWEEP_MS = 30_000L
+        private const val ACK_BATCH_MS = 200L
+        private const val TYPING_MIN_INTERVAL_MS = 3_000L
+        private const val TYPING_TTL_MS = 8_000L
+
+        /** Short, stable display fallback for identity-based peer ids. */
+        fun shortId(peerId: String): String =
+            if (peerId.length <= 12) peerId else peerId.take(12) + "…"
+
+        /**
+         * Deterministic backoff base: 1s, 2s, 4s … capped at 60s.
+         * Callers add jitter. Pure — unit tested.
+         */
+        fun baseBackoffMs(attempts: Int): Long {
+            require(attempts >= 1)
+            var d = 1000L
+            repeat(min(attempts - 1, 6)) { d *= 2 }
+            return min(d, 60_000L)
+        }
+    }
+}
+
+/** Backoff policy with jitter; pure base is [MessagingEngine.baseBackoffMs]. */
+object OutboxBackoff {
+    fun delayMs(attempts: Int, random: Random = Random.Default): Long =
+        MessagingEngine.baseBackoffMs(attempts) + random.nextLong(0, 1000)
+}

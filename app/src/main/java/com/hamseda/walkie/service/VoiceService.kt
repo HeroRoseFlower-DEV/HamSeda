@@ -18,6 +18,7 @@ import com.hamseda.walkie.MainActivity
 import com.hamseda.walkie.R
 import com.hamseda.walkie.audio.AudioEngine
 import com.hamseda.walkie.crypto.AndroidPeerIdentityStore
+import com.hamseda.walkie.messaging.MessagingEngine
 import com.hamseda.walkie.session.SessionManager
 import com.hamseda.walkie.util.AppLog
 import kotlinx.coroutines.CoroutineScope
@@ -46,9 +47,12 @@ class VoiceService : Service() {
     private var sessionCpuWakeLock: PowerManager.WakeLock? = null
     lateinit var sessionManager: SessionManager
         private set
+    lateinit var messagingEngine: MessagingEngine
+        private set
 
     inner class LocalBinder : Binder() {
         fun getManager(): SessionManager = sessionManager
+        fun getMessaging(): MessagingEngine = messagingEngine
     }
 
     private val binder = LocalBinder()
@@ -67,6 +71,9 @@ class VoiceService : Service() {
         serviceScope.launch {
             settings.speakerphoneFlow.collect { audioEngine.setSpeakerphone(it) }
         }
+        // Offline text messaging rides the same encrypted session pipes.
+        messagingEngine = MessagingEngine(this, settings, serviceScope)
+        messagingEngine.attach(sessionManager)
         serviceScope.launch {
             sessionManager.phase.collect { phase ->
                 if (phase == SessionManager.Phase.IDLE) {
@@ -127,6 +134,9 @@ class VoiceService : Service() {
         try {
             audioEngine.release()
         } catch (e: Exception) { Log.w(TAG, "onDestroy: audio release failed: ${e.javaClass.simpleName}") }
+        try {
+            messagingEngine.detach()
+        } catch (e: Exception) { Log.w(TAG, "onDestroy: messaging detach failed: ${e.javaClass.simpleName}") }
         setSessionCpuAwake(false)
         serviceScope.cancel()
         super.onDestroy()

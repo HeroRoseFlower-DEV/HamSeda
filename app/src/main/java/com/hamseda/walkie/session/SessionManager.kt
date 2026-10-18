@@ -90,6 +90,19 @@ class SessionManager(
         PROTOCOL_ERROR, MIC_UNAVAILABLE, PLAYBACK_UNAVAILABLE, PEER_REJECTED,
     }
 
+    /**
+     * Sink for authenticated offline-messaging frames
+     * (MSG / MSG_ACK / MSG_READ / TYPING / CHUNK / MSG_HELLO). The plaintext
+     * is a fresh copy; the session wipes its own buffer afterwards.
+     */
+    fun interface MessagingFrameListener {
+        fun onMessagingFrame(type: Byte, plaintext: ByteArray)
+    }
+
+    /** Set by MessagingEngine; null when messaging is not attached. */
+    @Volatile
+    var messagingListener: MessagingFrameListener? = null
+
     // ------------------------------------------------------- observable state
 
     // Lock ordering (global, must be respected everywhere to avoid deadlock):
@@ -604,6 +617,29 @@ class SessionManager(
         if (!enqueueOutbound(OutboundMsg.Plain(type, payload))) {
             payload.fill(0)
             Log.w(TAG, "outbound queue full; dropping plain frame type=$type")
+            return false
+        }
+        return true
+    }
+
+    /**
+     * Queues one sealed offline-messaging frame on the control channel.
+     * Returns false unless the session is live and the frame was accepted.
+     * The plaintext is copied; the caller retains ownership of its buffer.
+     */
+    fun sendMessagingFrame(type: Byte, plaintext: ByteArray): Boolean {
+        if (_phase.value != Phase.IN_SESSION) return false
+        val k = hs.keys ?: return false
+        val msg = OutboundMsg.Sealed(
+            type = type,
+            codecId = 0xFF.toByte(),
+            sessionId = k.sessionId.copyOf(),
+            key = k.controlKey,
+            role = hs.myRole,
+            plaintext = plaintext.copyOf(),
+        )
+        if (!enqueueOutbound(msg)) {
+            Log.w(TAG, "outbound queue full; dropping messaging frame type=$type")
             return false
         }
         return true
@@ -1900,6 +1936,12 @@ class SessionManager(
                 MessageType.PING -> enqueueControl(MessageType.PONG, plaintext)
                 MessageType.PONG -> Unit
                 MessageType.SAS_CONFIRM -> _peerSasConfirmed.value = true
+                // Offline text messaging: hand the authenticated plaintext to
+                // the registered MessagingEngine. A copy is passed because the
+                // buffer is wiped in the finally block below.
+                MessageType.MSG, MessageType.MSG_ACK, MessageType.MSG_READ,
+                MessageType.TYPING, MessageType.CHUNK, MessageType.MSG_HELLO ->
+                    messagingListener?.onMessagingFrame(frame.type, plaintext.copyOf())
                 MessageType.DISCONNECT -> {
                     endSession(sessionErrorForDisconnect(plaintext[0]), notifyPeer = false)
                 }
@@ -1973,6 +2015,22 @@ class SessionManager(
                 if (plaintext.size == 8) null else "invalid liveness payload length"
             MessageType.SAS_CONFIRM ->
                 if (plaintext.isEmpty()) null else "invalid SAS_CONFIRM payload"
+            // Offline messaging frames: bounds-checked here; deeper codec
+            // validation happens in MessagingEngine after authentication.
+            MessageType.MSG ->
+                if (plaintext.size in 33..(32 + Protocol.MSG_CHUNK_PLAINTEXT)) null
+                else "invalid MSG payload length"
+            MessageType.CHUNK ->
+                if (plaintext.size in
+                    (Protocol.MSG_CHUNK_HEADER_BYTES + 1)..
+                    (Protocol.MSG_CHUNK_HEADER_BYTES + Protocol.MSG_CHUNK_PLAINTEXT)
+                ) null else "invalid CHUNK payload length"
+            MessageType.MSG_ACK, MessageType.MSG_READ ->
+                if (plaintext.size == 16) null else "invalid messaging id payload length"
+            MessageType.TYPING ->
+                if (plaintext.size == 1) null else "invalid TYPING payload length"
+            MessageType.MSG_HELLO ->
+                if (plaintext.size == 8) null else "invalid MSG_HELLO payload length"
             MessageType.KEY_CONFIRM ->
                 if (plaintext.size == 33) null else "invalid KEY_CONFIRM payload length"
             MessageType.DISCONNECT -> {

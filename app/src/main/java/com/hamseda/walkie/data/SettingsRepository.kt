@@ -43,6 +43,7 @@ class SettingsRepository(private val context: Context) {
         val VIBRATION = booleanPreferencesKey("vibration")
         val THEME = stringPreferencesKey("theme_mode")
         val LANGUAGE = stringPreferencesKey("language")
+        val READ_RECEIPTS = booleanPreferencesKey("read_receipts")
     }
 
     val transportPreferenceFlow: Flow<TransportPreference> =
@@ -70,6 +71,14 @@ class SettingsRepository(private val context: Context) {
     val languageFlow: Flow<String> =
         context.dataStore.data.map { normalizeLanguageCode(it[Keys.LANGUAGE]) }
 
+    /**
+     * Whether to send read receipts for incoming chat messages. Default on.
+     * Receipts are only ever sent while the chat thread is visibly open —
+     * never from notifications or the background.
+     */
+    val readReceiptsFlow: Flow<Boolean> =
+        context.dataStore.data.map { it[Keys.READ_RECEIPTS] ?: true }
+
     suspend fun transportPreference(): TransportPreference = transportPreferenceFlow.first()
     suspend fun codecPref(): Byte = codecPrefFlow.first()
 
@@ -96,5 +105,9 @@ class SettingsRepository(private val context: Context) {
     /** L10: only validated language codes are persisted. */
     suspend fun setLanguage(v: String) {
         context.dataStore.edit { it[Keys.LANGUAGE] = normalizeLanguageCode(v) }
+    }
+
+    suspend fun setReadReceipts(v: Boolean) {
+        context.dataStore.edit { it[Keys.READ_RECEIPTS] = v }
     }
 }
