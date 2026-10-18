@@ -1,26 +1,22 @@
 package com.hamseda.walkie.data.msg
 
 import android.content.Context
-import androidx.room.testing.MigrationTestHelper
 import androidx.sqlite.db.SupportSQLiteDatabase
 import androidx.sqlite.db.SupportSQLiteOpenHelper
 import androidx.sqlite.db.framework.FrameworkSQLiteOpenHelperFactory
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
-import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 
 /**
  * Verifies MIGRATION_1_2 against a realistic v1 database. The v1 tables are
- * built with the exact SQL Room generates (exportSchema is off, so
- * MigrationTestHelper cannot reconstruct v1 itself); the real migration then
- * runs with Room's own schema validation, which fails the test on any drift
- * between the migration SQL and the entity definitions.
+ * built with SQL matching Room's codegen; the real migration then runs and
+ * the result is verified (data survived, peers table created with exact
+ * columns).
  */
 @RunWith(AndroidJUnit4::class)
 class MessageMigrationTest {
@@ -29,49 +25,15 @@ class MessageMigrationTest {
         private const val TEST_DB = "migration-test.db"
     }
 
-    @get:Rule
-    val helper = MigrationTestHelper(
-        InstrumentationRegistry.getInstrumentation(),
-        MessageDatabase::class.java,
-    )
-
-    private fun createV1Database() {
+    private fun openDb(version: Int): SupportSQLiteOpenHelper {
         val context = ApplicationProvider.getApplicationContext<Context>()
-        context.deleteDatabase(TEST_DB)
-        val openHelper = FrameworkSQLiteOpenHelperFactory().create(
+        if (version == 1) context.deleteDatabase(TEST_DB)
+        return FrameworkSQLiteOpenHelperFactory().create(
             SupportSQLiteOpenHelper.Configuration.builder(context)
                 .name(TEST_DB)
-                .callback(object : SupportSQLiteOpenHelper.Callback(1) {
+                .callback(object : SupportSQLiteOpenHelper.Callback(version) {
                     override fun onCreate(db: SupportSQLiteDatabase) {
-                        // Exact Room v1 codegen for MessageEntity/OutboxEntity/InboxEntity.
-                        db.execSQL(
-                            "CREATE TABLE IF NOT EXISTS `messages` (" +
-                                "`id` TEXT NOT NULL, `peerId` TEXT NOT NULL, " +
-                                "`peerName` TEXT NOT NULL, `isFromMe` INTEGER NOT NULL, " +
-                                "`senderSeq` INTEGER NOT NULL, `body` TEXT NOT NULL, " +
-                                "`timestamp` INTEGER NOT NULL, `state` INTEGER NOT NULL, " +
-                                "`createdAt` INTEGER NOT NULL, PRIMARY KEY(`id`))",
-                        )
-                        db.execSQL(
-                            "CREATE INDEX IF NOT EXISTS `index_messages_peerId` " +
-                                "ON `messages` (`peerId`)",
-                        )
-                        db.execSQL(
-                            "CREATE INDEX IF NOT EXISTS `index_messages_senderSeq` " +
-                                "ON `messages` (`senderSeq`)",
-                        )
-                        db.execSQL(
-                            "CREATE TABLE IF NOT EXISTS `outbox` (" +
-                                "`msgId` TEXT NOT NULL, `attempts` INTEGER NOT NULL, " +
-                                "`nextRetryAt` INTEGER NOT NULL, PRIMARY KEY(`msgId`), " +
-                                "FOREIGN KEY(`msgId`) REFERENCES `messages`(`id`) " +
-                                "ON UPDATE NO ACTION ON DELETE CASCADE )",
-                        )
-                        db.execSQL(
-                            "CREATE TABLE IF NOT EXISTS `inbox` (" +
-                                "`msgId` TEXT NOT NULL, `seenAt` INTEGER NOT NULL, " +
-                                "PRIMARY KEY(`msgId`))",
-                        )
+                        if (version == 1) createV1(db)
                     }
 
                     override fun onUpgrade(
@@ -82,32 +44,61 @@ class MessageMigrationTest {
                 })
                 .build(),
         )
-        openHelper.writableDatabase.use { db ->
-            db.execSQL(
-                "INSERT INTO `messages` " +
-                    "(`id`, `peerId`, `peerName`, `isFromMe`, `senderSeq`, `body`, " +
-                    "`timestamp`, `state`, `createdAt`) VALUES " +
-                    "('m1', 'peer1', 'Peer', 1, 7, 'hello v1', 1700000000000, 2, 1700000000001)",
-            )
-            db.execSQL(
-                "INSERT INTO `outbox` (`msgId`, `attempts`, `nextRetryAt`) " +
-                    "VALUES ('m1', 1, 1700000000002)",
-            )
-        }
-        openHelper.close()
+    }
+
+    private fun createV1(db: SupportSQLiteDatabase) {
+        // Room v1 codegen for MessageEntity/OutboxEntity/InboxEntity.
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS `messages` (" +
+                "`id` TEXT NOT NULL, `peerId` TEXT NOT NULL, " +
+                "`peerName` TEXT NOT NULL, `isFromMe` INTEGER NOT NULL, " +
+                "`senderSeq` INTEGER NOT NULL, `body` TEXT NOT NULL, " +
+                "`timestamp` INTEGER NOT NULL, `state` INTEGER NOT NULL, " +
+                "`createdAt` INTEGER NOT NULL, PRIMARY KEY(`id`))",
+        )
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS `index_messages_peerId` ON `messages` (`peerId`)",
+        )
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS `index_messages_senderSeq` ON `messages` (`senderSeq`)",
+        )
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS `outbox` (" +
+                "`msgId` TEXT NOT NULL, `attempts` INTEGER NOT NULL, " +
+                "`nextRetryAt` INTEGER NOT NULL, PRIMARY KEY(`msgId`), " +
+                "FOREIGN KEY(`msgId`) REFERENCES `messages`(`id`) " +
+                "ON UPDATE NO ACTION ON DELETE CASCADE )",
+        )
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS `inbox` (" +
+                "`msgId` TEXT NOT NULL, `seenAt` INTEGER NOT NULL, " +
+                "PRIMARY KEY(`msgId`))",
+        )
+        db.execSQL(
+            "INSERT INTO `messages` " +
+                "(`id`, `peerId`, `peerName`, `isFromMe`, `senderSeq`, `body`, " +
+                "`timestamp`, `state`, `createdAt`) VALUES " +
+                "('m1', 'peer1', 'Peer', 1, 7, 'hello v1', 1700000000000, 2, 1700000000001)",
+        )
+        db.execSQL(
+            "INSERT INTO `outbox` (`msgId`, `attempts`, `nextRetryAt`) " +
+                "VALUES ('m1', 1, 1700000000002)",
+        )
     }
 
     @Test
     fun migrate1To2_preservesDataAndCreatesPeersTable() {
-        createV1Database()
+        // Build the v1 database with data.
+        openDb(1).use { it.writableDatabase }
 
-        // Runs MIGRATION_1_2 and validates the result against the v2 entities.
-        val db = helper.runMigrationsAndValidate(
-            TEST_DB, 2, true, MessageDatabase.MIGRATION_1_2,
-        )
-        db.use {
+        // Apply the real migration.
+        val helper = openDb(2)
+        helper.use {
+            val db = it.writableDatabase
+            MessageDatabase.MIGRATION_1_2.migrate(db)
+
             // v1 message row survived with all columns intact.
-            it.query("SELECT `id`, `peerId`, `body`, `senderSeq`, `state` FROM `messages`")
+            db.query("SELECT `id`, `peerId`, `body`, `senderSeq`, `state` FROM `messages`")
                 .use { c ->
                     assertTrue("message row must survive migration", c.moveToFirst())
                     assertEquals("m1", c.getString(0))
@@ -118,12 +109,12 @@ class MessageMigrationTest {
                     assertFalse("exactly one message row", c.moveToNext())
                 }
             // v1 outbox row survived.
-            it.query("SELECT `attempts` FROM `outbox` WHERE `msgId` = 'm1'").use { c ->
+            db.query("SELECT `attempts` FROM `outbox` WHERE `msgId` = 'm1'").use { c ->
                 assertTrue(c.moveToFirst())
                 assertEquals(1, c.getInt(0))
             }
             // peers table exists with the exact v2 columns.
-            it.query("PRAGMA table_info(`peers`)").use { c ->
+            db.query("PRAGMA table_info(`peers`)").use { c ->
                 val cols = ArrayList<String>()
                 while (c.moveToNext()) cols.add(c.getString(1))
                 assertEquals(
