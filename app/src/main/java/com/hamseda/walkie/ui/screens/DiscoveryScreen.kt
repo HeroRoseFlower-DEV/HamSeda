@@ -21,7 +21,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.Radar
 import androidx.compose.material.icons.filled.Wifi
@@ -36,8 +35,6 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -63,6 +60,7 @@ import com.hamseda.walkie.transport.TransportPreference
 import com.hamseda.walkie.transport.TransportState
 import com.hamseda.walkie.transport.TransportType
 import com.hamseda.walkie.ui.components.ErrorBanner
+import com.hamseda.walkie.ui.components.HamSedaTopBar
 import com.hamseda.walkie.ui.components.PeerCard
 import com.hamseda.walkie.ui.vm.DiscoveryViewModel
 import com.hamseda.walkie.ui.vm.VmDeps
@@ -246,7 +244,20 @@ fun DiscoveryScreen(
         pendingActionPeerId = null
         when (kind) {
             PENDING_SCAN -> vm.startScan()
-            PENDING_CONNECT -> peers.find { it.id == peerId }?.let { vm.connectPeer(it) }
+            PENDING_CONNECT -> {
+                val peer = peers.find { it.id == peerId }
+                if (peer != null) {
+                    vm.connectPeer(peer)
+                } else {
+                    // The peer list refreshed while the system dialog was up
+                    // and this id is gone; don't swallow the tap silently.
+                    android.widget.Toast.makeText(
+                        context,
+                        context.getString(R.string.err_peer_not_found),
+                        android.widget.Toast.LENGTH_LONG,
+                    ).show()
+                }
+            }
             PENDING_LISTEN -> doListen()
             // PENDING_DISCOVERABLE (or null): no follow-up needed.
             else -> Unit
@@ -260,17 +271,7 @@ fun DiscoveryScreen(
     Scaffold(
         modifier = modifier,
         topBar = {
-            TopAppBar(
-                title = { Text(stringResource(R.string.discovery_title), fontWeight = FontWeight.Bold) },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.back))
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.background,
-                ),
-            )
+            HamSedaTopBar(title = stringResource(R.string.discovery_title), onBack = onBack)
         },
     ) { padding ->
         LazyColumn(

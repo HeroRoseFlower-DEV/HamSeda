@@ -874,7 +874,7 @@ class AudioEngine(private val context: Context) : AudioPipeline {
                             if (pcm != null) {
                                 if (!writePcm(at, pcm, queueTracker, playbackBuffer.queueLimitFrames)) {
                                     pcm.fill(0)
-                                    reportPlaybackWriteFailure()
+                                    reportPlaybackWriteFailure(generation)
                                     break@playback
                                 }
                                 last?.fill(0)
@@ -883,7 +883,7 @@ class AudioEngine(private val context: Context) : AudioPipeline {
                             } else {
                                 val next = conceal(at, queueTracker, last, silence, plcScratch, plcCount, playbackBuffer.queueLimitFrames)
                                 if (next == null) {
-                                    reportPlaybackWriteFailure()
+                                    reportPlaybackWriteFailure(generation)
                                     break@playback
                                 }
                                 plcCount = next
@@ -903,7 +903,7 @@ class AudioEngine(private val context: Context) : AudioPipeline {
                             if (recovered != null) {
                                 if (!writePcm(at, recovered, queueTracker, playbackBuffer.queueLimitFrames)) {
                                     recovered.fill(0)
-                                    reportPlaybackWriteFailure()
+                                    reportPlaybackWriteFailure(generation)
                                     break@playback
                                 }
                                 last?.fill(0)
@@ -917,7 +917,7 @@ class AudioEngine(private val context: Context) : AudioPipeline {
                                     playbackBuffer.queueLimitFrames,
                                 )
                                 if (next == null) {
-                                    reportPlaybackWriteFailure()
+                                    reportPlaybackWriteFailure(generation)
                                     break@playback
                                 }
                                 plcCount = next
@@ -940,7 +940,7 @@ class AudioEngine(private val context: Context) : AudioPipeline {
                 // Do not leave isPlaying=true if a vendor AudioTrack/codec throws
                 // outside the normal write-error return path.
                 Log.e(TAG, "playback worker terminated unexpectedly: ${e.javaClass.simpleName}", e)
-                reportPlaybackWriteFailure()
+                reportPlaybackWriteFailure(generation)
             } finally {
                 // Guard shared-state mutations with the per-worker
                 // generation: a zombie worker from an older generation that
@@ -1153,8 +1153,18 @@ class AudioEngine(private val context: Context) : AudioPipeline {
         playbackWriteWindowDeadlineTimeouts = 0
     }
 
-    private fun reportPlaybackWriteFailure() {
-        if (playbackRunning.compareAndSet(true, false)) {
+    /**
+     * Report a playback write failure, but only if this worker is still the
+     * current generation. A zombie worker from an older generation that wakes
+     * up after its replacement started must not clear playbackRunning
+     * (which would silently kill the new worker's loop) or fire
+     * onPlaybackError for the new session — the same guard philosophy as
+     * the finally block above.
+     */
+    private fun reportPlaybackWriteFailure(workerGeneration: Long) {
+        if (playbackGeneration == workerGeneration &&
+            playbackRunning.compareAndSet(true, false)
+        ) {
             val reason = "AudioTrack failed during streaming playback"
             AppLog.log(TAG, reason)
             pipelineListener?.onPlaybackError(reason)

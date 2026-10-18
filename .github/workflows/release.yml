@@ -3,7 +3,8 @@ name: Release HamSeda
 on:
   push:
     tags:
-      - "v[0-9]*"
+      - "v[0-9]*.[0-9]*"
+      - "v[0-9]*.[0-9]*.[0-9]*"
 
 permissions:
   contents: write
@@ -31,7 +32,7 @@ jobs:
           # The tag points at a main-branch commit; android.yml runs on main
           # pushes, so the commit must have a successful workflow run.
           RUN_ID="$(gh api "repos/${{ github.repository }}/actions/runs?head_sha=$SHA&status=success" \
-            --jq '.workflow_runs[] | select(.name == "Android CI" or .path == ".github/workflows/android.yml") | .id' \
+            --jq '.workflow_runs[] | select(.name == "Build HamSeda APK" or .path == ".github/workflows/android.yml") | .id' \
             | head -n 1)"
           if [ -z "$RUN_ID" ]; then
             echo "::error::No successful Android CI run found for commit $SHA. Push the tag only after CI is green on main."

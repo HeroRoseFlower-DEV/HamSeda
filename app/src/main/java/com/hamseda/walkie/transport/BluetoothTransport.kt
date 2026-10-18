@@ -567,8 +567,14 @@ class BluetoothTransport(private val context: Context) : AbstractFramedStreamTra
                 val watchdog = launch {
                     delay(Protocol.CONNECT_TIMEOUT_MS.toLong())
                     socketRef.getAndSet(null)?.let { s ->
-                        AppLog.log(TAG, "connect timed out; closing socket to unblock")
-                        try { s.close() } catch (_: IOException) {}
+                        // Never close a socket that connected exactly on the
+                        // deadline: the post-connect generation/state checks
+                        // below install or discard it. Close only to unblock
+                        // a still-pending connect().
+                        if (!s.isConnected) {
+                            AppLog.log(TAG, "connect timed out; closing socket to unblock")
+                            try { s.close() } catch (_: IOException) {}
+                        }
                     }
                 }
                 try {

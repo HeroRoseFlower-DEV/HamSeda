@@ -28,8 +28,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
@@ -46,6 +44,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.hamseda.walkie.R
+import com.hamseda.walkie.ui.components.HamSedaTopBar
 import com.hamseda.walkie.ui.vm.PairingViewModel
 import com.hamseda.walkie.ui.vm.VmDeps
 import com.hamseda.walkie.ui.vm.VmFactory
@@ -86,12 +85,7 @@ fun PairingScreen(
     Scaffold(
         modifier = modifier,
         topBar = {
-            TopAppBar(
-                title = { Text(stringResource(R.string.pairing_title), fontWeight = FontWeight.Bold) },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.background,
-                ),
-            )
+            HamSedaTopBar(title = stringResource(R.string.pairing_title))
         },
     ) { padding ->
         Column(
