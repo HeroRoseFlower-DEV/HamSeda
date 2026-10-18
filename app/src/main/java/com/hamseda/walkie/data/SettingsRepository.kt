@@ -44,6 +44,7 @@ class SettingsRepository(private val context: Context) {
         val THEME = stringPreferencesKey("theme_mode")
         val LANGUAGE = stringPreferencesKey("language")
         val READ_RECEIPTS = booleanPreferencesKey("read_receipts")
+        val PROFILE_NAME = stringPreferencesKey("profile_name")
     }
 
     val transportPreferenceFlow: Flow<TransportPreference> =
@@ -79,6 +80,13 @@ class SettingsRepository(private val context: Context) {
     val readReceiptsFlow: Flow<Boolean> =
         context.dataStore.data.map { it[Keys.READ_RECEIPTS] ?: true }
 
+    /**
+     * The user's own display name, shared with peers over the sealed
+     * control channel on session setup. Empty = not set.
+     */
+    val profileNameFlow: Flow<String> =
+        context.dataStore.data.map { it[Keys.PROFILE_NAME] ?: "" }
+
     suspend fun transportPreference(): TransportPreference = transportPreferenceFlow.first()
     suspend fun codecPref(): Byte = codecPrefFlow.first()
 
@@ -109,5 +117,10 @@ class SettingsRepository(private val context: Context) {
 
     suspend fun setReadReceipts(v: Boolean) {
         context.dataStore.edit { it[Keys.READ_RECEIPTS] = v }
+    }
+
+    /** Profile display name; trimmed, max 64 chars (matches wire limit). */
+    suspend fun setProfileName(v: String) {
+        context.dataStore.edit { it[Keys.PROFILE_NAME] = v.trim().take(64) }
     }
 }

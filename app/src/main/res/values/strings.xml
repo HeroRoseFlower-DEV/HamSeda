@@ -197,4 +197,15 @@
     <string name="msg_no_peer">Connect to a peer first, then come back to chat.</string>
     <string name="settings_read_receipts">Read receipts</string>
     <string name="settings_read_receipts_desc">Let your peer see when you have read their messages. Receipts are only sent while the chat is open.</string>
+    <string name="msg_typing_full">typing…</string>
+    <string name="profile_title">Profile</string>
+    <string name="profile_name_label">Display name</string>
+    <string name="profile_name_hint">Your name</string>
+    <string name="profile_save">Save</string>
+    <string name="profile_saved">Saved</string>
+    <string name="profile_pick_photo">Choose photo</string>
+    <string name="profile_remove_photo">Remove photo</string>
+    <string name="profile_desc">Your name and photo are sent encrypted to your peer when you connect. They are never uploaded anywhere.</string>
+    <string name="profile_last_seen">Last seen %1$s</string>
+    <string name="settings_profile_desc">Name and photo shared with your peer</string>
 </resources>

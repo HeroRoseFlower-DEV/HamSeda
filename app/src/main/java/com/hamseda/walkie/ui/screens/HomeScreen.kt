@@ -74,6 +74,13 @@ fun HomeScreen(
     val peerName by vm.peerName.collectAsStateWithLifecycle()
     val peerFingerprint by vm.peerIdentityFingerprint.collectAsStateWithLifecycle()
     val peerTrusted by vm.peerIdentityTrusted.collectAsStateWithLifecycle()
+    val livePeerProfile by vm.livePeerProfile.collectAsStateWithLifecycle()
+    // Prefer the stored profile name from the PROFILE exchange; fall back
+    // to the transport name, then the short fingerprint.
+    val displayPeerName = livePeerProfile?.displayName?.takeIf { it.isNotEmpty() }
+        ?: peerName.ifEmpty {
+            peerFingerprint?.let { com.hamseda.walkie.messaging.MessagingEngine.shortId(it) } ?: ""
+        }
     val transportType by vm.transportType.collectAsStateWithLifecycle()
     val transmitting by vm.isTransmitting.collectAsStateWithLifecycle()
     val floorHolder by vm.floorHolder.collectAsStateWithLifecycle()
@@ -120,9 +127,10 @@ fun HomeScreen(
             StatusHeader(
                 phase = phase,
                 transportType = transportType,
-                peerName = peerName,
+                peerName = displayPeerName,
                 peerFingerprint = peerFingerprint,
                 peerTrusted = peerTrusted,
+                peerAvatarPath = livePeerProfile?.photoPath,
             )
 
             Spacer(Modifier.height(16.dp))

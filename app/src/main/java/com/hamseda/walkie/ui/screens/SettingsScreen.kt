@@ -56,6 +56,7 @@ import com.hamseda.walkie.util.toFaDigits
 fun SettingsScreen(
     deps: VmDeps,
     onBack: () -> Unit,
+    onOpenProfile: () -> Unit,
     onOpenPrivacy: () -> Unit,
     onOpenDiagnostics: () -> Unit,
     onLanguageChanged: () -> Unit,
@@ -75,6 +76,18 @@ fun SettingsScreen(
     val language by vm.language.collectAsStateWithLifecycle()
     val trustedPeers by vm.trustedPeers.collectAsStateWithLifecycle()
 
+    // Refresh the own-photo thumbnail when returning from the Profile screen.
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    androidx.compose.runtime.DisposableEffect(lifecycleOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                vm.refreshProfilePhoto()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
     Scaffold(
         modifier = modifier,
         topBar = {
@@ -90,6 +103,12 @@ fun SettingsScreen(
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             Spacer(Modifier.height(4.dp))
+
+            ProfileCard(
+                name = vm.profileName.collectAsStateWithLifecycle().value,
+                photoPath = vm.profilePhotoPath.collectAsStateWithLifecycle().value,
+                onClick = onOpenProfile,
+            )
 
             SettingSection(title = stringResource(R.string.settings_transport)) {
                 RadioOption(
@@ -389,5 +408,51 @@ private fun SwitchRow(
         }
         Spacer(Modifier.width(12.dp))
         Switch(checked = checked, onCheckedChange = onChecked)
+    }
+}
+
+/** Own profile entry card at the top of Settings. */
+@Composable
+private fun ProfileCard(
+    name: String,
+    photoPath: String?,
+    onClick: () -> Unit,
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surface,
+        ),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+    ) {
+        Row(
+            modifier = Modifier.padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            com.hamseda.walkie.ui.components.PeerAvatar(
+                name = name,
+                photoPath = photoPath,
+                size = 56.dp,
+            )
+            Spacer(Modifier.width(14.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = name.ifEmpty { stringResource(R.string.profile_title) },
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                )
+                Text(
+                    text = stringResource(R.string.settings_profile_desc),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                )
+            }
+            Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null)
+        }
     }
 }

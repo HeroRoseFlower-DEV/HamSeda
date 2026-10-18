@@ -92,8 +92,9 @@ class SessionManager(
 
     /**
      * Sink for authenticated offline-messaging frames
-     * (MSG / MSG_ACK / MSG_READ / TYPING / CHUNK / MSG_HELLO). The plaintext
-     * is a fresh copy; the session wipes its own buffer afterwards.
+     * (MSG / MSG_ACK / MSG_READ / TYPING / CHUNK / MSG_HELLO / PROFILE /
+     * PROFILE_PHOTO). The plaintext is a fresh copy; the session wipes its
+     * own buffer afterwards.
      */
     fun interface MessagingFrameListener {
         fun onMessagingFrame(type: Byte, plaintext: ByteArray)
@@ -1940,7 +1941,8 @@ class SessionManager(
                 // the registered MessagingEngine. A copy is passed because the
                 // buffer is wiped in the finally block below.
                 MessageType.MSG, MessageType.MSG_ACK, MessageType.MSG_READ,
-                MessageType.TYPING, MessageType.CHUNK, MessageType.MSG_HELLO ->
+                MessageType.TYPING, MessageType.CHUNK, MessageType.MSG_HELLO,
+                MessageType.PROFILE, MessageType.PROFILE_PHOTO ->
                     messagingListener?.onMessagingFrame(frame.type, plaintext.copyOf())
                 MessageType.DISCONNECT -> {
                     endSession(sessionErrorForDisconnect(plaintext[0]), notifyPeer = false)
@@ -2031,6 +2033,16 @@ class SessionManager(
                 if (plaintext.size == 1) null else "invalid TYPING payload length"
             MessageType.MSG_HELLO ->
                 if (plaintext.size == 8) null else "invalid MSG_HELLO payload length"
+            // Profile exchange: nameLen(1) + name(0..64) + photoHash(32).
+            MessageType.PROFILE ->
+                if (plaintext.size in Protocol.PROFILE_MIN_BYTES..Protocol.PROFILE_MAX_BYTES) null
+                else "invalid PROFILE payload length"
+            // Profile photo chunks: photoId(16) + index(4) + total(4) + bytes.
+            MessageType.PROFILE_PHOTO ->
+                if (plaintext.size in
+                    (Protocol.PROFILE_PHOTO_HEADER_BYTES + 1)..
+                    (Protocol.PROFILE_PHOTO_HEADER_BYTES + Protocol.MSG_CHUNK_PLAINTEXT)
+                ) null else "invalid PROFILE_PHOTO payload length"
             MessageType.KEY_CONFIRM ->
                 if (plaintext.size == 33) null else "invalid KEY_CONFIRM payload length"
             MessageType.DISCONNECT -> {

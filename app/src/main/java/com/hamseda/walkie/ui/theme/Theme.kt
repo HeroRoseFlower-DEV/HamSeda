@@ -56,6 +56,40 @@ object MessagingColors {
     val VioletNightSoft = Color(0xFF241A4D)
 }
 
+/**
+ * Telegram-style messaging palette (explicit user request — supersedes the
+ * violet identity for the whole messaging section).
+ */
+object TelegramColors {
+    // Light theme
+    val ChatBackgroundLight = Color(0xFFE7EBF0)
+    val IncomingBubbleLight = Color(0xFFFFFFFF)
+    val OutgoingBubbleLight = Color(0xFFEFFDDE)
+    val IncomingTextLight = Color(0xFF000000)
+    val OutgoingTextLight = Color(0xFF000000)
+    val TimeInBubbleLight = Color(0xFF6D7F8F)
+    val TickSent = Color(0xFF8A9BA8)
+    val TickRead = Color(0xFF5BB2F0)
+    val UnreadBadge = Color(0xFF2AABEE)
+    val SendButton = Color(0xFF2AABEE)
+    val DateDividerBgLight = Color(0xFFD4DEE7)
+    val DateDividerTextLight = Color(0xFF5A6E7F)
+    val InputBarLight = Color(0xFFFFFFFF)
+    val InputHintLight = Color(0xFF8A9BA8)
+
+    // Dark theme (Telegram dark)
+    val ChatBackgroundDark = Color(0xFF0E1621)
+    val IncomingBubbleDark = Color(0xFF182533)
+    val OutgoingBubbleDark = Color(0xFF2B5278)
+    val IncomingTextDark = Color(0xFFFFFFFF)
+    val OutgoingTextDark = Color(0xFFFFFFFF)
+    val TimeInBubbleDark = Color(0xFF8A9BA8)
+    val DateDividerBgDark = Color(0xFF242F3D)
+    val DateDividerTextDark = Color(0xFF8A9BA8)
+    val InputBarDark = Color(0xFF17212B)
+    val InputHintDark = Color(0xFF6D7F8F)
+}
+
 private val LightScheme = lightColorScheme(
     primary = HamSedaColors.TealPrimary,
     onPrimary = Color.White,

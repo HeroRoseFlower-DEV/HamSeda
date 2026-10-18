@@ -1,9 +1,13 @@
 package com.hamseda.walkie.ui.vm
 
+import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import com.hamseda.walkie.data.ProfilePhotoStore
 import com.hamseda.walkie.messaging.MessagingEngine
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.map
@@ -50,6 +54,11 @@ class ChatViewModel(
                 MessagingEngine.shortId(peerId),
             )
 
+    /** Stored peer profile (name + photo + online state), if ever received. */
+    val peerProfile: StateFlow<MessagingEngine.PeerProfile?> =
+        engine.observePeerProfile(peerId)
+            .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
     init {
         engine.setActivePeer(peerId)
         viewModelScope.launch { engine.markReadVisible(peerId) }
@@ -87,4 +96,37 @@ class ChatVmFactory(
         } else {
             throw IllegalArgumentException("unknown VM ${modelClass.name}")
         }
+}
+
+/** User profile: display name (DataStore) + photo (app-private files). */
+class ProfileViewModel(private val deps: VmDeps) : ViewModel() {
+    private val photoStore = ProfilePhotoStore(deps.appContext)
+
+    val profileName: StateFlow<String> = deps.settings.profileNameFlow
+        .stateIn(viewModelScope, SharingStarted.Eagerly, "")
+
+    private val _photoTick = MutableStateFlow(0L)
+    val photoPath: StateFlow<String?> =
+        _photoTick.map { photoStore.ownPhotoFile()?.absolutePath }
+            .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    fun setName(name: String) {
+        viewModelScope.launch {
+            runCatching { deps.settings.setProfileName(name) }
+        }
+    }
+
+    fun setPhoto(uri: Uri) {
+        viewModelScope.launch(Dispatchers.IO) {
+            photoStore.importOwnPhoto(uri)
+            _photoTick.value = System.currentTimeMillis()
+        }
+    }
+
+    fun removePhoto() {
+        viewModelScope.launch(Dispatchers.IO) {
+            photoStore.removeOwnPhoto()
+            _photoTick.value = System.currentTimeMillis()
+        }
+    }
 }
