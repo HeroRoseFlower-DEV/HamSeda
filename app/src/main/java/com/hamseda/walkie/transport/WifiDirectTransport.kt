@@ -1150,7 +1150,7 @@ class WifiDirectTransport(private val context: Context) : AbstractFramedStreamTr
             // ownership moves and let the cancellation propagate, otherwise
             // the peer sees a half-open, unauthenticated connection.
             try {
-                ensureActive()
+                coroutineContext.ensureActive()
             } catch (e: CancellationException) {
                 try { accepted.close() } catch (_: IOException) {}
                 throw e
