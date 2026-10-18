@@ -48,6 +48,7 @@ import com.hamseda.walkie.ui.screens.HomeScreen
 import com.hamseda.walkie.ui.screens.MessagesScreen
 import com.hamseda.walkie.ui.screens.PairingScreen
 import com.hamseda.walkie.ui.screens.PrivacyScreen
+import com.hamseda.walkie.ui.screens.ProfileScreen
 import com.hamseda.walkie.ui.screens.SettingsScreen
 import com.hamseda.walkie.ui.theme.HamSedaTheme
 import com.hamseda.walkie.ui.theme.MessagingColors
@@ -163,7 +164,7 @@ class MainActivity : ComponentActivity() {
 
 private enum class Screen {
     HOME, DISCOVERY, PAIRING, SETTINGS, PRIVACY, DIAGNOSTICS,
-    MESSAGES, CHAT,
+    MESSAGES, CHAT, PROFILE,
 }
 
 @Composable
@@ -182,7 +183,7 @@ private fun HamSedaRoot(deps: VmDeps, onLanguageChanged: () -> Unit) {
     BackHandler(enabled = screen != Screen.HOME) {
         when (screen) {
             Screen.DISCOVERY, Screen.SETTINGS, Screen.MESSAGES -> screen = Screen.HOME
-            Screen.PRIVACY, Screen.DIAGNOSTICS -> screen = Screen.SETTINGS
+            Screen.PRIVACY, Screen.DIAGNOSTICS, Screen.PROFILE -> screen = Screen.SETTINGS
             Screen.CHAT -> screen = Screen.MESSAGES
             Screen.PAIRING -> Unit
             Screen.HOME -> Unit
@@ -238,10 +239,18 @@ private fun HamSedaRoot(deps: VmDeps, onLanguageChanged: () -> Unit) {
                 Screen.SETTINGS -> SettingsScreen(
                     deps = deps,
                     onBack = { screen = Screen.HOME },
+                    onOpenProfile = { screen = Screen.PROFILE },
                     onOpenPrivacy = { screen = Screen.PRIVACY },
                     onOpenDiagnostics = { screen = Screen.DIAGNOSTICS },
                     onLanguageChanged = onLanguageChanged,
                 )
+                Screen.PROFILE -> {
+                    // Refresh the Settings card photo when coming back.
+                    ProfileScreen(
+                        deps = deps,
+                        onBack = { screen = Screen.SETTINGS },
+                    )
+                }
                 Screen.PRIVACY -> PrivacyScreen(onBack = { screen = Screen.SETTINGS })
                 Screen.DIAGNOSTICS -> DiagnosticsScreen(onBack = { screen = Screen.SETTINGS })
                 Screen.MESSAGES -> MessagesScreen(

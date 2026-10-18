@@ -72,6 +72,8 @@ fun StatusHeader(
     // identity — the peer name alone is spoofable (see SECURITY.md).
     peerFingerprint: String? = null,
     peerTrusted: Boolean = false,
+    /** Stored peer profile photo (PROFILE exchange); null when unknown. */
+    peerAvatarPath: String? = null,
 ) {
     val (text, color) = when (phase) {
         SessionManager.Phase.IDLE -> stringResource(R.string.status_idle) to HamSedaColors.NavySoft
@@ -123,6 +125,13 @@ fun StatusHeader(
                 }
             }
             if (phase == SessionManager.Phase.IN_SESSION && peerName.isNotBlank()) {
+                // Peer avatar from the PROFILE exchange (photo or initial).
+                PeerAvatar(
+                    name = peerName,
+                    photoPath = peerAvatarPath,
+                    size = 46.dp,
+                )
+                Spacer(Modifier.width(10.dp))
                 Column(horizontalAlignment = Alignment.End) {
                     Text(
                         text = stringResource(R.string.connected_to),

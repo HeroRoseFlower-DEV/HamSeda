@@ -120,4 +120,20 @@ class MessageDaoTest {
         dao.markPeerRead("peer1")
         assertTrue(dao.observeUnread().first().isEmpty())
     }
+
+    @Test
+    fun peer_upsertAndObserve() = runTest {
+        val fp = "aa".repeat(32)
+        dao.upsertPeer(PeerEntity(fingerprint = fp, displayName = "Ali"))
+        val got = dao.getPeer(fp)
+        assertEquals("Ali", got?.displayName)
+        // Latest received name wins (REPLACE).
+        dao.upsertPeer(PeerEntity(fingerprint = fp, displayName = "Ali R."))
+        assertEquals("Ali R.", dao.getPeer(fp)?.displayName)
+        // Denormalized message names follow the profile.
+        dao.insertOutgoing(msg("m9", peerId = fp), OutboxEntity("m9"))
+        dao.updatePeerName(fp, "Ali R.")
+        val conv = dao.observeConversation(fp).first()
+        assertTrue(conv.all { it.peerName == "Ali R." })
+    }
 }

@@ -7,7 +7,9 @@ import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.hamseda.walkie.proto.CodecId
+import com.hamseda.walkie.proto.Protocol
 import com.hamseda.walkie.transport.TransportPreference
+import com.hamseda.walkie.util.takeUtf8Bytes
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -44,6 +46,7 @@ class SettingsRepository(private val context: Context) {
         val THEME = stringPreferencesKey("theme_mode")
         val LANGUAGE = stringPreferencesKey("language")
         val READ_RECEIPTS = booleanPreferencesKey("read_receipts")
+        val PROFILE_NAME = stringPreferencesKey("profile_name")
     }
 
     val transportPreferenceFlow: Flow<TransportPreference> =
@@ -79,6 +82,13 @@ class SettingsRepository(private val context: Context) {
     val readReceiptsFlow: Flow<Boolean> =
         context.dataStore.data.map { it[Keys.READ_RECEIPTS] ?: true }
 
+    /**
+     * The user's own display name, shared with peers over the sealed
+     * control channel on session setup. Empty = not set.
+     */
+    val profileNameFlow: Flow<String> =
+        context.dataStore.data.map { it[Keys.PROFILE_NAME] ?: "" }
+
     suspend fun transportPreference(): TransportPreference = transportPreferenceFlow.first()
     suspend fun codecPref(): Byte = codecPrefFlow.first()
 
@@ -109,5 +119,15 @@ class SettingsRepository(private val context: Context) {
 
     suspend fun setReadReceipts(v: Boolean) {
         context.dataStore.edit { it[Keys.READ_RECEIPTS] = v }
+    }
+
+    /**
+     * Profile display name; trimmed, max 64 UTF-8 bytes (the wire limit —
+     * a 64-char Persian name is 128 bytes, so this must be byte-based).
+     */
+    suspend fun setProfileName(v: String) {
+        context.dataStore.edit {
+            it[Keys.PROFILE_NAME] = v.trim().takeUtf8Bytes(Protocol.PROFILE_MAX_NAME_BYTES)
+        }
     }
 }

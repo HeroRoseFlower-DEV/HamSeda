@@ -58,6 +58,29 @@ object Protocol {
     const val MSG_REASSEMBLY_TIMEOUT_MS = 10 * 60 * 1000L
 
     /**
+     * Profile exchange framing. PROFILE payload = nameLen(1) + nameUtf8
+     * (0..64) + photoSha256(32; all zeros when no photo is set).
+     */
+    const val PROFILE_MAX_NAME_BYTES = 64
+    const val PROFILE_HASH_BYTES = 32
+    /** Smallest PROFILE payload: nameLen(1) + empty name + hash(32). */
+    const val PROFILE_MIN_BYTES = 1 + PROFILE_HASH_BYTES
+    /** Largest PROFILE payload: nameLen(1) + 64-byte name + hash(32). */
+    const val PROFILE_MAX_BYTES = 1 + PROFILE_MAX_NAME_BYTES + PROFILE_HASH_BYTES
+
+    /**
+     * Profile photo transfer. Reuses the 4 KiB chunk pattern: each
+     * PROFILE_PHOTO frame carries photoId(16) + index(4) + total(4) + up to
+     * 3976 bytes of JPEG. Cap is derived from the chunk geometry so a
+     * max-size photo always fits in <= 12 frames (cheap on both
+     * transports); larger photos are downscaled before sending.
+     */
+    const val PROFILE_PHOTO_HEADER_BYTES = 24
+    const val PROFILE_PHOTO_MAX_CHUNKS = 12
+    const val PROFILE_PHOTO_MAX_BYTES =
+        PROFILE_PHOTO_MAX_CHUNKS * (MSG_CHUNK_PLAINTEXT - PROFILE_PHOTO_HEADER_BYTES)
+
+    /**
      * HS-08: wall-clock skew is no longer enforced. The frame timestamp is
      * diagnostic metadata only; authentication and anti-replay rely on
      * AEAD + sequence numbers + session binding. Kept for documentation.
@@ -139,12 +162,17 @@ object MessageType {
     const val TYPING: Byte = 0x53
     const val CHUNK: Byte = 0x54
     const val MSG_HELLO: Byte = 0x55
+    // --- user profile exchange (name + photo). Same sealed control
+    // channel as the messaging frames above; never plaintext.
+    const val PROFILE: Byte = 0x56
+    const val PROFILE_PHOTO: Byte = 0x57
 
     fun isKnown(type: Byte): Boolean = type in setOf(
         HELLO, KEY_EXCHANGE, KEY_CONFIRM, SAS_CONFIRM, KEY_COMMIT, AUDIO,
         FLOOR_REQUEST, FLOOR_GRANT, FLOOR_RELEASE, FLOOR_DENY,
         PING, PONG, DISCONNECT, ERROR,
-        MSG, MSG_ACK, MSG_READ, TYPING, CHUNK, MSG_HELLO
+        MSG, MSG_ACK, MSG_READ, TYPING, CHUNK, MSG_HELLO,
+        PROFILE, PROFILE_PHOTO
     )
 
     /** Message types whose payload is sent in cleartext (handshake only). */

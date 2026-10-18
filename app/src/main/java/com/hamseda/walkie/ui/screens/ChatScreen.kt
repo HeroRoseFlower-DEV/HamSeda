@@ -1,12 +1,8 @@
 package com.hamseda.walkie.ui.screens
 
-import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -15,8 +11,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -28,12 +23,13 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
@@ -46,11 +42,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -58,20 +55,22 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.hamseda.walkie.R
 import com.hamseda.walkie.data.msg.MessageState
 import com.hamseda.walkie.messaging.MessagingEngine
-import com.hamseda.walkie.ui.components.HamSedaTopBar
-import com.hamseda.walkie.ui.theme.MessagingColors
+import com.hamseda.walkie.ui.components.PeerAvatar
+import com.hamseda.walkie.ui.theme.TelegramColors
 import com.hamseda.walkie.ui.vm.ChatViewModel
 import com.hamseda.walkie.ui.vm.ChatVmFactory
 import com.hamseda.walkie.ui.vm.VmDeps
 import com.hamseda.walkie.util.toFaDigits
 import java.text.SimpleDateFormat
+import java.util.Calendar
 import java.util.Date
+import java.util.Locale
 
 /**
- * One chat thread. Violet identity: gradient own-bubbles, soft peer
- * bubbles, bouncing typing dots, tick states. Fully RTL.
+ * One chat thread, Telegram-style: light-green own bubbles with tails,
+ * white peer bubbles, in-bubble timestamps, date dividers, header with
+ * avatar + name + status. Fully RTL, dark-mode aware.
  */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChatScreen(
     deps: VmDeps,
@@ -82,38 +81,41 @@ fun ChatScreen(
     val messages by vm.messages.collectAsStateWithLifecycle()
     val peerTyping by vm.peerTyping.collectAsStateWithLifecycle()
     val online by vm.online.collectAsStateWithLifecycle()
+    val peerProfile by vm.peerProfile.collectAsStateWithLifecycle()
     val peerName by vm.peerName.collectAsStateWithLifecycle()
-    val dark = androidx.compose.foundation.isSystemInDarkTheme()
+    val dark = isSystemInDarkTheme()
     val listState = rememberLazyListState()
+
+    val displayName = peerProfile?.displayName?.takeIf { it.isNotEmpty() } ?: peerName
 
     // New arrivals while open count as read (drives read receipts).
     LaunchedEffect(messages.size) {
-        if (messages.isNotEmpty()) vm.onMessagesVisible()
-        if (messages.isNotEmpty()) listState.animateScrollToItem(0)
+        if (messages.isNotEmpty()) {
+            vm.onMessagesVisible()
+            listState.animateScrollToItem(0)
+        }
     }
+
+    val chatBg = if (dark) TelegramColors.ChatBackgroundDark else TelegramColors.ChatBackgroundLight
+    val headerBg = if (dark) TelegramColors.InputBarDark else Color.White
 
     Scaffold(
         topBar = {
-            HamSedaTopBar(
-                title = peerName,
-                onBack = onBack,
-                actions = {
-                    val status = when {
-                        peerTyping -> stringResource(R.string.msg_typing)
-                        online -> stringResource(R.string.msg_online)
-                        else -> stringResource(R.string.msg_offline)
-                    }
-                    Text(
-                        text = status,
-                        style = MaterialTheme.typography.labelLarge,
-                        color = if (peerTyping) MessagingColors.VioletPrimary
-                        else MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(end = 16.dp),
-                    )
+            TelegramChatHeader(
+                name = displayName,
+                photoPath = peerProfile?.photoPath,
+                status = when {
+                    peerTyping -> stringResource(R.string.msg_typing_full)
+                    online -> stringResource(R.string.msg_online)
+                    else -> lastSeenText(peerProfile?.lastSeen ?: 0L)
                 },
+                statusAccent = peerTyping || online,
+                onBack = onBack,
+                dark = dark,
+                backgroundColor = headerBg,
             )
         },
-        containerColor = MaterialTheme.colorScheme.background,
+        containerColor = chatBg,
     ) { padding ->
         Column(
             modifier = Modifier
@@ -121,125 +123,99 @@ fun ChatScreen(
                 .padding(padding),
         ) {
             if (!online) {
-                OfflineStrip()
+                TelegramOfflineStrip(dark = dark)
             }
-            val reversed = remember(messages) { messages.reversed() }
+            val locale = androidx.compose.ui.text.intl.Locale.current.platformLocale
+            val todayLabel = stringResource(R.string.msg_today)
+            val yesterdayLabel = stringResource(R.string.msg_yesterday)
+            val chatItems = remember(messages, todayLabel, yesterdayLabel, locale) {
+                withDateDividers(messages, todayLabel, yesterdayLabel, locale)
+            }
             LazyColumn(
                 state = listState,
                 reverseLayout = true,
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth(),
-                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-                if (peerTyping) {
-                    item(key = "typing") {
-                        TypingBubble()
+                items(chatItems, key = { it.key }) { item ->
+                    when (item) {
+                        is ChatItem.Divider -> DateDivider(label = item.label, dark = dark)
+                        is ChatItem.Msg -> TelegramBubble(msg = item.msg, dark = dark)
                     }
                 }
-                items(reversed, key = { it.id }) { msg ->
-                    MessageBubble(msg = msg, dark = dark)
-                }
             }
-            MessageInput(
+            TelegramInput(
                 onSend = { vm.send(it); vm.onTyping(false) },
                 onTyping = { vm.onTyping(it) },
+                dark = dark,
             )
         }
     }
 }
 
 @Composable
-private fun OfflineStrip() {
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f))
-            .padding(vertical = 6.dp),
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(
-            text = stringResource(R.string.msg_offline_banner),
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+private fun lastSeenText(lastSeen: Long): String {
+    if (lastSeen <= 0L) return stringResource(R.string.msg_offline)
+    val locale = androidx.compose.ui.text.intl.Locale.current.platformLocale
+    val now = Calendar.getInstance()
+    val then = Calendar.getInstance().apply { timeInMillis = lastSeen }
+    val sameDay = now.get(Calendar.YEAR) == then.get(Calendar.YEAR) &&
+        now.get(Calendar.DAY_OF_YEAR) == then.get(Calendar.DAY_OF_YEAR)
+    val label = if (sameDay) {
+        SimpleDateFormat("HH:mm", locale).format(Date(lastSeen)).toFaDigits()
+    } else {
+        SimpleDateFormat("d MMM", locale).format(Date(lastSeen)).toFaDigits()
     }
+    return stringResource(R.string.profile_last_seen, label)
 }
 
 @Composable
-private fun MessageBubble(
-    msg: MessagingEngine.MessageView,
+private fun TelegramChatHeader(
+    name: String,
+    photoPath: String?,
+    status: String,
+    statusAccent: Boolean,
+    onBack: () -> Unit,
     dark: Boolean,
+    backgroundColor: Color,
 ) {
-    val locale = androidx.compose.ui.text.intl.Locale.current.platformLocale
-    val time = remember(msg.timestamp, locale) {
-        SimpleDateFormat("HH:mm", locale)
-            .format(Date(msg.timestamp)).toFaDigits()
-    }
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = if (msg.isFromMe) Arrangement.End else Arrangement.Start,
+    Surface(
+        color = backgroundColor,
+        shadowElevation = 2.dp,
     ) {
-        Column(
-            horizontalAlignment = if (msg.isFromMe) Alignment.End else Alignment.Start,
-            modifier = Modifier.fillMaxWidth(0.82f),
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 4.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            val bubbleModifier = if (msg.isFromMe) {
-                Modifier
-                    .clip(RoundedCornerShape(20.dp, 20.dp, 6.dp, 20.dp))
-                    .background(
-                        Brush.linearGradient(
-                            listOf(
-                                MessagingColors.VioletPrimary,
-                                MessagingColors.VioletDeep,
-                            ),
-                        ),
-                    )
-            } else {
-                Modifier
-                    .clip(RoundedCornerShape(20.dp, 20.dp, 20.dp, 6.dp))
-                    .background(
-                        if (dark) MessagingColors.VioletNightSoft
-                        else MessagingColors.VioletFaint,
-                    )
-            }
-            Box(modifier = bubbleModifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
-                Text(
-                    text = msg.body,
-                    color = if (msg.isFromMe) MessagingColors.VioletInk
-                    else MaterialTheme.colorScheme.onSurface,
-                    style = MaterialTheme.typography.bodyLarge,
-                    fontSize = 16.sp,
+            IconButton(onClick = onBack) {
+                Icon(
+                    Icons.AutoMirrored.Filled.ArrowBack,
+                    contentDescription = null,
+                    tint = if (dark) Color.White else Color(0xFF222222),
                 )
             }
-            Spacer(Modifier.height(3.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            PeerAvatar(name = name, photoPath = photoPath, size = 42.dp)
+            Spacer(Modifier.width(10.dp))
+            Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = time,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
-                    fontSize = 11.sp,
+                    text = name,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = if (dark) Color.White else Color(0xFF222222),
+                    maxLines = 1,
                 )
-                if (msg.isFromMe) {
-                    Spacer(Modifier.width(4.dp))
-                    DeliveryTicks(state = msg.state)
-                }
-            }
-            if (msg.isFromMe && msg.state == MessageState.QUEUED) {
                 Text(
-                    text = stringResource(R.string.msg_state_queued),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MessagingColors.VioletPrimary,
-                    fontSize = 11.sp,
-                )
-            }
-            if (msg.isFromMe && msg.state == MessageState.FAILED) {
-                Text(
-                    text = stringResource(R.string.msg_state_failed),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.error,
-                    fontSize = 11.sp,
+                    text = status,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (statusAccent) TelegramColors.SendButton
+                    else if (dark) TelegramColors.TimeInBubbleDark
+                    else TelegramColors.TimeInBubbleLight,
+                    maxLines = 1,
                 )
             }
         }
@@ -247,13 +223,209 @@ private fun MessageBubble(
 }
 
 @Composable
-private fun DeliveryTicks(state: Int) {
-    val dark = androidx.compose.foundation.isSystemInDarkTheme()
+private fun TelegramOfflineStrip(dark: Boolean) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(
+                if (dark) TelegramColors.DateDividerBgDark
+                else TelegramColors.DateDividerBgLight,
+            )
+            .padding(vertical = 5.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = stringResource(R.string.msg_offline_banner),
+            style = MaterialTheme.typography.labelMedium,
+            color = if (dark) TelegramColors.DateDividerTextDark
+            else TelegramColors.DateDividerTextLight,
+        )
+    }
+}
+
+// ------------------------------------------------------------ date dividers
+
+private sealed interface ChatItem {
+    val key: String
+    data class Divider(val label: String) : ChatItem {
+        override val key: String = "div-$label"
+    }
+    data class Msg(val msg: MessagingEngine.MessageView) : ChatItem {
+        override val key: String = "msg-${msg.id}"
+    }
+}
+
+/** Newest-first message list with day divider items inserted. */
+private fun withDateDividers(
+    messages: List<MessagingEngine.MessageView>,
+    todayLabel: String,
+    yesterdayLabel: String,
+    locale: Locale,
+): List<ChatItem> {
+    // messages arrive oldest-first; reverse for the reversed LazyColumn.
+    val reversed = messages.reversed()
+    val out = ArrayList<ChatItem>(reversed.size + 4)
+    var lastDay: String? = null
+    for (m in reversed) {
+        val day = dayKey(m.timestamp)
+        if (day != lastDay) {
+            out.add(ChatItem.Divider(dayLabel(m.timestamp, todayLabel, yesterdayLabel, locale)))
+            lastDay = day
+        }
+        out.add(ChatItem.Msg(m))
+    }
+    return out
+}
+
+private fun dayKey(ts: Long): String {
+    val c = Calendar.getInstance().apply { timeInMillis = ts }
+    return "${c.get(Calendar.YEAR)}-${c.get(Calendar.DAY_OF_YEAR)}"
+}
+
+private fun dayLabel(ts: Long, todayLabel: String, yesterdayLabel: String, locale: Locale): String {
+    val now = Calendar.getInstance()
+    val then = Calendar.getInstance().apply { timeInMillis = ts }
+    val sameDay = now.get(Calendar.YEAR) == then.get(Calendar.YEAR) &&
+        now.get(Calendar.DAY_OF_YEAR) == then.get(Calendar.DAY_OF_YEAR)
+    if (sameDay) return todayLabel
+    val y = Calendar.getInstance().apply { add(Calendar.DAY_OF_YEAR, -1) }
+    val yesterday = y.get(Calendar.YEAR) == then.get(Calendar.YEAR) &&
+        y.get(Calendar.DAY_OF_YEAR) == then.get(Calendar.DAY_OF_YEAR)
+    if (yesterday) return yesterdayLabel
+    return SimpleDateFormat("d MMMM", locale).format(Date(ts)).toFaDigits()
+}
+
+@Composable
+private fun DateDivider(label: String, dark: Boolean) {
+    Box(
+        modifier = Modifier.fillMaxWidth(),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = label,
+            modifier = Modifier
+                .clip(RoundedCornerShape(12.dp))
+                .background(
+                    if (dark) TelegramColors.DateDividerBgDark
+                    else TelegramColors.DateDividerBgLight,
+                )
+                .padding(horizontal = 12.dp, vertical = 4.dp),
+            style = MaterialTheme.typography.labelMedium,
+            color = if (dark) TelegramColors.DateDividerTextDark
+            else TelegramColors.DateDividerTextLight,
+            fontSize = 12.sp,
+        )
+    }
+}
+
+// ------------------------------------------------------------------ bubbles
+
+@Composable
+private fun TelegramBubble(
+    msg: MessagingEngine.MessageView,
+    dark: Boolean,
+) {
+    val locale = androidx.compose.ui.text.intl.Locale.current.platformLocale
+    val time = remember(msg.timestamp, locale) {
+        SimpleDateFormat("HH:mm", locale).format(Date(msg.timestamp)).toFaDigits()
+    }
+    val isMe = msg.isFromMe
+    val bg = when {
+        isMe && dark -> TelegramColors.OutgoingBubbleDark
+        isMe -> TelegramColors.OutgoingBubbleLight
+        dark -> TelegramColors.IncomingBubbleDark
+        else -> TelegramColors.IncomingBubbleLight
+    }
+    val textColor = when {
+        isMe && dark -> TelegramColors.OutgoingTextDark
+        isMe -> TelegramColors.OutgoingTextLight
+        dark -> TelegramColors.IncomingTextDark
+        else -> TelegramColors.IncomingTextLight
+    }
+    // Tail sits on the outer edge: BottomEnd for own, BottomStart for peer
+    // (correct in both LTR and RTL).
+    val tailAlign = if (isMe) Alignment.BottomEnd else Alignment.BottomStart
+    val corners = if (isMe) {
+        RoundedCornerShape(14.dp, 14.dp, 4.dp, 14.dp)
+    } else {
+        RoundedCornerShape(14.dp, 14.dp, 14.dp, 4.dp)
+    }
+
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = if (isMe) Arrangement.End else Arrangement.Start,
+    ) {
+        Box(modifier = Modifier.fillMaxWidth(0.78f)) {
+            Box(
+                modifier = Modifier
+                    .clip(corners)
+                    .background(bg)
+                    .padding(start = 10.dp, end = 10.dp, top = 7.dp, bottom = 5.dp),
+            ) {
+                Column {
+                    Text(
+                        text = msg.body,
+                        color = textColor,
+                        style = MaterialTheme.typography.bodyLarge,
+                        fontSize = 16.sp,
+                    )
+                    Row(
+                        modifier = Modifier.align(Alignment.End),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        if (isMe && (msg.state == MessageState.QUEUED || msg.state == MessageState.FAILED)) {
+                            Text(
+                                text = stringResource(
+                                    if (msg.state == MessageState.QUEUED) R.string.msg_state_queued
+                                    else R.string.msg_state_failed,
+                                ),
+                                fontSize = 10.sp,
+                                color = if (msg.state == MessageState.FAILED) MaterialTheme.colorScheme.error
+                                else TelegramColors.TimeInBubbleLight,
+                            )
+                            Spacer(Modifier.width(4.dp))
+                        }
+                        Text(
+                            text = time,
+                            fontSize = 11.sp,
+                            color = if (dark) TelegramColors.TimeInBubbleDark
+                            else TelegramColors.TimeInBubbleLight,
+                        )
+                        if (isMe && msg.state >= MessageState.SENT) {
+                            Spacer(Modifier.width(3.dp))
+                            TelegramTicks(state = msg.state, dark = dark)
+                        }
+                    }
+                }
+            }
+            // Tail triangle overlapping the bubble's outer bottom corner.
+            Canvas(
+                modifier = Modifier
+                    .size(9.dp)
+                    .align(tailAlign),
+            ) {
+                val w = size.width
+                val h = size.height
+                val path = Path().apply {
+                    if (isMe) {
+                        // Tail on the outer (end) edge, pointing down-out.
+                        moveTo(0f, 0f); lineTo(w, 0f); lineTo(w, h); close()
+                    } else {
+                        moveTo(w, 0f); lineTo(0f, 0f); lineTo(0f, h); close()
+                    }
+                }
+                drawPath(path, bg)
+            }
+        }
+    }
+}
+
+@Composable
+private fun TelegramTicks(state: Int, dark: Boolean) {
     val (glyph, color) = when (state) {
-        MessageState.SENT -> "✓" to MessagingColors.TickIdle
-        MessageState.DELIVERED -> "✓✓" to MessagingColors.TickIdle
-        MessageState.READ -> "✓✓" to
-            if (dark) MessagingColors.VioletBright else MessagingColors.TickRead
+        MessageState.SENT -> "✓" to TelegramColors.TickSent
+        MessageState.DELIVERED -> "✓✓" to TelegramColors.TickSent
+        MessageState.READ -> "✓✓" to TelegramColors.TickRead
         else -> "" to Color.Transparent
     }
     if (glyph.isNotEmpty()) {
@@ -266,51 +438,15 @@ private fun DeliveryTicks(state: Int) {
     }
 }
 
-@Composable
-private fun TypingBubble() {
-    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Start) {
-        Box(
-            modifier = Modifier
-                .clip(RoundedCornerShape(20.dp, 20.dp, 20.dp, 6.dp))
-                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f))
-                .padding(horizontal = 18.dp, vertical = 14.dp),
-        ) {
-            Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-                repeat(3) { i -> BouncingDot(phase = i) }
-            }
-        }
-    }
-}
+// -------------------------------------------------------------------- input
 
 @Composable
-private fun BouncingDot(phase: Int) {
-    val transition = rememberInfiniteTransition(label = "typing$phase")
-    val dy by transition.animateFloat(
-        initialValue = 0f,
-        targetValue = -5f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(420, easing = FastOutSlowInEasing, delayMillis = phase * 140),
-            repeatMode = RepeatMode.Reverse,
-        ),
-        label = "dotDy",
-    )
-    Box(
-        modifier = Modifier
-            .offset(y = dy.dp)
-            .size(8.dp)
-            .clip(CircleShape)
-            .background(MessagingColors.VioletPrimary.copy(alpha = 0.75f)),
-    )
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun MessageInput(
+private fun TelegramInput(
     onSend: (String) -> Unit,
     onTyping: (Boolean) -> Unit,
+    dark: Boolean,
 ) {
     var text by remember { mutableStateOf("") }
-    val dark = androidx.compose.foundation.isSystemInDarkTheme()
 
     fun submit() {
         val t = text.trim()
@@ -319,61 +455,62 @@ private fun MessageInput(
         text = ""
     }
 
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        TextField(
-            value = text,
-            onValueChange = {
-                text = it
-                onTyping(it.isNotBlank())
-            },
-            placeholder = { Text(stringResource(R.string.msg_input_hint)) },
-            modifier = Modifier.weight(1f),
-            shape = RoundedCornerShape(26.dp),
-            colors = TextFieldDefaults.colors(
-                focusedIndicatorColor = Color.Transparent,
-                unfocusedIndicatorColor = Color.Transparent,
-                focusedContainerColor = if (dark) MessagingColors.VioletNightSoft
-                else MessagingColors.VioletFaint,
-                unfocusedContainerColor = if (dark) MessagingColors.VioletNightSoft
-                else MessagingColors.VioletFaint,
-            ),
-            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-            keyboardActions = KeyboardActions(onSend = { submit() }),
-            maxLines = 5,
-        )
-        Spacer(Modifier.width(8.dp))
-        IconButton(
-            onClick = { submit() },
-            enabled = text.isNotBlank(),
+    val barBg = if (dark) TelegramColors.InputBarDark else TelegramColors.InputBarLight
+
+    Surface(color = barBg, shadowElevation = 4.dp) {
+        Row(
             modifier = Modifier
-                .size(52.dp)
-                .clip(CircleShape)
-                .background(
-                    if (text.isNotBlank()) {
-                        Brush.linearGradient(
-                            listOf(MessagingColors.VioletPrimary, MessagingColors.VioletDeep),
-                        )
-                    } else {
-                        Brush.linearGradient(
-                            listOf(
-                                MaterialTheme.colorScheme.surfaceVariant,
-                                MaterialTheme.colorScheme.surfaceVariant,
-                            ),
-                        )
-                    },
-                ),
+                .fillMaxWidth()
+                .imePadding()
+                .padding(horizontal = 8.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.Bottom,
         ) {
-            Icon(
-                Icons.AutoMirrored.Filled.Send,
-                contentDescription = stringResource(R.string.msg_send),
-                tint = if (text.isNotBlank()) MessagingColors.VioletInk
-                else MaterialTheme.colorScheme.onSurfaceVariant,
+            TextField(
+                value = text,
+                onValueChange = {
+                    text = it
+                    onTyping(it.isNotBlank())
+                },
+                placeholder = {
+                    Text(
+                        stringResource(R.string.msg_input_hint),
+                        color = if (dark) TelegramColors.InputHintDark
+                        else TelegramColors.InputHintLight,
+                    )
+                },
+                modifier = Modifier.weight(1f),
+                shape = RoundedCornerShape(24.dp),
+                colors = TextFieldDefaults.colors(
+                    focusedIndicatorColor = Color.Transparent,
+                    unfocusedIndicatorColor = Color.Transparent,
+                    focusedContainerColor = if (dark) TelegramColors.ChatBackgroundDark
+                    else TelegramColors.ChatBackgroundLight,
+                    unfocusedContainerColor = if (dark) TelegramColors.ChatBackgroundDark
+                    else TelegramColors.ChatBackgroundLight,
+                ),
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                keyboardActions = KeyboardActions(onSend = { submit() }),
+                maxLines = 5,
             )
+            Spacer(Modifier.width(8.dp))
+            IconButton(
+                onClick = { submit() },
+                enabled = text.isNotBlank(),
+                modifier = Modifier
+                    .size(50.dp)
+                    .clip(CircleShape)
+                    .background(
+                        if (text.isNotBlank()) TelegramColors.SendButton
+                        else (if (dark) TelegramColors.DateDividerBgDark
+                        else TelegramColors.DateDividerBgLight),
+                    ),
+            ) {
+                Icon(
+                    Icons.AutoMirrored.Filled.Send,
+                    contentDescription = stringResource(R.string.msg_send),
+                    tint = Color.White,
+                )
+            }
         }
     }
 }

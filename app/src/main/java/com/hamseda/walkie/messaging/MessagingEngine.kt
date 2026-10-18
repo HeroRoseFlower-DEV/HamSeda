@@ -2,6 +2,7 @@ package com.hamseda.walkie.messaging
 
 import android.content.Context
 import android.util.Log
+import com.hamseda.walkie.data.ProfilePhotoStore
 import com.hamseda.walkie.data.SettingsRepository
 import com.hamseda.walkie.data.msg.MessageDao
 import com.hamseda.walkie.data.msg.MessageDatabase
@@ -9,6 +10,7 @@ import com.hamseda.walkie.data.msg.MessageEntity
 import com.hamseda.walkie.data.msg.MessageState
 import com.hamseda.walkie.data.msg.OutboxEntity
 import com.hamseda.walkie.data.msg.OutboxItem
+import com.hamseda.walkie.data.msg.PeerEntity
 import com.hamseda.walkie.proto.MessageType
 import com.hamseda.walkie.proto.MessagingCodec
 import com.hamseda.walkie.proto.MsgCodecException
@@ -32,6 +34,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -58,6 +62,7 @@ class MessagingEngine(
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
 ) {
     private val dao: MessageDao = MessageDatabase.get(appContext).messageDao()
+    private val photoStore = ProfilePhotoStore(appContext)
 
     private var manager: SessionManager? = null
     private val sendMutex = Mutex()
@@ -158,6 +163,7 @@ class MessagingEngine(
                     peerLastSeenSeq = 0L
                     refreshPeerId()
                     sendHello()
+                    sendProfile()
                     drainOutbox()
                 } else {
                     _peerTyping.value = false
@@ -298,6 +304,8 @@ class MessagingEngine(
                     MessageType.MSG_READ -> onRead(MessagingCodec.decodeId(plaintext))
                     MessageType.TYPING -> onTyping(MessagingCodec.decodeTyping(plaintext))
                     MessageType.MSG_HELLO -> onHello(MessagingCodec.decodeHello(plaintext))
+                    MessageType.PROFILE -> onProfileFrame(MessagingCodec.decodeProfile(plaintext))
+                    MessageType.PROFILE_PHOTO -> onPhotoChunk(MessagingCodec.decodePhotoChunk(plaintext))
                     else -> Unit
                 }
             } catch (e: MsgCodecException) {
@@ -312,10 +320,11 @@ class MessagingEngine(
 
     private suspend fun onTextFrame(decoded: MessagingCodec.DecodedText) {
         val peerId = currentPeerId.value.ifEmpty { return }
+        val storedName = dao.getPeer(peerId)?.displayName.orEmpty()
         val entity = MessageEntity(
             id = decoded.msgId.toString(),
             peerId = peerId,
-            peerName = peerDisplayName(peerId),
+            peerName = storedName.ifEmpty { peerDisplayName(peerId) },
             isFromMe = false,
             senderSeq = decoded.senderSeq,
             body = decoded.text,
@@ -530,6 +539,182 @@ class MessagingEngine(
         if (lastSeenSeq > peerLastSeenSeq) peerLastSeenSeq = lastSeenSeq
         scope.launch { drainOutbox() }
     }
+
+    // --------------------------------------------------------------- profile
+
+    /**
+     * Sends our PROFILE (name + photo hash) on session setup, then the
+     * photo chunks if a photo is set (v1 rule: every session up, <= 12
+     * frames — cheap on both transports). All on the sealed control
+     * channel; never plaintext.
+     */
+    private fun sendProfile() {
+        scope.launch {
+            val mgr = manager ?: return@launch
+            val name = settings.profileNameFlow.first()
+            val photoBytes = photoStore.ownPhotoFile()?.readBytes()
+            val hash = if (photoBytes != null) photoStore.sha256(photoBytes)
+            else ByteArray(Protocol.PROFILE_HASH_BYTES)
+            val payload = runCatching {
+                MessagingCodec.encodeProfile(name, hash)
+            }.getOrElse {
+                Log.w(TAG, "profile encode failed", it)
+                return@launch
+            }
+            if (!mgr.sendMessagingFrame(MessageType.PROFILE, payload)) {
+                Log.w(TAG, "profile send failed")
+                return@launch
+            }
+            if (photoBytes != null) sendOwnPhoto(mgr, photoBytes)
+        }
+    }
+
+    private fun sendOwnPhoto(mgr: SessionManager, photoBytes: ByteArray) {
+        if (photoBytes.size > Protocol.PROFILE_PHOTO_MAX_BYTES) {
+            Log.w(TAG, "own photo over cap; not sent")
+            return
+        }
+        val chunks = runCatching {
+            MessagingCodec.chunkPhoto(Uuid7.generate(), photoBytes)
+        }.getOrElse {
+            Log.w(TAG, "photo chunk failed", it)
+            return
+        }
+        for (payload in chunks) {
+            if (!mgr.sendMessagingFrame(MessageType.PROFILE_PHOTO, payload)) {
+                Log.w(TAG, "photo chunk send failed; stopping")
+                return
+            }
+        }
+    }
+
+    /**
+     * PROFILE receipt: TOFU — first-seen peer is saved; the latest received
+     * name always wins. Photo bytes arrive separately and are only stored
+     * after hash verification (see [onPhotoChunk]).
+     */
+    private suspend fun onProfileFrame(profile: MessagingCodec.DecodedProfile) {
+        val peerId = currentPeerId.value.ifEmpty { return }
+        val now = System.currentTimeMillis()
+        val existing = dao.getPeer(peerId)
+        val hashChanged = existing == null ||
+            !existing.photoHash.contentEquals(profile.photoHash)
+        if (hashChanged && !profile.hasPhoto) {
+            // Peer removed their photo: drop the stale file.
+            photoStore.removePeerPhoto(peerId)
+        }
+        dao.upsertPeer(
+            PeerEntity(
+                fingerprint = peerId,
+                displayName = profile.name,
+                photoHash = profile.photoHash,
+                photoPath = if (hashChanged) null else existing?.photoPath,
+                lastSeen = now,
+            ),
+        )
+        // Keep the denormalized names on past messages in sync.
+        dao.updatePeerName(peerId, profile.name)
+        refreshPeerProfile()
+    }
+
+    private data class PhotoReassembly(
+        val total: Int,
+        val parts: Array<ByteArray?>,
+        val expectedHash: ByteArray,
+        var deadline: Long,
+    )
+
+    private val photoReassembly = ConcurrentHashMap<String, PhotoReassembly>()
+
+    /**
+     * PROFILE_PHOTO chunk receipt. Reassembles with a 10-minute deadline;
+     * on completion verifies SHA-256 against the hash from the peer's
+     * PROFILE frame before saving to app-private storage.
+     */
+    private suspend fun onPhotoChunk(chunk: MessagingCodec.DecodedPhotoChunk) {
+        val peerId = currentPeerId.value.ifEmpty { return }
+        val peer = dao.getPeer(peerId) ?: return
+        val key = "${peerId}:${chunk.photoId}"
+        val now = System.currentTimeMillis()
+        photoReassembly.entries.removeIf { it.value.deadline < now }
+        val state = photoReassembly.getOrPut(key) {
+            PhotoReassembly(
+                total = chunk.total,
+                parts = arrayOfNulls(chunk.total),
+                expectedHash = peer.photoHash.copyOf(),
+                deadline = now + Protocol.MSG_REASSEMBLY_TIMEOUT_MS,
+            )
+        }
+        if (state.total != chunk.total) {
+            photoReassembly.remove(key)
+            return
+        }
+        state.parts[chunk.index] = chunk.bytes
+        state.deadline = now + Protocol.MSG_REASSEMBLY_TIMEOUT_MS
+        if (state.parts.all { it != null }) {
+            photoReassembly.remove(key)
+            var size = 0
+            for (p in state.parts) size += p!!.size
+            if (size > Protocol.PROFILE_PHOTO_MAX_BYTES) return
+            val bytes = ByteArray(size)
+            var off = 0
+            for (p in state.parts) {
+                p!!.copyInto(bytes, off)
+                off += p.size
+            }
+            val file = photoStore.savePeerPhoto(peerId, bytes, state.expectedHash)
+            if (file != null) {
+                dao.upsertPeer(peer.copy(photoPath = file.absolutePath, lastSeen = now))
+                refreshPeerProfile()
+            }
+        }
+    }
+
+    // --------------------------------------------------------- peer profile
+
+    /** UI-facing peer profile: stored name + photo + online state. */
+    data class PeerProfile(
+        val fingerprint: String,
+        val displayName: String,
+        val photoPath: String?,
+        val online: Boolean,
+        val lastSeen: Long,
+    )
+
+    private val peerProfileTick = MutableStateFlow(0L)
+
+    private fun refreshPeerProfile() {
+        peerProfileTick.value = System.currentTimeMillis()
+    }
+
+    /**
+     * Observes the stored profile for [fingerprint], enriched with live
+     * online state. Emits null when the peer was never seen.
+     */
+    fun observePeerProfile(fingerprint: String): Flow<PeerProfile?> =
+        combine(
+            dao.observePeer(fingerprint),
+            _online,
+            currentPeerId,
+            peerProfileTick,
+        ) { entity, online, liveId, _ ->
+            entity?.let {
+                PeerProfile(
+                    fingerprint = it.fingerprint,
+                    displayName = it.displayName,
+                    photoPath = it.photoPath,
+                    online = online && liveId == it.fingerprint,
+                    lastSeen = it.lastSeen,
+                )
+            }
+        }
+
+    /** Live peer's profile (for the walkie-talkie header). */
+    val livePeerProfile: Flow<PeerProfile?> =
+        currentPeerId.flatMapLatest { id ->
+            if (id.isEmpty()) flowOf(null)
+            else observePeerProfile(id)
+        }
 
     // ---------------------------------------------------------------- helpers
 

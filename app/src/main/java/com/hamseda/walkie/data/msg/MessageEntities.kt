@@ -77,3 +77,36 @@ data class InboxEntity(
     @PrimaryKey val msgId: String,
     val seenAt: Long = System.currentTimeMillis(),
 )
+
+/**
+ * Known peers, keyed by identity fingerprint (TOFU). The display name and
+ * photo arrive over the sealed control channel via PROFILE frames; the
+ * latest received name wins. `photoHash` is the SHA-256 advertised in the
+ * latest PROFILE frame (zeros = no photo); `photoPath` is the app-private
+ * file of the verified photo, if any.
+ */
+@Entity(tableName = "peers")
+data class PeerEntity(
+    @PrimaryKey val fingerprint: String,
+    val displayName: String = "",
+    val photoHash: ByteArray = ByteArray(0),
+    val photoPath: String? = null,
+    val lastSeen: Long = System.currentTimeMillis(),
+) {
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is PeerEntity) return false
+        return fingerprint == other.fingerprint && displayName == other.displayName &&
+            photoHash.contentEquals(other.photoHash) && photoPath == other.photoPath &&
+            lastSeen == other.lastSeen
+    }
+
+    override fun hashCode(): Int {
+        var r = fingerprint.hashCode()
+        r = 31 * r + displayName.hashCode()
+        r = 31 * r + photoHash.contentHashCode()
+        r = 31 * r + (photoPath?.hashCode() ?: 0)
+        r = 31 * r + lastSeen.hashCode()
+        return r
+    }
+}

@@ -197,4 +197,15 @@
     <string name="msg_no_peer">اول به یک همتا وصل شو، بعد برگرد برای چت.</string>
     <string name="settings_read_receipts">رسید خواندن</string>
     <string name="settings_read_receipts_desc">همتا بفهمه پیام‌هاش رو خوندی. رسید فقط وقتی ارسال می‌شه که صفحهٔ گفتگو باز باشه.</string>
+    <string name="msg_typing_full">در حال نوشتن…</string>
+    <string name="profile_title">پروفایل</string>
+    <string name="profile_name_label">نام نمایشی</string>
+    <string name="profile_name_hint">نام شما</string>
+    <string name="profile_save">ذخیره</string>
+    <string name="profile_saved">ذخیره شد</string>
+    <string name="profile_pick_photo">انتخاب عکس</string>
+    <string name="profile_remove_photo">حذف عکس</string>
+    <string name="profile_desc">نام و عکس شما هنگام اتصال، به‌صورت رمزنگاری‌شده برای همتا ارسال می‌شود و هیچ‌جا آپلود نمی‌شود.</string>
+    <string name="profile_last_seen">آخرین بازدید %1$s</string>
+    <string name="settings_profile_desc">نام و عکسی که با همتا به اشتراک گذاشته می‌شود</string>
 </resources>

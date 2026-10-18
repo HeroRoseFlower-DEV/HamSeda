@@ -6,6 +6,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.hamseda.walkie.crypto.PeerIdentityStore
 import com.hamseda.walkie.crypto.TrustedPeerIdentity
+import com.hamseda.walkie.data.ProfilePhotoStore
 import com.hamseda.walkie.data.SettingsRepository
 import com.hamseda.walkie.messaging.MessagingEngine
 import com.hamseda.walkie.proto.CodecId
@@ -28,6 +29,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
@@ -53,6 +55,10 @@ class HomeViewModel(private val deps: VmDeps) : ViewModel() {
      * skip-SAS path still surfaces a cryptographic identity (finding 7). */
     val peerIdentityFingerprint = deps.manager.peerIdentityFingerprint
     val peerIdentityTrusted = deps.manager.peerIdentityTrusted
+    /** Stored peer profile (name + photo from PROFILE exchange), if any. */
+    val livePeerProfile: StateFlow<MessagingEngine.PeerProfile?> =
+        deps.messaging.livePeerProfile
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
     /** Exposed so the screen does not reach past the VM into SettingsRepository. */
     val vibrationEnabled: StateFlow<Boolean> = deps.settings.vibrationFlow
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
@@ -231,6 +237,18 @@ class SettingsViewModel(private val deps: VmDeps) : ViewModel() {
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
     val readReceipts = deps.settings.readReceiptsFlow
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
+    /** Own profile, surfaced as the entry card at the top of Settings. */
+    val profileName = deps.settings.profileNameFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), "")
+    private val photoStore = ProfilePhotoStore(deps.appContext)
+    private val _photoTick = MutableStateFlow(0L)
+    val profilePhotoPath: StateFlow<String?> = _photoTick
+        .map { photoStore.ownPhotoFile()?.absolutePath }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    fun refreshProfilePhoto() {
+        _photoTick.value = System.currentTimeMillis()
+    }
     val theme = deps.settings.themeFlow
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SettingsRepository.ThemeMode.SYSTEM)
     val language = deps.settings.languageFlow
@@ -313,6 +331,7 @@ class VmFactory(private val deps: VmDeps) : ViewModelProvider.Factory {
         modelClass.isAssignableFrom(PairingViewModel::class.java) -> PairingViewModel(deps)
         modelClass.isAssignableFrom(SettingsViewModel::class.java) -> SettingsViewModel(deps)
         modelClass.isAssignableFrom(MessagesViewModel::class.java) -> MessagesViewModel(deps)
+        modelClass.isAssignableFrom(ProfileViewModel::class.java) -> ProfileViewModel(deps)
         else -> throw IllegalArgumentException("unknown VM ${modelClass.name}")
     } as T
 }

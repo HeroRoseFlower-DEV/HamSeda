@@ -18,6 +18,8 @@ import java.util.UUID
  * MSG_READ:  msgId(16)
  * TYPING:    state(1)            // 0 = stopped, 1 = typing
  * MSG_HELLO: lastSeenSeq(8)
+ * PROFILE:   nameLen(1) | nameUtf8(0..64) | photoSha256(32; zeros if no photo)
+ * PROFILE_PHOTO: photoId(16) | index(4) | total(4) | jpegBytes  // <= 12 chunks
  * ```
  *
  * Size rules (anti-DoS, mirrored in [Protocol]):
@@ -125,6 +127,94 @@ object MessagingCodec {
         return ByteBuffer.wrap(payload).order(ByteOrder.BIG_ENDIAN).long
     }
 
+    // ---------------------------------------------------------------- PROFILE
+
+    /**
+     * Encodes a PROFILE payload. @throws IllegalArgumentException when the
+     * name is over [Protocol.PROFILE_MAX_NAME_BYTES] UTF-8 bytes or the hash
+     * is not exactly [Protocol.PROFILE_HASH_BYTES] bytes.
+     */
+    fun encodeProfile(name: String, photoSha256: ByteArray): ByteArray {
+        val nameBytes = name.toByteArray(Charsets.UTF_8)
+        require(nameBytes.size <= Protocol.PROFILE_MAX_NAME_BYTES) {
+            "profile name too large: ${nameBytes.size}"
+        }
+        require(photoSha256.size == Protocol.PROFILE_HASH_BYTES) {
+            "photo hash must be ${Protocol.PROFILE_HASH_BYTES} bytes"
+        }
+        val buf = ByteBuffer.allocate(1 + nameBytes.size + photoSha256.size)
+            .order(ByteOrder.BIG_ENDIAN)
+        buf.put(nameBytes.size.toByte())
+        buf.put(nameBytes)
+        buf.put(photoSha256)
+        return buf.array()
+    }
+
+    /** Decodes a PROFILE payload. */
+    fun decodeProfile(payload: ByteArray): DecodedProfile {
+        if (payload.size < Protocol.PROFILE_MIN_BYTES ||
+            payload.size > Protocol.PROFILE_MAX_BYTES
+        ) {
+            throw MsgCodecException("bad profile payload size: ${payload.size}")
+        }
+        val nameLen = payload[0].toInt() and 0xFF
+        if (1 + nameLen + Protocol.PROFILE_HASH_BYTES != payload.size) {
+            throw MsgCodecException("profile name length mismatch")
+        }
+        val name = payload.copyOfRange(1, 1 + nameLen).toString(Charsets.UTF_8)
+        val hash = payload.copyOfRange(1 + nameLen, payload.size)
+        return DecodedProfile(name, hash)
+    }
+
+    // ---------------------------------------------------------- PROFILE_PHOTO
+
+    /**
+     * Splits JPEG photo bytes into PROFILE_PHOTO chunk payloads, reusing the
+     * 4 KiB chunk pattern. The photoId lets the receiver reassemble photo
+     * chunks in the same map as text chunks without collision.
+     * @throws IllegalArgumentException when over [Protocol.PROFILE_PHOTO_MAX_BYTES].
+     */
+    fun chunkPhoto(photoId: UUID, photoBytes: ByteArray): List<ByteArray> {
+        check(PhotoChunkHeader.SIZE == Protocol.PROFILE_PHOTO_HEADER_BYTES) {
+            "photo chunk header size drifted from Protocol constant"
+        }
+        require(photoBytes.isNotEmpty()) { "cannot chunk empty photo" }
+        require(photoBytes.size <= Protocol.PROFILE_PHOTO_MAX_BYTES) {
+            "photo exceeds ${Protocol.PROFILE_PHOTO_MAX_BYTES} bytes: ${photoBytes.size}"
+        }
+        val perChunk = Protocol.MSG_CHUNK_PLAINTEXT - PhotoChunkHeader.SIZE
+        val total = (photoBytes.size + perChunk - 1) / perChunk
+        require(total <= Protocol.PROFILE_PHOTO_MAX_CHUNKS) { "photo chunk count $total exceeds limit" }
+        return (0 until total).map { index ->
+            val from = index * perChunk
+            val to = minOf(from + perChunk, photoBytes.size)
+            val buf = ByteBuffer.allocate(PhotoChunkHeader.SIZE + (to - from))
+                .order(ByteOrder.BIG_ENDIAN)
+            buf.putLong(photoId.mostSignificantBits)
+            buf.putLong(photoId.leastSignificantBits)
+            buf.putInt(index)
+            buf.putInt(total)
+            buf.put(photoBytes, from, to - from)
+            buf.array()
+        }
+    }
+
+    /** Decodes a PROFILE_PHOTO chunk payload. */
+    fun decodePhotoChunk(payload: ByteArray): DecodedPhotoChunk {
+        if (payload.size < PhotoChunkHeader.SIZE + 1) {
+            throw MsgCodecException("photo chunk too short: ${payload.size}")
+        }
+        val buf = ByteBuffer.wrap(payload).order(ByteOrder.BIG_ENDIAN)
+        val photoId = UUID(buf.long, buf.long)
+        val index = buf.int
+        val total = buf.int
+        if (index < 0 || total <= 0 || total > Protocol.PROFILE_PHOTO_MAX_CHUNKS || index >= total) {
+            throw MsgCodecException("bad photo chunk index/total: $index/$total")
+        }
+        val bytes = payload.copyOfRange(PhotoChunkHeader.SIZE, payload.size)
+        return DecodedPhotoChunk(photoId, index, total, bytes)
+    }
+
     // ----------------------------------------------------------------- model
 
     data class DecodedText(
@@ -159,6 +249,50 @@ object MessagingCodec {
             r = 31 * r + bytes.contentHashCode()
             return r
         }
+    }
+
+    data class DecodedProfile(
+        val name: String,
+        /** SHA-256 of the advertised photo; all zeros when no photo is set. */
+        val photoHash: ByteArray,
+    ) {
+        /** True when the peer advertises a photo. */
+        val hasPhoto: Boolean get() = photoHash.any { it != 0.toByte() }
+
+        override fun equals(other: Any?): Boolean {
+            if (this === other) return true
+            if (other !is DecodedProfile) return false
+            return name == other.name && photoHash.contentEquals(other.photoHash)
+        }
+
+        override fun hashCode(): Int = 31 * name.hashCode() + photoHash.contentHashCode()
+    }
+
+    data class DecodedPhotoChunk(
+        val photoId: UUID,
+        val index: Int,
+        val total: Int,
+        val bytes: ByteArray,
+    ) {
+        override fun equals(other: Any?): Boolean {
+            if (this === other) return true
+            if (other !is DecodedPhotoChunk) return false
+            return photoId == other.photoId && index == other.index &&
+                total == other.total && bytes.contentEquals(other.bytes)
+        }
+
+        override fun hashCode(): Int {
+            var r = photoId.hashCode()
+            r = 31 * r + index
+            r = 31 * r + total
+            r = 31 * r + bytes.contentHashCode()
+            return r
+        }
+    }
+
+    private object PhotoChunkHeader {
+        // Must stay in sync with chunkPhoto(): photoId(16) + index(4) + total(4).
+        const val SIZE = 24
     }
 
     private object Header {

@@ -135,4 +135,19 @@ interface MessageDao {
             " GROUP BY peerId",
     )
     fun observeUnread(): Flow<List<UnreadRow>>
+
+    // ----------------------------------------------------------------- peers
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertPeer(peer: PeerEntity)
+
+    @Query("SELECT * FROM peers WHERE fingerprint = :fingerprint")
+    suspend fun getPeer(fingerprint: String): PeerEntity?
+
+    @Query("SELECT * FROM peers WHERE fingerprint = :fingerprint")
+    fun observePeer(fingerprint: String): Flow<PeerEntity?>
+
+    /** Refreshes the denormalized display name on a peer's messages. */
+    @Query("UPDATE messages SET peerName = :name WHERE peerId = :peerId")
+    suspend fun updatePeerName(peerId: String, name: String)
 }
