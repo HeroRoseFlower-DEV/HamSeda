@@ -176,4 +176,25 @@
     <string name="discoverable_declined">Visibility declined — your phone will not be discoverable to Bluetooth scans.</string>
     <string name="err_playback">Speaker unavailable — could not start audio playback.</string>
     <string name="err_restart_timeout">The previous session is still closing. Wait a moment and try again.</string>
+
+    <!-- Offline messaging -->
+    <string name="tab_walkie">Walkie-talkie</string>
+    <string name="tab_messages">Messages</string>
+    <string name="msg_title">Messages</string>
+    <string name="msg_empty_title">No conversations yet</string>
+    <string name="msg_empty_body">Connect to a peer to start chatting. Messages are stored on this phone and delivered automatically when you reconnect.</string>
+    <string name="msg_offline_banner">You are offline — connect to a peer from the walkie-talkie tab to chat.</string>
+    <string name="msg_online">Online</string>
+    <string name="msg_offline">Offline</string>
+    <string name="msg_input_hint">Message…</string>
+    <string name="msg_send">Send</string>
+    <string name="msg_typing">typing…</string>
+    <string name="msg_state_queued">Queued</string>
+    <string name="msg_state_failed">Not delivered</string>
+    <string name="msg_today">Today</string>
+    <string name="msg_yesterday">Yesterday</string>
+    <string name="msg_new_conversation">New conversation</string>
+    <string name="msg_no_peer">Connect to a peer first, then come back to chat.</string>
+    <string name="settings_read_receipts">Read receipts</string>
+    <string name="settings_read_receipts_desc">Let your peer see when you have read their messages. Receipts are only sent while the chat is open.</string>
 </resources>

@@ -35,6 +35,29 @@ object Protocol {
     const val MAX_FRAME = HEADER_SIZE + MAX_PAYLOAD
 
     /**
+     * Offline messaging framing. Sealed control frames carry at most
+     * MAX_PAYLOAD bytes; the AES-GCM seal costs NONCE(12) + TAG(16) = 28
+     * bytes, so a messaging plaintext chunk is capped at 4000 bytes with
+     * margin. A single text message may span at most 16 chunks (~62 KiB
+     * of text); larger input is rejected before it touches the wire
+     * (anti-DoS).
+     */
+    const val MSG_SEAL_OVERHEAD = 28
+    const val MSG_CHUNK_PLAINTEXT = 4000
+    /** Chunk header: msgId(16) + senderSeq(8) + timestamp(8) + index(4) + total(4). */
+    const val MSG_CHUNK_HEADER_BYTES = 40
+    const val MSG_MAX_CHUNKS = 16
+    /**
+     * Maximum UTF-8 bytes of a single text message (~62 KiB): each chunk
+     * frame carries MSG_CHUNK_PLAINTEXT bytes of sealed plaintext including
+     * its header, so the text capacity per chunk is (4000 - 40).
+     */
+    const val MSG_MAX_BYTES =
+        (MSG_CHUNK_PLAINTEXT - MSG_CHUNK_HEADER_BYTES) * MSG_MAX_CHUNKS
+    /** Drop a partially-reassembled message after this long without progress. */
+    const val MSG_REASSEMBLY_TIMEOUT_MS = 10 * 60 * 1000L
+
+    /**
      * HS-08: wall-clock skew is no longer enforced. The frame timestamp is
      * diagnostic metadata only; authentication and anti-replay rely on
      * AEAD + sequence numbers + session binding. Kept for documentation.
@@ -107,10 +130,21 @@ object MessageType {
     const val DISCONNECT: Byte = 0x40
     const val ERROR: Byte = 0x41
 
+    // --- offline text messaging (payload = sealed messaging codec; see
+    // MessagingCodec). All ride the E2E-encrypted control channel and the
+    // existing per-frame replay window; none is ever plaintext.
+    const val MSG: Byte = 0x50
+    const val MSG_ACK: Byte = 0x51
+    const val MSG_READ: Byte = 0x52
+    const val TYPING: Byte = 0x53
+    const val CHUNK: Byte = 0x54
+    const val MSG_HELLO: Byte = 0x55
+
     fun isKnown(type: Byte): Boolean = type in setOf(
         HELLO, KEY_EXCHANGE, KEY_CONFIRM, SAS_CONFIRM, KEY_COMMIT, AUDIO,
         FLOOR_REQUEST, FLOOR_GRANT, FLOOR_RELEASE, FLOOR_DENY,
-        PING, PONG, DISCONNECT, ERROR
+        PING, PONG, DISCONNECT, ERROR,
+        MSG, MSG_ACK, MSG_READ, TYPING, CHUNK, MSG_HELLO
     )
 
     /** Message types whose payload is sent in cleartext (handshake only). */

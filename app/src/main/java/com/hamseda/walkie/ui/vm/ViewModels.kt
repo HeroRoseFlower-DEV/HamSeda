@@ -7,6 +7,7 @@ import androidx.lifecycle.viewModelScope
 import com.hamseda.walkie.crypto.PeerIdentityStore
 import com.hamseda.walkie.crypto.TrustedPeerIdentity
 import com.hamseda.walkie.data.SettingsRepository
+import com.hamseda.walkie.messaging.MessagingEngine
 import com.hamseda.walkie.proto.CodecId
 import com.hamseda.walkie.service.VoiceService
 import com.hamseda.walkie.session.SessionManager
@@ -37,6 +38,7 @@ data class VmDeps(
     val manager: SessionManager,
     val transports: TransportManager,
     val settings: SettingsRepository,
+    val messaging: MessagingEngine,
 )
 
 class HomeViewModel(private val deps: VmDeps) : ViewModel() {
@@ -227,6 +229,8 @@ class SettingsViewModel(private val deps: VmDeps) : ViewModel() {
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
     val vibration = deps.settings.vibrationFlow
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
+    val readReceipts = deps.settings.readReceiptsFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
     val theme = deps.settings.themeFlow
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SettingsRepository.ThemeMode.SYSTEM)
     val language = deps.settings.languageFlow
@@ -285,6 +289,10 @@ class SettingsViewModel(private val deps: VmDeps) : ViewModel() {
         viewModelScope.launch { deps.settings.setVibration(on) }
     }
 
+    fun setReadReceipts(on: Boolean) {
+        viewModelScope.launch { deps.settings.setReadReceipts(on) }
+    }
+
     fun setTheme(mode: SettingsRepository.ThemeMode) {
         viewModelScope.launch { deps.settings.setTheme(mode) }
     }
@@ -304,6 +312,7 @@ class VmFactory(private val deps: VmDeps) : ViewModelProvider.Factory {
         modelClass.isAssignableFrom(DiscoveryViewModel::class.java) -> DiscoveryViewModel(deps)
         modelClass.isAssignableFrom(PairingViewModel::class.java) -> PairingViewModel(deps)
         modelClass.isAssignableFrom(SettingsViewModel::class.java) -> SettingsViewModel(deps)
+        modelClass.isAssignableFrom(MessagesViewModel::class.java) -> MessagesViewModel(deps)
         else -> throw IllegalArgumentException("unknown VM ${modelClass.name}")
     } as T
 }
