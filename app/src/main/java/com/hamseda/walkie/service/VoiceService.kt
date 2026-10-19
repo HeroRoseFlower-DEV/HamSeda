@@ -122,14 +122,16 @@ class VoiceService : Service() {
     override fun onBind(intent: Intent?): IBinder = binder
 
     override fun onDestroy() {
-        // Keep the CPU wake lock held for the whole teardown: close() can
-        // block (drain) and launches the transport disconnect on
-        // cleanupScope. Releasing the lock first would let Doze sleep the
-        // device mid-teardown, so the best-effort DISCONNECT flush might
-        // never be sent and the peer would wait out the full liveness
-        // timeout instead of seeing a fast hangup.
+        // Keep the CPU wake lock held for the whole teardown: close()'s
+        // transport disconnect, executor drain, and shutdown run
+        // asynchronously on the manager's cleanup scope, and releasing the
+        // lock first would let Doze sleep the device mid-teardown — the
+        // best-effort disconnect might never be sent and the peer would wait
+        // out the full liveness timeout instead of seeing a fast hangup.
+        // The lock is released via onCleanupDone when that work completes
+        // (wake locks die with the process, so no leak if it never runs).
         try {
-            sessionManager.close()
+            sessionManager.close(onCleanupDone = { setSessionCpuAwake(false) })
         } catch (e: Exception) { Log.w(TAG, "onDestroy: session close failed: ${e.javaClass.simpleName}") }
         try {
             audioEngine.release()
@@ -137,7 +139,6 @@ class VoiceService : Service() {
         try {
             messagingEngine.detach()
         } catch (e: Exception) { Log.w(TAG, "onDestroy: messaging detach failed: ${e.javaClass.simpleName}") }
-        setSessionCpuAwake(false)
         serviceScope.cancel()
         super.onDestroy()
     }

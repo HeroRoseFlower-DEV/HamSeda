@@ -84,6 +84,25 @@ class ProfilePhotoStore(private val appContext: Context) {
         runCatching { peerPhotoFile(fingerprint)?.delete() }
     }
 
+    /**
+     * Deletes [file] only if it still holds [expectedHash] bytes. Peer photo
+     * transfers share one path per peer (`<fingerprint>.jpg`), so a stale
+     * transfer must never blindly delete: a newer transfer may have
+     * overwritten the path since our save. Returns true if deleted.
+     */
+    suspend fun deleteIfHashMatches(file: File, expectedHash: ByteArray): Boolean =
+        withContext(Dispatchers.IO) {
+            try {
+                if (!file.isFile) return@withContext false
+                val actual = MessageDigest.getInstance("SHA-256").digest(file.readBytes())
+                if (!actual.contentEquals(expectedHash)) return@withContext false
+                file.delete()
+            } catch (e: Exception) {
+                Log.w(TAG, "deleteIfHashMatches failed", e)
+                false
+            }
+        }
+
     /** SHA-256 of raw bytes; used to advertise the own photo in PROFILE. */
     fun sha256(bytes: ByteArray): ByteArray =
         MessageDigest.getInstance("SHA-256").digest(bytes)

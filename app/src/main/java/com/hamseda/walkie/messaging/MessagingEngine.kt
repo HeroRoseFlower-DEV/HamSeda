@@ -188,6 +188,10 @@ class MessagingEngine(
         manager?.messagingListener = null
         manager = null
         _online.value = false
+        // Honor the livePeerId/livePeerName contract ("empty when offline"):
+        // otherwise they keep publishing the last fingerprint/name after
+        // every session end without an immediate re-attach.
+        currentPeerId.value = ""
         // Drop partial chunk reassemblies: they belong to the old session's
         // key material and must never complete under a new one.
         reassembly.clear()
@@ -675,18 +679,24 @@ class MessagingEngine(
             }
             val file = photoStore.savePeerPhoto(peerId, bytes, state.expectedHash)
             if (file != null) {
-                // Re-read after the (suspending) save: a PROFILE frame may
-                // have arrived mid-save with a new name, a changed photo hash,
-                // or a photo removal. Only link the file if the peer still
-                // advertises this exact hash; never overwrite with the stale
-                // snapshot taken before the save.
-                val fresh = dao.getPeer(peerId)
-                if (fresh != null && fresh.photoHash.contentEquals(state.expectedHash)) {
-                    dao.updatePeerPhoto(peerId, file.absolutePath, now)
+                // Atomic conditional link (WHERE photoHash = :expectedHash):
+                // a PROFILE frame that changed or removed the photo mid-save
+                // makes this a no-op (0 rows) instead of linking a stale
+                // file — the check-then-set race is closed inside SQLite.
+                val linked = dao.updatePeerPhoto(
+                    peerId,
+                    file.absolutePath,
+                    now,
+                    state.expectedHash,
+                )
+                if (linked > 0) {
                     refreshPeerProfile()
                 } else {
-                    // Stale photo (changed/removed mid-transfer): drop it.
-                    file.delete()
+                    // Our bytes are stale. Drop them — but only if the
+                    // shared peer path still holds our bytes: a newer
+                    // transfer may have overwritten it since our save, and
+                    // deleting then would orphan the row's fresh link.
+                    photoStore.deleteIfHashMatches(file, state.expectedHash)
                 }
             }
         }

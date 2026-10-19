@@ -117,6 +117,7 @@
     <string name="startup_permissions_continue">Review and grant permissions</string>
     <string name="startup_permissions_open_settings">Open app settings</string>
     <string name="startup_permissions_denied">Some permissions were not granted. HamSeda cannot start until the required permissions are enabled.</string>
+    <string name="startup_permissions_interrupted">The permission request was interrupted before it finished. You can try again.</string>
     <string name="startup_permissions_settings_hint">If Android no longer shows a permission prompt, open app settings and enable the required permissions there.</string>
     <string name="startup_permissions_requesting">Requesting the next required permission from Android…</string>
     <string name="startup_permissions_nearby">Nearby devices: allow Bluetooth scanning, connecting and discoverability, plus Wi-Fi Direct discovery and direct phone-to-phone connections. Android groups these permissions into its Nearby devices prompt.</string>

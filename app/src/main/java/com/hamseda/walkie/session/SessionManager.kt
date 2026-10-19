@@ -1023,8 +1023,15 @@ class SessionManager(
      * onDestroy past the ANR threshold on a stuck HAL, which is worse than
      * the race: encode-after-close is caught per frame and OpusCodec.close()
      * is serialized on the codec lock, so there is no native use-after-free.
+     *
+     * @param onCleanupDone invoked on the cleanup thread after the async
+     * transport disconnect, executor drain, and shutdown complete — use it
+     * to release resources (e.g. the service wake lock) that must outlive
+     * the whole teardown. Never null-checked by callers; always invoked
+     * exactly once per close() unless the process dies first (in which case
+     * the OS releases the wake lock anyway).
      */
-    fun close() {
+    fun close(onCleanupDone: (() -> Unit)? = null) {
         synchronized(lifecycleLock) { _phase.value = Phase.ENDED }
         cancelDeadlines()
         stopSender()
@@ -1071,6 +1078,11 @@ class SessionManager(
             // audio executor thread.
             drainAudioExecutor()
             audioExecutor.shutdown()
+            try {
+                onCleanupDone?.invoke()
+            } catch (e: Exception) {
+                Log.w(TAG, "cleanup: onCleanupDone failed: ${e.javaClass.simpleName}")
+            }
             cleanupJob.cancel()
         }
     }
@@ -1762,6 +1774,42 @@ class SessionManager(
         enterSession()
     }
 
+    /**
+     * Undoes this call's codec/playback bring-up. Called from the abort
+     * paths of [enterSession] when the phase already moved: teardown ran
+     * while we held [sessionEntryLock] — it never takes that lock, so it
+     * could not see or clean up what we assigned afterwards.
+     *
+     * Takes and nulls the fields before closing so a racing teardown
+     * observes null and skips them (OpusCodec.close() is idempotent-safe
+     * regardless: handles are zeroed before the native destroy, which
+     * null-checks). Mirrors teardown's order — stop playback first, then
+     * close the codecs. Safe to call when teardown already took the fields
+     * (null-safe) and when playback never started (stopPlayback is
+     * idempotent).
+     */
+    private fun abortBringup() {
+        val doomedCodec = codec
+        val doomedTxCodec = txCodec
+        codec = null
+        txCodec = null
+        try {
+            audio.stopPlayback()
+        } catch (e: Exception) {
+            Log.w(TAG, "abortBringup: stopPlayback failed: ${e.javaClass.simpleName}")
+        }
+        try {
+            doomedCodec?.close()
+        } catch (e: Exception) {
+            Log.w(TAG, "abortBringup: codec close failed: ${e.javaClass.simpleName}")
+        }
+        try {
+            doomedTxCodec?.close()
+        } catch (e: Exception) {
+            Log.w(TAG, "abortBringup: txCodec close failed: ${e.javaClass.simpleName}")
+        }
+    }
+
     private fun enterSession() = synchronized(sessionEntryLock) {
         // confirmSas() and the inbound SAS_CONFIRM reader can race on different
         // threads. Only the first caller observing the SAS phase may initialize
@@ -1830,6 +1878,11 @@ class SessionManager(
                 notifyPeer = true,
                 disconnectReason = DisconnectReason.PROTOCOL_ERROR,
             )
+            // endSession is a no-op when the phase already moved (teardown
+            // ran during bring-up); our codec/txCodec would leak. Clean up
+            // our own bring-up unconditionally — abortBringup is null-safe
+            // when teardown already took the fields.
+            abortBringup()
             return@synchronized
         }
         // Pin a new peer only after mutual SAS confirmation and successful playback setup.
@@ -1865,10 +1918,15 @@ class SessionManager(
             }
         }
         if (!entered) {
-            // Teardown (which moved the phase) already owns cleanup of the
-            // codec/playback brought up above; just don't go live.
+            // The phase moved while we held sessionEntryLock: teardown ran
+            // (it never takes this lock) and could not see or clean up what
+            // we brought up afterwards. Clean up our own bring-up instead of
+            // assuming teardown owns it — otherwise the native codec
+            // handles, the AudioTrack, and the playback worker leak, and the
+            // zombie worker can poison the next session's audio.
             Log.w(TAG, "session ended during codec bring-up; aborting enterSession")
             AppLog.log(TAG, "session ended during codec bring-up; aborting enterSession")
+            abortBringup()
             return@synchronized
         }
         val establishedAt = elapsedClock()

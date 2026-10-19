@@ -5,8 +5,10 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import java.security.MessageDigest
 import kotlinx.coroutines.test.runTest
 import org.junit.After
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -51,6 +53,20 @@ class ProfilePhotoStoreTest {
 
         assertNull("mismatched photo must be discarded", file)
         assertNull("no file may be written on mismatch", store.peerPhotoFile(FINGERPRINT))
+    }
+
+    @Test
+    fun deleteIfHashMatches_deletesOnlyOwnBytes() = runTest {
+        val bytes = ByteArray(256) { it.toByte() }
+        val hash = MessageDigest.getInstance("SHA-256").digest(bytes)
+        val otherHash = ByteArray(32) { 0x7F }
+        val file = store.savePeerPhoto(FINGERPRINT, bytes, hash)!!
+        // Wrong hash: a newer transfer overwrote the shared path — keep it.
+        assertFalse(store.deleteIfHashMatches(file, otherHash))
+        assertNotNull(store.peerPhotoFile(FINGERPRINT))
+        // Matching hash: our stale bytes — safe to drop.
+        assertTrue(store.deleteIfHashMatches(file, hash))
+        assertNull(store.peerPhotoFile(FINGERPRINT))
     }
 
     private companion object {

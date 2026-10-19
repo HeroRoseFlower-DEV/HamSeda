@@ -87,9 +87,12 @@ fun ProfileScreen(
     var name by rememberSaveable { mutableStateOf<String?>(null) }
     var savedFlash by rememberSaveable { mutableStateOf(false) }
 
-    // Seed the editor from the persisted name once it loads.
+    // Seed the editor from the persisted name once it loads. The ViewModel's
+    // stateIn initial value ("") always wins the race against the DataStore
+    // read, so only a non-empty stored name may seed — otherwise tapping
+    // Save would persist "" and destroy the user's name.
     LaunchedEffect(savedName) {
-        if (name == null) name = savedName
+        if (name == null && savedName.isNotEmpty()) name = savedName
     }
     LaunchedEffect(savedFlash) {
         if (savedFlash) {
@@ -114,7 +117,7 @@ fun ProfileScreen(
                     IconButton(onClick = onBack) {
                         Icon(
                             Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = null,
+                            contentDescription = stringResource(R.string.back),
                             tint = if (dark) Color.White else Color(0xFF222222),
                         )
                     }

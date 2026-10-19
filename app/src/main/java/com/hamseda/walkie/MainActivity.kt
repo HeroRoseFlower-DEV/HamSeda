@@ -194,8 +194,16 @@ private fun HamSedaRoot(deps: VmDeps, darkTheme: Boolean, onLanguageChanged: () 
     // the session waits for code comparison, and leaves when it resolves.
     // Messaging screens are never yanked away: a live chat survives session
     // changes (messages queue in the outbox).
-    LaunchedEffect(phase, sasCode, peerIdentityTrusted) {
-        val inChat = screen == Screen.MESSAGES || screen == Screen.CHAT
+    //
+    // inChat is a key (not just read inside): if AWAITING_SAS_CONFIRM
+    // arrives while the user is in chat, navigation is correctly deferred —
+    // but the effect must re-fire when the user LEAVES the chat, otherwise
+    // the PAIRING screen is never shown and the session strands. Keying on
+    // the boolean (rather than screen) avoids re-firing on every unrelated
+    // navigation, e.g. opening Settings during IN_SESSION must not bounce
+    // back to HOME.
+    val inChat = screen == Screen.MESSAGES || screen == Screen.CHAT
+    LaunchedEffect(phase, sasCode, peerIdentityTrusted, inChat) {
         when (phase) {
             SessionManager.Phase.AWAITING_SAS_CONFIRM -> {
                 if (sasCode != null && !inChat) screen = Screen.PAIRING
