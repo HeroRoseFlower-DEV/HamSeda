@@ -38,6 +38,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.hamseda.walkie.data.SettingsRepository
+import com.hamseda.walkie.data.normalizeLanguageCode
 import com.hamseda.walkie.messaging.MessagingEngine
 import com.hamseda.walkie.service.VoiceService
 import com.hamseda.walkie.session.SessionManager
