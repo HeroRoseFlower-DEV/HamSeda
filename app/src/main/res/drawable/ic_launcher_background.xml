@@ -1,12 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- HamSeda launcher background: deep indigo -> violet, sampled from the
-     generated foreground artwork so parallax reveals blend seamlessly. -->
+<!-- HamSeda launcher background: deep blue gradient sampled from the edge
+     pixels of the user's own logo artwork, so parallax reveals blend. -->
 <shape xmlns:android="http://schemas.android.com/apk/res/android"
     android:shape="rectangle">
     <gradient
         android:angle="270"
-        android:startColor="#160D50"
-        android:centerColor="#221364"
-        android:endColor="#3E2078"
+        android:startColor="#0175C2"
+        android:centerColor="#1C7589"
+        android:endColor="#00286C"
         android:type="linear" />
 </shape>
