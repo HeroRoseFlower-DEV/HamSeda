@@ -310,7 +310,7 @@ private fun TelegramOfflineStrip(dark: Boolean) {
 
 // ------------------------------------------------------------ date dividers
 
-private sealed interface ChatItem {
+internal sealed interface ChatItem {
     val key: String
     // Keyed by day key, not the display label: dayLabel drops the year for
     // old dates ("d MMMM"), so same-day-different-year dividers would collide
@@ -330,8 +330,9 @@ private sealed interface ChatItem {
 /**
  * Newest-first message list with day divider items inserted and same-sender
  * run grouping computed (drives the 6dp near-corners and tail placement).
+ * Internal for the divider-ordering regression test.
  */
-private fun withDateDividers(
+internal fun withDateDividers(
     messages: List<MessagingEngine.MessageView>,
     todayLabel: String,
     yesterdayLabel: String,
@@ -340,7 +341,6 @@ private fun withDateDividers(
     // messages arrive oldest-first; reverse for the reversed LazyColumn.
     val reversed = messages.reversed()
     val out = ArrayList<ChatItem>(reversed.size + 4)
-    var lastDay: String? = null
     // Grouping is computed in chronological order (oldest-first).
     val chrono = messages
     val firstInRun = BooleanArray(chrono.size)
@@ -355,14 +355,17 @@ private fun withDateDividers(
         lastInRun[i] = next == null || next.isFromMe != m.isFromMe || !sameDayNext
     }
     // Map chronological index -> reversed position.
+    // The list is newest-first for the reversed LazyColumn (index 0 renders
+    // at the bottom). A day's divider is appended AFTER its messages in
+    // this order, so visually it renders ABOVE (before) them.
     for ((revIdx, m) in reversed.withIndex()) {
         val chronoIdx = chrono.size - 1 - revIdx
         val day = dayKey(m.timestamp)
-        if (day != lastDay) {
-            out.add(ChatItem.Divider(day, dayLabel(m.timestamp, todayLabel, yesterdayLabel, locale)))
-            lastDay = day
-        }
         out.add(ChatItem.Msg(m, firstInRun[chronoIdx], lastInRun[chronoIdx]))
+        val next = reversed.getOrNull(revIdx + 1)
+        if (next == null || dayKey(next.timestamp) != day) {
+            out.add(ChatItem.Divider(day, dayLabel(m.timestamp, todayLabel, yesterdayLabel, locale)))
+        }
     }
     return out
 }
