@@ -158,10 +158,13 @@ fun ChatScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(
+                // absolutePadding with the absolute values is identical to
+                // padding(padding) for top/sides; only the bottom is computed
+                // (max of IME / nav bars, applied exactly once — see above).
+                .absolutePadding(
+                    left = padding.calculateLeftPadding(layoutDir),
                     top = padding.calculateTopPadding(),
-                    start = padding.calculateStartPadding(layoutDir),
-                    end = padding.calculateEndPadding(layoutDir),
+                    right = padding.calculateRightPadding(layoutDir),
                     bottom = bottomInset,
                 ),
         ) {
