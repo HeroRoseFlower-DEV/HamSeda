@@ -13,6 +13,8 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.unit.dp
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.filled.Mic
@@ -243,10 +245,19 @@ private fun HamSedaRoot(deps: VmDeps, darkTheme: Boolean, onLanguageChanged: () 
             }
         },
     ) { padding ->
+        // ChatScreen owns its bottom inset entirely (max of IME / nav bars):
+        // applying the root padding's bottom here too would stack a second
+        // nav-bar inset under the chat's own (nested-Scaffold double inset).
+        val layoutDir = LocalLayoutDirection.current
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(padding),
+                .padding(
+                    top = padding.calculateTopPadding(),
+                    start = padding.calculateStartPadding(layoutDir),
+                    end = padding.calculateEndPadding(layoutDir),
+                    bottom = if (screen == Screen.CHAT) 0.dp else padding.calculateBottomPadding(),
+                ),
         ) {
             when (screen) {
                 Screen.HOME -> HomeScreen(

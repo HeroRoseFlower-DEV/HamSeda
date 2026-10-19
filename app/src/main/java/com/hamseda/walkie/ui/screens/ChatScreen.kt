@@ -48,6 +48,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -141,19 +142,28 @@ fun ChatScreen(
         },
         containerColor = chatBg,
     ) { padding ->
-        // Bottom inset that never double-counts: navigation-bar height with
-        // the keyboard closed, keyboard height with it open (ime already spans
-        // from the screen bottom). This replaces the bare imePadding() on the
-        // input row, which left a dead gap above the nav bar when closed.
+        // Bottom inset applied exactly once: navigation-bar height with the
+        // keyboard closed, keyboard height with it open (ime already spans
+        // from the screen bottom). Top/sides still come from the inner
+        // Scaffold; its own bottom inset (the nav bar) is NOT taken here
+        // because the root layout already applies it once — taking it too
+        // stacked a second copy (nested-Scaffold double inset, ~1 nav-bar
+        // of dead space above the input). The root likewise skips its
+        // bottom padding on the chat screen (see HamSedaRoot).
         val bottomInset = maxOf(
             WindowInsets.ime.asPaddingValues().calculateBottomPadding(),
             WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding(),
         )
+        val layoutDir = LocalLayoutDirection.current
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(padding)
-                .padding(bottom = bottomInset),
+                .padding(
+                    top = padding.calculateTopPadding(),
+                    start = padding.calculateStartPadding(layoutDir),
+                    end = padding.calculateEndPadding(layoutDir),
+                    bottom = bottomInset,
+                ),
         ) {
             if (!online) {
                 TelegramOfflineStrip(dark = dark)
