@@ -38,6 +38,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.hamseda.walkie.data.SettingsRepository
+import com.hamseda.walkie.data.normalizeLanguageCode
 import com.hamseda.walkie.messaging.MessagingEngine
 import com.hamseda.walkie.service.VoiceService
 import com.hamseda.walkie.session.SessionManager
@@ -55,7 +56,6 @@ import com.hamseda.walkie.ui.theme.TelegramColors
 import com.hamseda.walkie.ui.screens.StartupPermissionGate
 import com.hamseda.walkie.ui.vm.VmDeps
 import com.hamseda.walkie.util.toFaDigits
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import java.util.Locale
 
@@ -84,14 +84,28 @@ class MainActivity : ComponentActivity() {
         // so a standalone SettingsRepository is used (same DataStore file).
         // L9: runBlocking is unavoidable here (must run before super), but
         // bounded with a timeout so a stuck DataStore can't ANR startup.
-        val code = try {
+        // Fresh installs default to Persian (HamSeda is a Persian-first
+        // app) and the choice is persisted so the settings UI reflects it.
+        // An explicit user choice (fa / en / System) is always respected,
+        // and a failed read never overwrites anything (falls back to
+        // system for that launch only).
+        val repo = SettingsRepository(newBase)
+        val read: Result<String?> = runCatching {
             runBlocking {
-                kotlinx.coroutines.withTimeout(2000) {
-                    SettingsRepository(newBase).languageFlow.first()
-                }
+                kotlinx.coroutines.withTimeout(2000) { repo.rawLanguageCode() }
             }
-        } catch (e: Exception) {
-            ""
+        }
+        val code = when {
+            read.isFailure -> ""
+            read.getOrNull() == null -> {
+                runCatching {
+                    runBlocking {
+                        kotlinx.coroutines.withTimeout(2000) { repo.setLanguage("fa") }
+                    }
+                }
+                "fa"
+            }
+            else -> normalizeLanguageCode(read.getOrNull())
         }
         if (code.isNotEmpty()) {
             val locale = Locale(code)

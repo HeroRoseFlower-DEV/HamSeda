@@ -75,6 +75,14 @@ class SettingsRepository(private val context: Context) {
         context.dataStore.data.map { normalizeLanguageCode(it[Keys.LANGUAGE]) }
 
     /**
+     * Raw persisted language value; null when the user never chose
+     * (fresh install). Lets callers default fresh installs to Persian
+     * without overriding an explicit "System" choice ("").
+     */
+    suspend fun rawLanguageCode(): String? =
+        context.dataStore.data.map { it[Keys.LANGUAGE] }.first()
+
+    /**
      * Whether to send read receipts for incoming chat messages. Default on.
      * Receipts are only ever sent while the chat thread is visibly open —
      * never from notifications or the background.

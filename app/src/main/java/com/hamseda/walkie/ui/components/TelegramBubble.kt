@@ -4,10 +4,10 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.text.InlineTextContent
 import androidx.compose.foundation.text.appendInlineContent
 import androidx.compose.material3.Text
@@ -22,6 +22,7 @@ import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.drawscope.translate
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.text.Placeholder
 import androidx.compose.ui.text.PlaceholderVerticalAlign
@@ -119,7 +120,11 @@ fun TelegramBubble(
         },
     )
 
-    Box(modifier = modifier.fillMaxWidth(0.8f)) {
+    // Telegram caps bubble width (~78% of the screen in portrait): the
+    // bubble wraps its content instead of stretching to a fixed width, so
+    // short messages get small bubbles like the real client.
+    val maxBubbleWidth = (LocalConfiguration.current.screenWidthDp * 0.78f).dp
+    Box(modifier = modifier.widthIn(max = maxBubbleWidth)) {
         Canvas(modifier = Modifier.matchParentSize()) {
             val path = telegramBubblePath(
                 topNear = topNear,
@@ -160,8 +165,13 @@ private fun DrawScope.drawBubbleWithShadow(path: Path, bg: Color, shadow: Color)
 /**
  * Builds the Telegram bubble path (body + tail as one path) in a canonical
  * orientation with the tail zone on the right; the caller mirrors for RTL.
- * Follows MessageDrawable.generatePath() for TYPE_TEXT: 2dp inset, 17dp
- * main radius, 6dp near radius, 8dp tail zone, tail tip 2.6dp from the edge.
+ * Follows MessageDrawable.generatePath() for TYPE_TEXT (measurements only):
+ * 2dp inset, 17dp main radius, 6dp near radius, 8dp tail zone, and the path
+ * winds from the tail tip — bottom edge starts at the tip (2.6dp from the
+ * outer edge) so close() forms the tail's inner edge. The tail hook itself
+ * is an 83° arc (smallRad=6dp): rect(bodyRight, h-pad-21dp,
+ * bodyRight+13dp, h-pad-1dp), start 180°, sweep -83° — a tight 9dp hook,
+ * not a bezier blob.
  */
 private fun DrawScope.telegramBubblePath(
     topNear: Boolean,
@@ -180,43 +190,50 @@ private fun DrawScope.telegramBubblePath(
     val botR = if (bottomNear) near else rad
 
     return Path().apply {
-        moveTo(pad + rad, pad)
-        // Top edge.
-        lineTo(bodyRight - topR, pad)
-        arcTo(Rect(bodyRight - 2 * topR, pad, bodyRight, pad + 2 * topR), 270f, 90f, false)
         if (drawTail) {
-            // Right edge down to the tail base.
-            val tailTop = h - pad - 12.dp.toPx()
-            lineTo(bodyRight, tailTop)
-            // Tail hook: sweep out to the tip (2.6dp from the outer edge),
-            // then back to the bottom edge.
+            // Tail tip at the bottom edge, 2.6dp from the outer edge.
             val tipX = w - 2.6f.dp.toPx()
             val tipY = h - pad
-            cubicTo(
-                bodyRight + 1.dp.toPx(), tailTop + 4.dp.toPx(),
-                tipX - 3.dp.toPx(), tipY - 3.dp.toPx(),
-                tipX, tipY,
-            )
-            quadraticTo(
-                bodyRight + 2.dp.toPx(), tipY,
-                bodyRight - 6.dp.toPx(), tipY,
-            )
-        } else {
-            // Bottom-right corner arc.
-            val br = if (bottomNear) near else rad
-            lineTo(bodyRight, h - pad - br)
+            moveTo(tipX, tipY)
+            // Bottom edge.
+            lineTo(pad + botR, h - pad)
+            arcTo(Rect(pad, h - pad - 2 * botR, pad + 2 * botR, h - pad), 90f, 90f, false)
+            // Left edge up.
+            lineTo(pad, pad + topR)
+            arcTo(Rect(pad, pad, pad + 2 * topR, pad + 2 * topR), 180f, 90f, false)
+            // Top edge.
+            lineTo(bodyRight - topR, pad)
+            arcTo(Rect(bodyRight - 2 * topR, pad, bodyRight, pad + 2 * topR), 270f, 90f, false)
+            // Right edge down to the tail hook (smallRad 6dp + 3dp).
+            lineTo(bodyRight, h - pad - 9.dp.toPx())
+            // Tail hook arc; close() draws the inner edge back to the tip.
             arcTo(
-                Rect(bodyRight - 2 * br, h - pad - 2 * br, bodyRight, h - pad),
+                Rect(
+                    bodyRight, h - pad - 21.dp.toPx(),
+                    bodyRight + 13.dp.toPx(), h - pad - 1.dp.toPx(),
+                ),
+                180f, -83f, false,
+            )
+            close()
+        } else {
+            moveTo(bodyRight - botR, h - pad)
+            // Bottom edge.
+            lineTo(pad + botR, h - pad)
+            arcTo(Rect(pad, h - pad - 2 * botR, pad + 2 * botR, h - pad), 90f, 90f, false)
+            // Left edge up.
+            lineTo(pad, pad + topR)
+            arcTo(Rect(pad, pad, pad + 2 * topR, pad + 2 * topR), 180f, 90f, false)
+            // Top edge.
+            lineTo(bodyRight - topR, pad)
+            arcTo(Rect(bodyRight - 2 * topR, pad, bodyRight, pad + 2 * topR), 270f, 90f, false)
+            // Bottom-right corner arc.
+            lineTo(bodyRight, h - pad - botR)
+            arcTo(
+                Rect(bodyRight - 2 * botR, h - pad - 2 * botR, bodyRight, h - pad),
                 0f, 90f, false,
             )
+            close()
         }
-        // Bottom edge.
-        lineTo(pad + botR, h - pad)
-        arcTo(Rect(pad, h - pad - 2 * botR, pad + 2 * botR, h - pad), 90f, 90f, false)
-        // Left edge up.
-        lineTo(pad, pad + topR)
-        arcTo(Rect(pad, pad, pad + 2 * topR, pad + 2 * topR), 180f, 90f, false)
-        close()
     }
 }
 
