@@ -137,7 +137,7 @@ class MessageDaoTest {
         assertTrue(conv.all { it.peerName == "Ali R." })
     }
 
-    private fun stateOf(id: String, peerId: String = "peer1"): Int =
+    private suspend fun stateOf(id: String, peerId: String = "peer1"): Int =
         dao.observeConversation(peerId).first().single { it.id == id }.state
 
     @Test
