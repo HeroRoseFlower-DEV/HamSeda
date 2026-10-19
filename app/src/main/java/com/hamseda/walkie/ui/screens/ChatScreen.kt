@@ -8,9 +8,13 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.absolutePadding
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -44,9 +48,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -54,6 +60,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.hamseda.walkie.R
 import com.hamseda.walkie.data.msg.MessageState
 import com.hamseda.walkie.messaging.MessagingEngine
+import com.hamseda.walkie.ui.components.ChatWallpaper
 import com.hamseda.walkie.ui.components.PeerAvatar
 import com.hamseda.walkie.ui.components.TelegramBubble
 import com.hamseda.walkie.ui.theme.TelegramColors
@@ -135,10 +142,31 @@ fun ChatScreen(
         },
         containerColor = chatBg,
     ) { padding ->
+        // Bottom inset applied exactly once: navigation-bar height with the
+        // keyboard closed, keyboard height with it open (ime already spans
+        // from the screen bottom). Top/sides still come from the inner
+        // Scaffold, but its own bottom inset (the nav bar) is NOT taken here,
+        // and the root layout skips its bottom padding on the chat screen
+        // too (see HamSedaRoot) — otherwise the two stack a second copy
+        // (nested-Scaffold double inset, ~1 nav-bar of dead space above
+        // the input, as seen in the user's screenshot).
+        val bottomInset = maxOf(
+            WindowInsets.ime.asPaddingValues().calculateBottomPadding(),
+            WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding(),
+        )
+        val layoutDir = LocalLayoutDirection.current
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(padding),
+                // absolutePadding with the absolute values is identical to
+                // padding(padding) for top/sides; only the bottom is computed
+                // (max of IME / nav bars, applied exactly once — see above).
+                .absolutePadding(
+                    left = padding.calculateLeftPadding(layoutDir),
+                    top = padding.calculateTopPadding(),
+                    right = padding.calculateRightPadding(layoutDir),
+                    bottom = bottomInset,
+                ),
         ) {
             if (!online) {
                 TelegramOfflineStrip(dark = dark)
@@ -149,15 +177,22 @@ fun ChatScreen(
             val chatItems = remember(messages, todayLabel, yesterdayLabel, locale) {
                 withDateDividers(messages, todayLabel, yesterdayLabel, locale)
             }
-            LazyColumn(
-                state = listState,
-                reverseLayout = true,
+            // Wallpaper behind the message list, like Telegram's patterned chat
+            // background (original doodles drawn in ChatWallpaper — no
+            // Telegram assets). The list itself stays transparent on top.
+            Box(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth(),
-                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp),
             ) {
-                items(chatItems, key = { it.key }) { item ->
+                ChatWallpaper(dark = dark, modifier = Modifier.matchParentSize())
+                LazyColumn(
+                    state = listState,
+                    reverseLayout = true,
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp),
+                ) {
+                    items(chatItems, key = { it.key }) { item ->
                     when (item) {
                         is ChatItem.Divider -> {
                             DateDivider(label = item.label, dark = dark)
@@ -171,8 +206,12 @@ fun ChatScreen(
                             }
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = if (msg.isFromMe) Arrangement.End
-                                else Arrangement.Start,
+                                // Telegram never flips message sides with layout direction:
+                                // outgoing is always on the right, incoming always on the
+                                // left. Direction-aware Start/End put outgoing on the left
+                                // in Persian RTL (the PR #43 regression) — use absolute sides.
+                                horizontalArrangement = if (msg.isFromMe) Arrangement.Absolute.Right
+                                else Arrangement.Absolute.Left,
                             ) {
                                 Column {
                                     if (msg.isFromMe &&
@@ -187,9 +226,14 @@ fun ChatScreen(
                                             color = if (msg.state == MessageState.FAILED) MaterialTheme.colorScheme.error
                                             else if (dark) TelegramColors.InTimeTextDark
                                             else TelegramColors.InTimeTextLight,
+                                            // Absolute right: the label belongs to outgoing
+                                            // messages, which always sit on the right.
+                                            // (TextAlign.Right is direction-independent,
+                                            // unlike Alignment.End.)
+                                            textAlign = TextAlign.Right,
                                             modifier = Modifier
-                                                .align(Alignment.End)
-                                                .padding(end = 12.dp, bottom = 2.dp),
+                                                .fillMaxWidth()
+                                                .absolutePadding(right = 12.dp, bottom = 2.dp),
                                         )
                                     }
                                     TelegramBubble(
@@ -207,6 +251,7 @@ fun ChatScreen(
                             Spacer(Modifier.size(if (item.isLastInGroup) 8.dp else 2.dp))
                         }
                     }
+                }
                 }
             }
             TelegramInput(
@@ -433,9 +478,12 @@ private fun TelegramInput(
 
     Surface(color = barBg, shadowElevation = 4.dp) {
         Row(
+            // No imePadding() here: the screen-level bottom inset
+            // (max of ime / navigation bars) already rides the bar above the
+            // keyboard when open and above the system nav when closed.
+            // Adding imePadding() as well would double the keyboard inset.
             modifier = Modifier
                 .fillMaxWidth()
-                .imePadding()
                 .padding(horizontal = 8.dp, vertical = 6.dp),
             verticalAlignment = Alignment.Bottom,
         ) {

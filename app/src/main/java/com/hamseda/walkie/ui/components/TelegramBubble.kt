@@ -4,7 +4,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.absolutePadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
@@ -23,12 +23,10 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.platform.LocalConfiguration
-import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.text.Placeholder
 import androidx.compose.ui.text.PlaceholderVerticalAlign
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
-import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.hamseda.walkie.data.msg.MessageState
@@ -85,10 +83,12 @@ fun TelegramBubble(
         else -> Color(0xFF1D3753)
     }
 
-    val isRtl = LocalLayoutDirection.current == LayoutDirection.Rtl
-    // The canonical path draws the tail on the right; mirror when the tail
-    // belongs on the left: LTR+incoming or RTL+outgoing.
-    val mirror = (isRtl == isFromMe)
+    // Telegram never flips message sides with layout direction: outgoing is
+    // always on the right (tail bottom-right), incoming always on the left
+    // (tail bottom-left). The canonical path draws the tail on the right, so
+    // mirror only for incoming — this must NOT derive from LocalLayoutDirection
+    // (the old `isRtl == isFromMe` put outgoing tails on the left in Persian).
+    val mirror = !isFromMe
     val drawTail = isLastInGroup
     val topNear = !isFirstInGroup
     val bottomNear = !isLastInGroup
@@ -143,12 +143,13 @@ fun TelegramBubble(
             text = annotated,
             inlineContent = inlineContent,
             style = TextStyle(fontSize = 16.sp, color = textColor),
-            modifier = Modifier.padding(
-                // Leading-edge padding from ChatMessageCell.layoutTextXY:
-                // 11dp outgoing, 17dp incoming (start is direction-aware).
-                start = if (isFromMe) 11.dp else 17.dp,
-                end = 11.dp,
+            modifier = Modifier.absolutePadding(
+                // Measured from ChatMessageCell.layoutTextXY in absolute
+                // coordinates, like the bubble geometry itself: 11dp outgoing,
+                // 17dp incoming on the left; 11dp on the right.
+                left = if (isFromMe) 11.dp else 17.dp,
                 top = 7.dp,
+                right = 11.dp,
                 bottom = 6.dp,
             ),
         )
