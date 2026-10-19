@@ -193,10 +193,21 @@ interface MessageDao {
      * Links a verified photo file to a peer without touching the other
      * columns. Used after photo reassembly so a concurrent PROFILE update
      * (new name / changed hash) is never clobbered by a stale snapshot.
+     *
+     * The link is conditional on [expectedHash]: a PROFILE frame that
+     * changed or removed the photo between the save and this update makes
+     * it a no-op (returns 0) instead of linking a stale file — this closes
+     * the check-then-set race atomically in SQLite. Returns the number of
+     * rows updated.
      */
     @Query(
         "UPDATE peers SET photoPath = :photoPath, lastSeen = :lastSeen " +
-            "WHERE fingerprint = :fingerprint",
+            "WHERE fingerprint = :fingerprint AND photoHash = :expectedHash",
     )
-    suspend fun updatePeerPhoto(fingerprint: String, photoPath: String?, lastSeen: Long)
+    suspend fun updatePeerPhoto(
+        fingerprint: String,
+        photoPath: String?,
+        lastSeen: Long,
+        expectedHash: ByteArray,
+    ): Int
 }

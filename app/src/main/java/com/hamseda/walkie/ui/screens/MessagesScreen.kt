@@ -105,7 +105,14 @@ fun MessagesScreen(
                 TelegramOfflineBanner(onOpenDiscovery = onOpenDiscovery, dark = dark)
             }
             if (showNewChat) {
-                val liveProfile by deps.messaging.observePeerProfile(livePeerId)
+                // Remember the Flow per peer: observePeerProfile builds a
+                // fresh combine() each call, and re-collecting it on every
+                // recomposition would restart the collection (avatar/name
+                // flicker) and re-query Room — same pattern as the rows below.
+                val liveProfileFlow = remember(livePeerId) {
+                    deps.messaging.observePeerProfile(livePeerId)
+                }
+                val liveProfile by liveProfileFlow
                     .collectAsStateWithLifecycle(initialValue = null)
                 TelegramNewChatCard(
                     peerName = liveProfile?.displayName?.takeIf { it.isNotEmpty() } ?: livePeerName,

@@ -109,16 +109,42 @@ class TransportStateMachineTest {
         )
     }
 
-    // ---- TransportState contract ----
+    // ---- TransportState contract: AUTHENTICATING ----
 
     @Test
-    fun authenticating_isDocumentedAsOptional() {
+    fun authenticating_isTreatedAsConnectionInProgress() {
         // AUTHENTICATING is transport-internal and optional: Bluetooth skips
-        // it (atomic RFCOMM setup), Wi-Fi Direct reports it. Both must be
-        // treated as "connection in progress" by consumers.
-        val inProgress = setOf(TransportState.CONNECTING, TransportState.AUTHENTICATING)
-        assertTrue(inProgress.contains(TransportState.AUTHENTICATING))
-        // CONNECTED is the only state that guarantees a usable socket.
-        assertFalse(inProgress.contains(TransportState.CONNECTED))
+        // it (atomic RFCOMM setup), Wi-Fi Direct reports it while the framed
+        // socket comes up. Consumers must treat it as "connection in
+        // progress": handshake frames arriving in this state are current and
+        // must not be discarded as stale.
+        val socket = Any()
+        assertTrue(
+            isCurrentIncomingFrame(
+                expectedGeneration = 1L,
+                currentGeneration = 1L,
+                expectedSocket = socket,
+                currentSocket = socket,
+                state = TransportState.AUTHENTICATING,
+            ),
+        )
+        // States without a live link still reject frames.
+        for (state in listOf(
+            TransportState.IDLE,
+            TransportState.DISCOVERING,
+            TransportState.CONNECTING,
+            TransportState.FAILED,
+        )) {
+            assertFalse(
+                "frames in $state must be rejected",
+                isCurrentIncomingFrame(
+                    expectedGeneration = 1L,
+                    currentGeneration = 1L,
+                    expectedSocket = socket,
+                    currentSocket = socket,
+                    state = state,
+                ),
+            )
+        }
     }
 }

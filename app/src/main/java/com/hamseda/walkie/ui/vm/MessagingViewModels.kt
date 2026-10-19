@@ -38,7 +38,7 @@ class ChatViewModel(
 
     val messages: StateFlow<List<MessagingEngine.MessageView>> =
         engine.observeMessages(peerId)
-            .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
     val peerTyping: StateFlow<Boolean> = engine.peerTyping
     val online: StateFlow<Boolean> = engine.online
 
@@ -51,14 +51,14 @@ class ChatViewModel(
             }
             .stateIn(
                 viewModelScope,
-                SharingStarted.Eagerly,
+                SharingStarted.WhileSubscribed(5_000),
                 MessagingEngine.shortId(peerId),
             )
 
     /** Stored peer profile (name + photo + online state), if ever received. */
     val peerProfile: StateFlow<MessagingEngine.PeerProfile?> =
         engine.observePeerProfile(peerId)
-            .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     init {
         engine.setActivePeer(peerId)

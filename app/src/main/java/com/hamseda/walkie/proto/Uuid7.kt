@@ -19,7 +19,10 @@ import java.util.UUID
  * Monotonicity within the same millisecond is enforced with a counter in
  * `rand_a` (Method 1 of the RFC): if the clock has not advanced since the
  * last call, `rand_a` increments instead of re-rolling, so IDs generated
- * back-to-back sort strictly increasing. Thread-safe.
+ * back-to-back sort strictly increasing. A backward wall-clock step
+ * (NTP/manual adjustment) is clamped: the embedded timestamp never moves
+ * backward — the generator holds the last timestamp and keeps bumping
+ * `rand_a` until the clock catches up. Thread-safe.
  */
 object Uuid7 {
     private val random = SecureRandom()
@@ -34,23 +37,26 @@ object Uuid7 {
     /** Generates a new UUIDv7. The string form is used as the Room primary key. */
     fun generate(): UUID {
         val ms = System.currentTimeMillis()
+        val effectiveMs: Long
         val randA: Int
         val randB = ByteArray(8)
         synchronized(lock) {
-            if (ms == lastMs) {
-                // Same millisecond: bump rand_a instead of re-rolling so the
-                // sequence stays strictly increasing (wraps at 12 bits, which
-                // is acceptable — rand_b still differs with overwhelming
-                // probability).
+            if (ms <= lastMs) {
+                // Same millisecond — or the wall clock stepped backward
+                // (NTP/manual adjustment). Never embed a regressed
+                // timestamp: hold lastMs and bump rand_a instead, so the
+                // sequence stays non-decreasing. Uniqueness is preserved by
+                // rand_b even when rand_a wraps at 12 bits.
                 lastRandA = (lastRandA + 1) and 0xFFF
             } else {
                 lastMs = ms
                 lastRandA = random.nextInt(0x1000)
             }
+            effectiveMs = lastMs
             randA = lastRandA
             random.nextBytes(randB)
         }
-        val msb = (ms shl 16) or (0x7000L or randA.toLong())
+        val msb = (effectiveMs shl 16) or (0x7000L or randA.toLong())
         var lsb = 0L
         for (i in 0 until 8) {
             lsb = (lsb shl 8) or (randB[i].toLong() and 0xFF)

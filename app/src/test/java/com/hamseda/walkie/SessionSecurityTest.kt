@@ -185,12 +185,34 @@ class SessionSecurityTest {
         scopeA.cancel(); scopeB.cancel()
     }
 
-    private fun Rig.await(what: String, timeoutMs: Long = 8_000, cond: () -> Boolean) {
-        val end = System.currentTimeMillis() + timeoutMs
+    private fun Rig.await(
+        what: String,
+        timeoutMs: Long = RIG_AWAIT_TIMEOUT_MS,
+        cond: () -> Boolean,
+    ) {
+        val start = System.currentTimeMillis()
+        val end = start + timeoutMs
         while (!cond()) {
-            if (System.currentTimeMillis() > end) throw AssertionError("timeout: $what")
+            val now = System.currentTimeMillis()
+            if (now > end) {
+                throw AssertionError(
+                    "timeout: $what (waited ${now - start}ms of ${timeoutMs}ms budget)",
+                )
+            }
             Thread.sleep(10)
         }
+    }
+
+    companion object {
+        /**
+         * Budget for [await]. Aligned with the production handshake timeout:
+         * on a heavily-loaded CI runner the pre-hammer awaits ("sas phase",
+         * "in session", "transmitting") can exceed 8s with perfectly correct
+         * code. Overridable via HSEDA_TEST_AWAIT_MS for constrained runners.
+         */
+        val RIG_AWAIT_TIMEOUT_MS: Long =
+            System.getenv("HSEDA_TEST_AWAIT_MS")?.toLongOrNull()?.takeIf { it > 0 }
+                ?: 30_000L
     }
 
     @Test

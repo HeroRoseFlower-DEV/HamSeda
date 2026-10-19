@@ -117,6 +117,7 @@
     <string name="startup_permissions_continue">بررسی و اعطای دسترسی‌ها</string>
     <string name="startup_permissions_open_settings">باز کردن تنظیمات برنامه</string>
     <string name="startup_permissions_denied">بعضی از دسترسی‌ها داده نشدند. هم‌صدا تا فعال شدن دسترسی‌های لازم شروع نمی‌شود.</string>
+    <string name="startup_permissions_interrupted">درخواست مجوز پیش از پایان قطع شد. می‌توانی دوباره تلاش کنی.</string>
     <string name="startup_permissions_settings_hint">اگر اندروید دیگر پنجرهٔ درخواست مجوز را نشان نمی‌دهد، تنظیمات برنامه را باز کن و دسترسی‌های لازم را از آنجا فعال کن.</string>
     <string name="startup_permissions_requesting">در حال درخواست دسترسی بعدی از اندروید…</string>
     <string name="startup_permissions_nearby">دستگاه‌های نزدیک: اجازهٔ جست‌وجو و اتصال بلوتوث و قابل‌مشاهده‌شدن گوشی، به‌علاوهٔ کشف و اتصال مستقیم از راه وای‌فای دایرکت. اندروید این دسترسی‌ها را در پنجرهٔ «دستگاه‌های نزدیک» گروه‌بندی می‌کند.</string>

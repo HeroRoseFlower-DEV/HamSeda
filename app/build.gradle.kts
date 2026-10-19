@@ -138,6 +138,9 @@ dependencies {
     androidTestImplementation(libs.androidx.test.runner)
     androidTestImplementation(libs.androidx.test.rules)
     androidTestImplementation(libs.androidx.room.testing)
+    // Declared explicitly (not via the ui-test-junit4 transitive edge):
+    // MessageDaoTest and ProfilePhotoStoreTest use runTest directly.
+    androidTestImplementation(libs.kotlinx.coroutines.test)
 
     debugImplementation(libs.androidx.compose.ui.tooling)
     debugImplementation(libs.androidx.compose.ui.test.manifest)

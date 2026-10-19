@@ -103,6 +103,16 @@ fun StartupPermissionGate(content: @Composable () -> Unit) {
         else -> null
     }
 
+    // Process death while the system dialog was open orphans the request:
+    // shouldAutoRequest was already consumed (saveable), requestInFlight
+    // reset (not saveable), and no denial was recorded — so neither the
+    // auto-launch nor the denied UI would appear, leaving the gate idle
+    // with no in-app retry. Detect it and offer the retry action instead.
+    // (Rotation during the dialog can transiently show the same UI; the
+    // still-open dialog's callback settles the state when it returns.)
+    val orphanedRequest = nextStep != null &&
+        !shouldAutoRequest && !requestInFlight && !deniedByUser
+
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
     ) { results ->
@@ -190,9 +200,12 @@ fun StartupPermissionGate(content: @Composable () -> Unit) {
                 }
             }
             Spacer(Modifier.height(16.dp))
-            if (deniedByUser) {
+            if (deniedByUser || orphanedRequest) {
                 Text(
-                    text = stringResource(R.string.startup_permissions_denied),
+                    text = stringResource(
+                        if (deniedByUser) R.string.startup_permissions_denied
+                        else R.string.startup_permissions_interrupted,
+                    ),
                     color = MaterialTheme.colorScheme.error,
                     textAlign = TextAlign.Center,
                     style = MaterialTheme.typography.bodyMedium,

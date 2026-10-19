@@ -8,6 +8,7 @@ import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -135,5 +136,96 @@ class MessageDaoTest {
         dao.updatePeerName(fp, "Ali R.")
         val conv = dao.observeConversation(fp).first()
         assertTrue(conv.all { it.peerName == "Ali R." })
+    }
+
+    private suspend fun stateOf(id: String, peerId: String = "peer1"): Int =
+        dao.observeConversation(peerId).first().single { it.id == id }.state
+
+    @Test
+    fun ackDelivered_isAtomicAndForwardOnly() = runTest {
+        dao.insertOutgoing(msg("a1"), OutboxEntity("a1"))
+        dao.ackDelivered("a1")
+        // Both writes happened: outbox drained AND state advanced.
+        assertEquals(0, dao.outboxCount())
+        assertEquals(MessageState.DELIVERED, stateOf("a1"))
+        // A READ is never downgraded by a (late/duplicate) ACK.
+        dao.setState("a1", MessageState.READ)
+        dao.ackDelivered("a1")
+        assertEquals(MessageState.READ, stateOf("a1"))
+    }
+
+    @Test
+    fun failOutbox_isAtomic() = runTest {
+        dao.insertOutgoing(msg("f1"), OutboxEntity("f1"))
+        dao.failOutbox("f1")
+        assertEquals(0, dao.outboxCount())
+        assertEquals(MessageState.FAILED, stateOf("f1"))
+    }
+
+    @Test
+    fun advanceToSent_neverDowngrades() = runTest {
+        dao.insertOutgoing(msg("s1"), OutboxEntity("s1"))
+        dao.advanceToSent("s1")
+        assertEquals(MessageState.SENT, stateOf("s1"))
+        // A resend racing a delivered/read receipt must not move it back.
+        dao.setState("s1", MessageState.DELIVERED)
+        dao.advanceToSent("s1")
+        assertEquals(MessageState.DELIVERED, stateOf("s1"))
+        dao.setState("s1", MessageState.READ)
+        dao.advanceToSent("s1")
+        assertEquals(MessageState.READ, stateOf("s1"))
+    }
+
+    @Test
+    fun markReadByPeer_onlyAdvancesOwnOutgoing() = runTest {
+        // Own SENT message -> READ.
+        dao.insertOutgoing(msg("r1", state = MessageState.SENT), OutboxEntity("r1"))
+        dao.markReadByPeer("r1")
+        assertEquals(MessageState.READ, stateOf("r1"))
+        // Idempotent: already READ stays READ.
+        dao.markReadByPeer("r1")
+        assertEquals(MessageState.READ, stateOf("r1"))
+        // Incoming messages are never touched by a peer's read receipt.
+        dao.insertIncomingDedup(msg("r2", fromMe = false, state = MessageState.DELIVERED))
+        dao.markReadByPeer("r2")
+        assertEquals(MessageState.DELIVERED, stateOf("r2"))
+        // FAILED is terminal: a read receipt must not resurrect it.
+        dao.insertOutgoing(msg("r3", state = MessageState.FAILED), OutboxEntity("r3"))
+        dao.markReadByPeer("r3")
+        assertEquals(MessageState.FAILED, stateOf("r3"))
+        // Unknown id: no-op, no crash.
+        dao.markReadByPeer("no-such-id")
+    }
+
+    @Test
+    fun updatePeerPhoto_linksOnlyOnHashMatch() = runTest {
+        val fp = "bb".repeat(32)
+        val h1 = ByteArray(32) { 1 }
+        val h2 = ByteArray(32) { 2 }
+        dao.upsertPeer(PeerEntity(fingerprint = fp, displayName = "Ali", photoHash = h1))
+        // Matching hash: links, returns 1.
+        assertEquals(1, dao.updatePeerPhoto(fp, "/p/1.jpg", 1000L, h1))
+        assertEquals("/p/1.jpg", dao.getPeer(fp)?.photoPath)
+        // A PROFILE frame changed the hash mid-transfer. The real
+        // onProfileFrame resets photoPath to null on hash change; the stale
+        // conditional update must then be a no-op (returns 0) and must not
+        // re-link anything.
+        dao.upsertPeer(
+            PeerEntity(
+                fingerprint = fp,
+                displayName = "Ali",
+                photoHash = h2,
+                photoPath = null,
+                lastSeen = 2000L,
+            ),
+        )
+        assertEquals(0, dao.updatePeerPhoto(fp, "/p/2.jpg", 2000L, h1))
+        assertNull(dao.getPeer(fp)?.photoPath)
+        assertTrue(dao.getPeer(fp)?.photoHash.contentEquals(h2) == true)
+        // A fresh transfer under the new hash links again.
+        assertEquals(1, dao.updatePeerPhoto(fp, "/p/2.jpg", 3000L, h2))
+        assertEquals("/p/2.jpg", dao.getPeer(fp)?.photoPath)
+        // Unknown peer: no-op.
+        assertEquals(0, dao.updatePeerPhoto("zz", "/p/3.jpg", 4000L, h1))
     }
 }
