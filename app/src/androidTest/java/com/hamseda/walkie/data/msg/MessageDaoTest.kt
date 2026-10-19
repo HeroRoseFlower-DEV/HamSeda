@@ -8,6 +8,7 @@ import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -205,11 +206,26 @@ class MessageDaoTest {
         // Matching hash: links, returns 1.
         assertEquals(1, dao.updatePeerPhoto(fp, "/p/1.jpg", 1000L, h1))
         assertEquals("/p/1.jpg", dao.getPeer(fp)?.photoPath)
-        // Hash changed mid-transfer: no-op, returns 0, old link untouched.
-        dao.upsertPeer(PeerEntity(fingerprint = fp, displayName = "Ali", photoHash = h2))
+        // A PROFILE frame changed the hash mid-transfer. The real
+        // onProfileFrame resets photoPath to null on hash change; the stale
+        // conditional update must then be a no-op (returns 0) and must not
+        // re-link anything.
+        dao.upsertPeer(
+            PeerEntity(
+                fingerprint = fp,
+                displayName = "Ali",
+                photoHash = h2,
+                photoPath = null,
+                lastSeen = 2000L,
+            ),
+        )
         assertEquals(0, dao.updatePeerPhoto(fp, "/p/2.jpg", 2000L, h1))
-        assertEquals("/p/1.jpg", dao.getPeer(fp)?.photoPath)
+        assertNull(dao.getPeer(fp)?.photoPath)
+        assertTrue(dao.getPeer(fp)?.photoHash.contentEquals(h2) == true)
+        // A fresh transfer under the new hash links again.
+        assertEquals(1, dao.updatePeerPhoto(fp, "/p/2.jpg", 3000L, h2))
+        assertEquals("/p/2.jpg", dao.getPeer(fp)?.photoPath)
         // Unknown peer: no-op.
-        assertEquals(0, dao.updatePeerPhoto("zz", "/p/3.jpg", 3000L, h1))
+        assertEquals(0, dao.updatePeerPhoto("zz", "/p/3.jpg", 4000L, h1))
     }
 }
