@@ -145,11 +145,11 @@ fun ChatScreen(
         // Bottom inset applied exactly once: navigation-bar height with the
         // keyboard closed, keyboard height with it open (ime already spans
         // from the screen bottom). Top/sides still come from the inner
-        // Scaffold; its own bottom inset (the nav bar) is NOT taken here
-        // because the root layout already applies it once — taking it too
-        // stacked a second copy (nested-Scaffold double inset, ~1 nav-bar
-        // of dead space above the input). The root likewise skips its
-        // bottom padding on the chat screen (see HamSedaRoot).
+        // Scaffold, but its own bottom inset (the nav bar) is NOT taken here,
+        // and the root layout skips its bottom padding on the chat screen
+        // too (see HamSedaRoot) — otherwise the two stack a second copy
+        // (nested-Scaffold double inset, ~1 nav-bar of dead space above
+        // the input, as seen in the user's screenshot).
         val bottomInset = maxOf(
             WindowInsets.ime.asPaddingValues().calculateBottomPadding(),
             WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding(),
