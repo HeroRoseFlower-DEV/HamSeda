@@ -1,6 +1,6 @@
 [versions]
 # Build toolchain is pinned separately. Dependency versions verified against official release pages (2026-10-12).
-agp = "9.3.3"
+agp = "9.4.1"
 kotlin = "2.4.21"
 composeBom = "2026.09.00"
 core = "1.19.1"
