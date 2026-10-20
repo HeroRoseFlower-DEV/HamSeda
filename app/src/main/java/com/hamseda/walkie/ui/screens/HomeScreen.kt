@@ -37,7 +37,9 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -90,11 +92,21 @@ fun HomeScreen(
     val context = LocalContext.current
     val vibrationEnabled by vm.vibrationEnabled.collectAsStateWithLifecycle()
     val vibrator = rememberVibrator()
+    // Whether the user's finger is physically on the PTT button right now.
+    // The permission dialog interrupts the touch (the release fires
+    // immediately), so by the time the grant callback runs the press is
+    // over: enabling PTT there would latch the microphone open with no
+    // finger down and no future release event — the mic must never be open
+    // outside a live press.
+    var pttHeld by remember { mutableStateOf(false) }
     val micLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { granted ->
         if (granted) {
-            vm.setPtt(true)
+            // Engage only if the press somehow survived the dialog; the
+            // normal path is that the user presses again (permission now
+            // granted, straight to setPtt(true)).
+            if (pttHeld) vm.setPtt(true)
         } else {
             // Denying the mic on the PTT button must not fail silently: the
             // user pressed the big button and got zero feedback.
@@ -181,6 +193,7 @@ fun HomeScreen(
                     enabled = true,
                     level = level,
                     onPressDown = {
+                        pttHeld = true
                         val granted = ContextCompat.checkSelfPermission(
                             context, Manifest.permission.RECORD_AUDIO,
                         ) == android.content.pm.PackageManager.PERMISSION_GRANTED
@@ -195,7 +208,10 @@ fun HomeScreen(
                             vm.setPtt(true)
                         } else micLauncher.launch(Manifest.permission.RECORD_AUDIO)
                     },
-                    onRelease = { vm.setPtt(false) },
+                    onRelease = {
+                        pttHeld = false
+                        vm.setPtt(false)
+                    },
                 )
                 Spacer(Modifier.height(20.dp))
                 OutlinedButton(

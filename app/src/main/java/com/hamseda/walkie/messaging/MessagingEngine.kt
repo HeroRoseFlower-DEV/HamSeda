@@ -81,9 +81,14 @@ class MessagingEngine(
     /** Chat currently open in the UI; null when no chat is visible. */
     private val activePeer = MutableStateFlow<String?>(null)
 
-    /** Peer's last HELLO cursor: skip re-sending seq <= this on drain. */
-    @Volatile
-    private var peerLastSeenSeq: Long = 0L
+    /**
+     * Per-peer HELLO cursors: how far THIS peer has seen of our outbox.
+     * Strictly per-peer — senderSeq spaces are independent per peer, so a
+     * single global cursor lets one peer's HELLO silently "deliver" (drop)
+     * another peer's queued rows (round-6 C1). Skip re-sending seq <= the
+     * cursor on drain.
+     */
+    private val helloLastSeenSeq = ConcurrentHashMap<String, Long>()
 
     // ------------------------------------------------------------ observables
 
@@ -107,22 +112,20 @@ class MessagingEngine(
     /** Conversations ordered by recency, with unread badges. */
     val conversations: StateFlow<List<ConversationView>> =
         combine(
-            dao.observeRecent(300),
+            dao.observeLatestPerPeer(),
             dao.observeUnread(),
-        ) { recent, unreadRows ->
+        ) { latest, unreadRows ->
             val unreadByPeer = unreadRows.associate { it.peerId to it.unread }
-            recent.groupBy { it.peerId }
-                .map { (peerId, msgs) ->
-                    val last = msgs.first()
-                    ConversationView(
-                        peerId = peerId,
-                        peerName = last.peerName.ifEmpty { shortId(peerId) },
-                        lastBody = last.body,
-                        lastTimestamp = last.timestamp,
-                        lastIsFromMe = last.isFromMe,
-                        unread = unreadByPeer[peerId] ?: 0,
-                    )
-                }
+            latest.map { last ->
+                ConversationView(
+                    peerId = last.peerId,
+                    peerName = last.peerName.ifEmpty { shortId(last.peerId) },
+                    lastBody = last.body,
+                    lastTimestamp = last.timestamp,
+                    lastIsFromMe = last.isFromMe,
+                    unread = unreadByPeer[last.peerId] ?: 0,
+                )
+            }
         }.stateIn(scope, SharingStarted.Eagerly, emptyList())
 
     val unreadTotal: StateFlow<Int> =
@@ -156,14 +159,17 @@ class MessagingEngine(
         manager.messagingListener = SessionManager.MessagingFrameListener { type, plaintext ->
             onFrame(type, plaintext)
         }
+        startFrameProcessor()
         startAckBatcher()
         attachJobs += scope.launch {
             manager.phase.collect { phase ->
                 val up = phase == SessionManager.Phase.IN_SESSION
                 _online.value = up
                 if (up) {
-                    peerLastSeenSeq = 0L
                     refreshPeerId()
+                    // Fresh HELLO exchange on every session: forget this
+                    // peer's old cursor until its HELLO re-advertises it.
+                    helloLastSeenSeq.remove(currentPeerId.value)
                     sendHello()
                     sendProfile()
                     drainOutbox()
@@ -192,6 +198,12 @@ class MessagingEngine(
         // otherwise they keep publishing the last fingerprint/name after
         // every session end without an immediate re-attach.
         currentPeerId.value = ""
+        // Typing state belongs to the dead session: the phase collector
+        // that normally clears it is cancelled by detach() itself, so
+        // without this the indicator could outlive the session to its TTL.
+        _peerTyping.value = false
+        typingTimeoutJob?.cancel()
+        helloLastSeenSeq.clear()
         // Drop partial chunk reassemblies: they belong to the old session's
         // key material and must never complete under a new one.
         reassembly.clear()
@@ -231,16 +243,27 @@ class MessagingEngine(
         return entity.id
     }
 
-    /** Drains due outbox entries while the session is up. Serialized. */
+    /**
+     * Drains due outbox entries for the CONNECTED peer only, while its
+     * session is up. Serialized. Strictly scoped: a row queued for peer A
+     * must never be sent on peer B's session (confidentiality) nor be
+     * dropped by B's HELLO cursor (silent data loss) — round-6 C1.
+     */
     private suspend fun drainOutbox() {
         val mgr = manager ?: return
         if (!_online.value) return
+        val peerId = currentPeerId.value
+        if (peerId.isEmpty()) return
         sendMutex.withLock {
             val now = System.currentTimeMillis()
-            val due = dao.dueOutbox(now, DRAIN_BATCH)
+            val due = dao.dueOutbox(peerId, now, DRAIN_BATCH)
+            val lastSeen = helloLastSeenSeq[peerId] ?: 0L
             for (item in due) {
-                if (item.senderSeq <= peerLastSeenSeq) {
-                    // Peer already saw it (HELLO cursor); treat as delivered.
+                // Defense in depth: the query already filters by peer,
+                // but never let a row cross sessions even if it regresses.
+                if (item.peerId != peerId) continue
+                if (item.senderSeq <= lastSeen) {
+                    // This peer already saw it (its HELLO cursor); delivered.
                     dao.ackDelivered(item.msgId)
                     continue
                 }
@@ -306,27 +329,54 @@ class MessagingEngine(
 
     // --------------------------------------------------------------- receive
 
-    private fun onFrame(type: Byte, plaintext: ByteArray) {
+    /**
+     * Inbound frames queue here and are processed strictly in wire order
+     * by ONE consumer. Launching a coroutine per frame let the dispatcher
+     * process them out of order: a PROFILE_PHOTO chunk could snapshot the
+     * peer row before its PROFILE frame landed (stale expectedHash → the
+     * new photo silently failed verification), chunks arriving before a
+     * first-seen peer's PROFILE were dropped outright, and bursts could
+     * insert out of order.
+     */
+    private val frameChannel = Channel<Pair<Byte, ByteArray>>(Channel.UNLIMITED)
+
+    @Volatile
+    private var frameProcessorStarted = false
+
+    private fun startFrameProcessor() {
+        if (frameProcessorStarted) return
+        frameProcessorStarted = true
         scope.launch {
-            try {
-                when (type) {
-                    MessageType.MSG -> onTextFrame(MessagingCodec.decodeText(plaintext))
-                    MessageType.CHUNK -> onChunkFrame(MessagingCodec.decodeChunk(plaintext))
-                    MessageType.MSG_ACK -> onAck(MessagingCodec.decodeId(plaintext))
-                    MessageType.MSG_READ -> onRead(MessagingCodec.decodeId(plaintext))
-                    MessageType.TYPING -> onTyping(MessagingCodec.decodeTyping(plaintext))
-                    MessageType.MSG_HELLO -> onHello(MessagingCodec.decodeHello(plaintext))
-                    MessageType.PROFILE -> onProfileFrame(MessagingCodec.decodeProfile(plaintext))
-                    MessageType.PROFILE_PHOTO -> onPhotoChunk(MessagingCodec.decodePhotoChunk(plaintext))
-                    else -> Unit
-                }
-            } catch (e: MsgCodecException) {
-                Log.w(TAG, "dropping malformed messaging frame", e)
-            } catch (e: Exception) {
-                Log.w(TAG, "messaging frame handling failed", e)
-            } finally {
-                plaintext.fill(0)
+            for ((type, plaintext) in frameChannel) {
+                processFrame(type, plaintext)
             }
+        }
+    }
+
+    private fun onFrame(type: Byte, plaintext: ByteArray) {
+        // Enqueue only — never blocks the session's reader thread.
+        frameChannel.trySend(type to plaintext)
+    }
+
+    private suspend fun processFrame(type: Byte, plaintext: ByteArray) {
+        try {
+            when (type) {
+                MessageType.MSG -> onTextFrame(MessagingCodec.decodeText(plaintext))
+                MessageType.CHUNK -> onChunkFrame(MessagingCodec.decodeChunk(plaintext))
+                MessageType.MSG_ACK -> onAck(MessagingCodec.decodeId(plaintext))
+                MessageType.MSG_READ -> onRead(MessagingCodec.decodeId(plaintext))
+                MessageType.TYPING -> onTyping(MessagingCodec.decodeTyping(plaintext))
+                MessageType.MSG_HELLO -> onHello(MessagingCodec.decodeHello(plaintext))
+                MessageType.PROFILE -> onProfileFrame(MessagingCodec.decodeProfile(plaintext))
+                MessageType.PROFILE_PHOTO -> onPhotoChunk(MessagingCodec.decodePhotoChunk(plaintext))
+                else -> Unit
+            }
+        } catch (e: MsgCodecException) {
+            Log.w(TAG, "dropping malformed messaging frame", e)
+        } catch (e: Exception) {
+            Log.w(TAG, "messaging frame handling failed", e)
+        } finally {
+            plaintext.fill(0)
         }
     }
 
@@ -435,14 +485,25 @@ class MessagingEngine(
 
     private suspend fun onAck(msgId: UUID) {
         val id = msgId.toString()
+        // Scoped to the connected peer's conversation: an ACK may only
+        // move messages that belong to the peer on THIS session. (The DAO
+        // already guards direction/state; this stops a peer from acking
+        // ids of a conversation it is not part of.)
+        val msg = dao.getMessage(id) ?: return
+        if (msg.peerId != currentPeerId.value) return
         // Advance forward only: never downgrade a READ back to DELIVERED.
         dao.ackDelivered(id)
     }
 
     private suspend fun onRead(msgId: UUID) {
+        val id = msgId.toString()
+        // Same scoping as onAck: read receipts apply only to the sender's
+        // own conversation with the connected peer.
+        val msg = dao.getMessage(id) ?: return
+        if (msg.peerId != currentPeerId.value) return
         // Guarded: a remote peer may only advance our own outgoing messages
         // forward to READ — never incoming, FAILED, or unknown ids.
-        dao.markReadByPeer(msgId.toString())
+        dao.markReadByPeer(id)
     }
 
     /**
@@ -451,10 +512,21 @@ class MessagingEngine(
      * is visibly open — never from the background or notifications.
      */
     suspend fun markReadVisible(peerId: String) {
-        if (!settings.readReceiptsFlow.first()) return
         val ids = dao.unreadIncomingIds(peerId)
+        if (ids.isNotEmpty()) {
+            // Local read state is UNCONDITIONAL: the user has seen these
+            // messages. The receipts setting governs only telling the peer —
+            // conflating the two left this peer's unread badges stuck
+            // forever whenever receipts were off.
+            dao.markPeerRead(peerId)
+        }
         if (ids.isEmpty()) return
-        dao.markPeerRead(peerId)
+        if (!settings.readReceiptsFlow.first()) return
+        // Receipts go only over the session WITH THIS PEER. Sending another
+        // conversation's message ids to whoever is connected leaks them
+        // (UUIDv7s embed timestamps) and the intended peer never receives
+        // its receipts.
+        if (currentPeerId.value != peerId) return
         val mgr = manager ?: return
         for (id in ids) {
             runCatching {
@@ -467,8 +539,10 @@ class MessagingEngine(
     }
 
     private suspend fun maybeSendReadReceipt(msgId: String) {
-        if (!settings.readReceiptsFlow.first()) return
+        // The chat is visibly open on this message: it is read locally no
+        // matter the receipts setting; only the wire receipt is gated.
         dao.setState(msgId, MessageState.READ)
+        if (!settings.readReceiptsFlow.first()) return
         runCatching {
             manager?.sendMessagingFrame(
                 MessageType.MSG_READ,
@@ -497,7 +571,13 @@ class MessagingEngine(
                     true
                 }
             }
-            if (!send || activePeer.value == null || !_online.value) return@launch
+            // Only for the CONNECTED peer's own chat: typing in an offline
+            // conversation (A) while a session with B is up must not show
+            // B a typing indicator for a chat B is not part of.
+            val active = activePeer.value
+            if (!send || active == null || active != currentPeerId.value || !_online.value) {
+                return@launch
+            }
             runCatching {
                 manager?.sendMessagingFrame(
                     MessageType.TYPING,
@@ -539,7 +619,10 @@ class MessagingEngine(
         scope.launch {
             val peerId = currentPeerId.value
             if (peerId.isEmpty()) return@launch
-            val lastSeen = dao.maxPeerSeq(peerId) ?: 0L
+            // Advertise a contiguous WATERMARK, not the max seq: a gap
+            // below the max (a receive lost in a crash/race window) must
+            // not make the sender drop a message we never actually got.
+            val lastSeen = contiguousWatermark(dao.receivedSeqs(peerId))
             runCatching {
                 manager?.sendMessagingFrame(
                     MessageType.MSG_HELLO,
@@ -550,8 +633,13 @@ class MessagingEngine(
     }
 
     private fun onHello(lastSeenSeq: Long) {
-        // The peer has seen everything up to lastSeenSeq; don't resend it.
-        if (lastSeenSeq > peerLastSeenSeq) peerLastSeenSeq = lastSeenSeq
+        // The cursor describes THIS peer's view of OUR outbox — store it
+        // under the connected peer only (round-6 C1).
+        val peerId = currentPeerId.value
+        if (peerId.isNotEmpty()) {
+            val prev = helloLastSeenSeq[peerId] ?: 0L
+            if (lastSeenSeq > prev) helloLastSeenSeq[peerId] = lastSeenSeq
+        }
         scope.launch { drainOutbox() }
     }
 
@@ -614,10 +702,6 @@ class MessagingEngine(
         val existing = dao.getPeer(peerId)
         val hashChanged = existing == null ||
             !existing.photoHash.contentEquals(profile.photoHash)
-        if (hashChanged && !profile.hasPhoto) {
-            // Peer removed their photo: drop the stale file.
-            photoStore.removePeerPhoto(peerId)
-        }
         dao.upsertPeer(
             PeerEntity(
                 fingerprint = peerId,
@@ -627,6 +711,15 @@ class MessagingEngine(
                 lastSeen = now,
             ),
         )
+        if (hashChanged && !profile.hasPhoto) {
+            // Peer removed their photo: drop the stale file. AFTER the
+            // upsert on purpose: the upsert stores the new (empty) hash
+            // and nulls photoPath first, so a photo transfer completing
+            // concurrently can no longer re-link the old file afterwards
+            // (its conditional link matches the OLD hash, just replaced) —
+            // deleting first used to leave exactly that file orphaned.
+            photoStore.removePeerPhoto(peerId)
+        }
         // Keep the denormalized names on past messages in sync.
         dao.updatePeerName(peerId, profile.name)
         refreshPeerProfile()
@@ -779,6 +872,31 @@ class MessagingEngine(
         /** Short, stable display fallback for identity-based peer ids. */
         fun shortId(peerId: String): String =
             if (peerId.length <= 12) peerId else peerId.take(12) + "…"
+
+        /**
+         * Highest contiguous watermark of a peer's received seqs: the
+         * largest N such that every seq from the first received one up to
+         * N is present. HELLO advertises this (never the bare max), so a
+         * gap below the max cannot make the sender skip a message that
+         * was never actually received. Pure — unit tested.
+         */
+        fun contiguousWatermark(seqsAscending: List<Long>): Long {
+            if (seqsAscending.isEmpty()) return 0L
+            var expected = seqsAscending.first()
+            var watermark = expected - 1
+            for (seq in seqsAscending) {
+                when {
+                    seq == expected -> {
+                        watermark = seq
+                        expected++
+                    }
+                    seq > expected -> break
+                    // seq < expected: duplicate — dedup makes this
+                    // unreachable in practice; skip defensively.
+                }
+            }
+            return watermark
+        }
 
         /**
          * Deterministic backoff base: 1s, 2s, 4s … capped at 60s.

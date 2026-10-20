@@ -45,9 +45,18 @@ object Uuid7 {
                 // Same millisecond — or the wall clock stepped backward
                 // (NTP/manual adjustment). Never embed a regressed
                 // timestamp: hold lastMs and bump rand_a instead, so the
-                // sequence stays non-decreasing. Uniqueness is preserved by
-                // rand_b even when rand_a wraps at 12 bits.
-                lastRandA = (lastRandA + 1) and 0xFFF
+                // sequence stays strictly increasing. If the 12-bit
+                // counter is exhausted inside the held millisecond, do
+                // NOT wrap it (a wrapped rand_a would sort BELOW the
+                // previous id and break monotonicity): advance the held
+                // timestamp by 1ms and restart the counter — the clock
+                // catches up to it almost immediately.
+                if (lastRandA == 0xFFF) {
+                    lastMs += 1
+                    lastRandA = 0
+                } else {
+                    lastRandA += 1
+                }
             } else {
                 lastMs = ms
                 lastRandA = random.nextInt(0x1000)

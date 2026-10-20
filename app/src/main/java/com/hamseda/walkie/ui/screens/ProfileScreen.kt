@@ -5,7 +5,6 @@ import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -75,12 +74,14 @@ import kotlinx.coroutines.delay
 @Composable
 fun ProfileScreen(
     deps: VmDeps,
+    dark: Boolean,
     onBack: () -> Unit,
     vm: ProfileViewModel = viewModel(factory = VmFactory(deps)),
 ) {
     val savedName by vm.profileName.collectAsStateWithLifecycle()
     val photoPath by vm.photoPath.collectAsStateWithLifecycle()
-    val dark = isSystemInDarkTheme()
+    // Resolved theme passed from MainActivity (honors the user's ThemeMode
+    // override) — not isSystemInDarkTheme().
     val headerBg = if (dark) TelegramColors.InputBarDark else Color.White
 
     // rememberSaveable: rotation must not lose an unsaved name edit.
@@ -93,6 +94,16 @@ fun ProfileScreen(
     // Save would persist "" and destroy the user's name.
     LaunchedEffect(savedName) {
         if (name == null && savedName.isNotEmpty()) name = savedName
+    }
+
+    // THE save path — both triggers (IME Done, Save button) go through here.
+    // While the editor is unseeded (name == null: the stored name hasn't
+    // loaded yet, or the stored name is genuinely empty) Save must be a
+    // no-op: writing orEmpty() here would persist "" over a stored name
+    // that simply hasn't arrived yet. A DELIBERATE clear still works:
+    // once seeded, clearing the field produces "" (non-null), which saves.
+    val saveName: () -> Unit = {
+        name?.let { vm.setName(it); savedFlash = true }
     }
     LaunchedEffect(savedFlash) {
         if (savedFlash) {
@@ -211,18 +222,12 @@ fun ProfileScreen(
                 ),
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
                 keyboardActions = KeyboardActions(
-                    onDone = {
-                        vm.setName(name.orEmpty())
-                        savedFlash = true
-                    },
+                    onDone = { saveName() },
                 ),
             )
 
             Button(
-                onClick = {
-                    vm.setName(name.orEmpty())
-                    savedFlash = true
-                },
+                onClick = { saveName() },
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(16.dp),
                 colors = ButtonDefaults.buttonColors(

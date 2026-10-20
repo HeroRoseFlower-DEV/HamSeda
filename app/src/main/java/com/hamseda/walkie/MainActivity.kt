@@ -32,6 +32,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -58,7 +59,7 @@ import com.hamseda.walkie.ui.theme.HamSedaTheme
 import com.hamseda.walkie.ui.theme.TelegramColors
 import com.hamseda.walkie.ui.screens.StartupPermissionGate
 import com.hamseda.walkie.ui.vm.VmDeps
-import com.hamseda.walkie.util.toFaDigits
+import com.hamseda.walkie.util.toLocalizedDigits
 import kotlinx.coroutines.runBlocking
 import java.util.Locale
 
@@ -285,6 +286,7 @@ private fun HamSedaRoot(deps: VmDeps, darkTheme: Boolean, onLanguageChanged: () 
                     // Refresh the Settings card photo when coming back.
                     ProfileScreen(
                         deps = deps,
+                        dark = darkTheme,
                         onBack = { screen = Screen.SETTINGS },
                     )
                 }
@@ -292,6 +294,7 @@ private fun HamSedaRoot(deps: VmDeps, darkTheme: Boolean, onLanguageChanged: () 
                 Screen.DIAGNOSTICS -> DiagnosticsScreen(onBack = { screen = Screen.SETTINGS })
                 Screen.MESSAGES -> MessagesScreen(
                     deps = deps,
+                    dark = darkTheme,
                     onOpenChat = { peerId ->
                         chatPeerId = peerId
                         screen = Screen.CHAT
@@ -301,11 +304,18 @@ private fun HamSedaRoot(deps: VmDeps, darkTheme: Boolean, onLanguageChanged: () 
                 Screen.CHAT -> {
                     val peerId = chatPeerId
                     if (peerId != null) {
-                        ChatScreen(
-                            deps = deps,
-                            peerId = peerId,
-                            onBack = { screen = Screen.MESSAGES },
-                        )
+                        // Keyed by peer: switching conversations must fully
+                        // reset ChatScreen's remembered state — above all
+                        // the input draft, which must never leak from one
+                        // conversation into another.
+                        key(peerId) {
+                            ChatScreen(
+                                deps = deps,
+                                peerId = peerId,
+                                dark = darkTheme,
+                                onBack = { screen = Screen.MESSAGES },
+                            )
+                        }
                     } else {
                         // Defer: assigning state during composition is a side effect.
                         LaunchedEffect(Unit) { screen = Screen.MESSAGES }
@@ -343,7 +353,11 @@ private fun MainBottomBar(
                                 containerColor = if (dark) TelegramColors.UnreadBadgeDark
                                 else TelegramColors.UnreadBadgeLight,
                             ) {
-                                Text(unreadTotal.toString().toFaDigits())
+                                Text(
+                                    unreadTotal.toString().toLocalizedDigits(
+                                        androidx.compose.ui.text.intl.Locale.current.platformLocale,
+                                    ),
+                                )
                             }
                         }
                     },

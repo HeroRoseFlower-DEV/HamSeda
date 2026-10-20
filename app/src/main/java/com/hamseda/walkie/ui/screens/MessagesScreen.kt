@@ -2,7 +2,6 @@ package com.hamseda.walkie.ui.screens
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -46,7 +45,7 @@ import com.hamseda.walkie.ui.theme.TelegramColors
 import com.hamseda.walkie.ui.vm.MessagesViewModel
 import com.hamseda.walkie.ui.vm.VmDeps
 import com.hamseda.walkie.ui.vm.VmFactory
-import com.hamseda.walkie.util.toFaDigits
+import com.hamseda.walkie.util.toLocalizedDigits
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
@@ -59,6 +58,7 @@ import java.util.Date
 @Composable
 fun MessagesScreen(
     deps: VmDeps,
+    dark: Boolean,
     onOpenChat: (peerId: String) -> Unit,
     onOpenDiscovery: () -> Unit,
     vm: MessagesViewModel = viewModel(factory = VmFactory(deps)),
@@ -69,7 +69,8 @@ fun MessagesScreen(
     val livePeerName by vm.livePeerName.collectAsStateWithLifecycle()
     val knownPeerIds = remember(conversations) { conversations.map { it.peerId }.toSet() }
     val showNewChat = online && livePeerId.isNotEmpty() && livePeerId !in knownPeerIds
-    val dark = isSystemInDarkTheme()
+    // Resolved theme passed from MainActivity (honors the user's ThemeMode
+    // override) — not isSystemInDarkTheme().
     val headerBg = if (dark) TelegramColors.InputBarDark else Color.White
     val screenBg = if (dark) TelegramColors.ChatBackgroundDark else Color.White
 
@@ -342,7 +343,9 @@ private fun TelegramConversationRow(
                         contentAlignment = Alignment.Center,
                     ) {
                         Text(
-                            text = conv.unread.toString().toFaDigits(),
+                            text = conv.unread.toString().toLocalizedDigits(
+                                androidx.compose.ui.text.intl.Locale.current.platformLocale,
+                            ),
                             color = Color.White,
                             fontSize = 12.sp,
                             fontWeight = FontWeight.Bold,
@@ -354,7 +357,7 @@ private fun TelegramConversationRow(
     }
 }
 
-/** Short relative time for the conversation list, Persian digits. */
+/** Short relative time for the conversation list; digits follow the UI locale. */
 @Composable
 private fun formatListTime(ts: Long): String {
     val yesterdayLabel = stringResource(R.string.msg_yesterday)
@@ -367,12 +370,12 @@ private fun formatListTime(ts: Long): String {
     return when {
         now.get(Calendar.YEAR) == then.get(Calendar.YEAR) &&
             now.get(Calendar.DAY_OF_YEAR) == then.get(Calendar.DAY_OF_YEAR) ->
-            timeFmt.format(Date(ts)).toFaDigits()
+            timeFmt.format(Date(ts)).toLocalizedDigits(locale)
         run {
             val y = Calendar.getInstance().apply { add(Calendar.DAY_OF_YEAR, -1) }
             y.get(Calendar.YEAR) == then.get(Calendar.YEAR) &&
                 y.get(Calendar.DAY_OF_YEAR) == then.get(Calendar.DAY_OF_YEAR)
         } -> yesterdayLabel
-        else -> SimpleDateFormat("d MMM", locale).format(Date(ts)).toFaDigits()
+        else -> SimpleDateFormat("d MMM", locale).format(Date(ts)).toLocalizedDigits(locale)
     }
 }

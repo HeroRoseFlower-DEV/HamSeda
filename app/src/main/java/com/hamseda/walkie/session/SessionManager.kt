@@ -969,8 +969,21 @@ class SessionManager(
      */
     private fun wipeSecrets() {
         hs.wipe()
-        codec?.close(); codec = null
-        txCodec?.close(); txCodec = null
+        // Each close guarded: a throwing codec close must not abort the
+        // rest of the wipe — and via close(), must never skip scheduling
+        // the cleanup block (its callback releases the service wake lock).
+        try {
+            codec?.close()
+        } catch (e: Exception) {
+            Log.w(TAG, "wipeSecrets: codec close failed: ${e.javaClass.simpleName}")
+        }
+        codec = null
+        try {
+            txCodec?.close()
+        } catch (e: Exception) {
+            Log.w(TAG, "wipeSecrets: txCodec close failed: ${e.javaClass.simpleName}")
+        }
+        txCodec = null
         _peerIdentityTrusted.value = false
         _peerIdentityFingerprint.value = null
     }
@@ -1046,7 +1059,13 @@ class SessionManager(
         // is not needed for correctness — encode-after-close is caught per
         // frame and OpusCodec.close() is serialized on the codec lock, so
         // there is no native use-after-free.
-        wipeSecrets()
+        // Guarded so NOTHING in the sync prologue can skip scheduling the
+        // cleanup block below: the callback contract depends on it.
+        try {
+            wipeSecrets()
+        } catch (e: Exception) {
+            Log.w(TAG, "close: wipeSecrets failed: ${e.javaClass.simpleName}")
+        }
         jitter.reset()
         replay.reset()
         pendingKeyConfirmFrame?.payload?.fill(0); pendingKeyConfirmFrame = null
@@ -1062,28 +1081,43 @@ class SessionManager(
         // cancels that scope immediately after close() returns. Serialize final
         // transport cleanup with an in-flight teardown and keep it non-cancellable.
         cleanupScope.launch {
-            withContext(NonCancellable) {
-                teardownMutex.withLock {
-                    try { transport?.disconnect() } catch (e: Exception) { Log.w(TAG, "cleanup: transport disconnect failed: ${e.javaClass.simpleName}") }
-                    detachTransport()
-                    _transportType.value = null
-                    synchronized(lifecycleLock) { _phase.value = Phase.IDLE }
+            try {
+                withContext(NonCancellable) {
+                    teardownMutex.withLock {
+                        try { transport?.disconnect() } catch (e: Exception) { Log.w(TAG, "cleanup: transport disconnect failed: ${e.javaClass.simpleName}") }
+                        try { detachTransport() } catch (e: Exception) { Log.w(TAG, "cleanup: detachTransport failed: ${e.javaClass.simpleName}") }
+                        _transportType.value = null
+                        synchronized(lifecycleLock) { _phase.value = Phase.IDLE }
+                    }
+                }
+                // Off-main barrier (was on the main thread above): let the
+                // queued stopCapture/stopPlayback finish, then shut the executor
+                // down. Runs here — not on the main thread — because the drain
+                // can block up to 5s on a stuck HAL/worker (the ANR threshold).
+                // No self-deadlock: neither close() nor teardown() runs on the
+                // audio executor thread.
+                try {
+                    drainAudioExecutor()
+                    audioExecutor.shutdown()
+                } catch (e: Exception) {
+                    Log.w(TAG, "cleanup: audio executor shutdown failed: ${e.javaClass.simpleName}")
+                }
+            } finally {
+                // Hard contract (see KDoc): the callback fires exactly once
+                // on EVERY path — VoiceService releases its wake lock only
+                // here, and a swallowed failure would hold it until process
+                // death. The cleanup scope is deliberately NOT cancelled at
+                // the end of this block: cancelling the shared scope from
+                // inside one close() would smother a second close()'s block
+                // before it ever runs (its callback would never fire). The
+                // scope is idle once cleanup completes and dies with the
+                // manager.
+                try {
+                    onCleanupDone?.invoke()
+                } catch (e: Exception) {
+                    Log.w(TAG, "cleanup: onCleanupDone failed: ${e.javaClass.simpleName}")
                 }
             }
-            // Off-main barrier (was on the main thread above): let the
-            // queued stopCapture/stopPlayback finish, then shut the executor
-            // down. Runs here — not on the main thread — because the drain
-            // can block up to 5s on a stuck HAL/worker (the ANR threshold).
-            // No self-deadlock: neither close() nor teardown() runs on the
-            // audio executor thread.
-            drainAudioExecutor()
-            audioExecutor.shutdown()
-            try {
-                onCleanupDone?.invoke()
-            } catch (e: Exception) {
-                Log.w(TAG, "cleanup: onCleanupDone failed: ${e.javaClass.simpleName}")
-            }
-            cleanupJob.cancel()
         }
     }
 

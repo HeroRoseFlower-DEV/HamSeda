@@ -30,11 +30,29 @@ class ProfilePhotoStore(private val appContext: Context) {
     fun ownPhotoFile(): File? =
         File(profileDir(), "own.jpg").takeIf { it.exists() && it.length() > 0 }
 
-    fun peerPhotoFile(fingerprint: String): File? {
+    /**
+     * The one path derivation for a peer's photo, used by save / read /
+     * delete alike. Real identity fingerprints are 64 hex chars and pass
+     * through unchanged. For FALLBACK ids (transport names, "peer") the
+     * sanitized form drops characters, so two distinct ids could sanitize
+     * to the same prefix and share (or delete) each other's file — those
+     * get a hash suffix of the FULL id, which cannot collide.
+     */
+    private fun peerPhotoFileName(fingerprint: String): String? {
         val safe = fingerprint.filter { it.isLetterOrDigit() }.take(64)
         if (safe.isEmpty()) return null
-        return File(peersDir(), "$safe.jpg").takeIf { it.exists() && it.length() > 0 }
+        if (safe == fingerprint) return "$safe.jpg"
+        val digest = MessageDigest.getInstance("SHA-256")
+            .digest(fingerprint.toByteArray(Charsets.UTF_8))
+        val suffix = digest.joinToString("") { "%02x".format(it) }.take(16)
+        return "$safe-$suffix.jpg"
     }
+
+    private fun peerPhotoTarget(fingerprint: String): File? =
+        peerPhotoFileName(fingerprint)?.let { File(peersDir(), it) }
+
+    fun peerPhotoFile(fingerprint: String): File? =
+        peerPhotoTarget(fingerprint)?.takeIf { it.exists() && it.length() > 0 }
 
     /**
      * Imports the user's photo from the system picker: downscales so the
@@ -63,25 +81,30 @@ class ProfilePhotoStore(private val appContext: Context) {
      */
     suspend fun savePeerPhoto(fingerprint: String, bytes: ByteArray, expectedHash: ByteArray): File? =
         withContext(Dispatchers.IO) {
-            try {
-                val safe = fingerprint.filter { it.isLetterOrDigit() }.take(64)
-                if (safe.isEmpty()) return@withContext null
-                val actual = MessageDigest.getInstance("SHA-256").digest(bytes)
-                if (!actual.contentEquals(expectedHash)) {
-                    Log.w(TAG, "peer photo hash mismatch; discarding")
-                    return@withContext null
+            // Serialized with deleteIfHashMatches/removePeerPhoto on the
+            // shared static lock: several store instances exist, and a
+            // delete racing this write must not interleave with it.
+            synchronized(FILE_LOCK) {
+                try {
+                    val out = peerPhotoTarget(fingerprint) ?: return@withContext null
+                    val actual = MessageDigest.getInstance("SHA-256").digest(bytes)
+                    if (!actual.contentEquals(expectedHash)) {
+                        Log.w(TAG, "peer photo hash mismatch; discarding")
+                        return@withContext null
+                    }
+                    FileOutputStream(out).use { it.write(bytes) }
+                    out
+                } catch (e: Exception) {
+                    Log.w(TAG, "savePeerPhoto failed", e)
+                    null
                 }
-                val out = File(peersDir(), "$safe.jpg")
-                FileOutputStream(out).use { it.write(bytes) }
-                out
-            } catch (e: Exception) {
-                Log.w(TAG, "savePeerPhoto failed", e)
-                null
             }
         }
 
     suspend fun removePeerPhoto(fingerprint: String): Unit = withContext(Dispatchers.IO) {
-        runCatching { peerPhotoFile(fingerprint)?.delete() }
+        synchronized(FILE_LOCK) {
+            runCatching { peerPhotoFile(fingerprint)?.delete() }
+        }
     }
 
     /**
@@ -89,17 +112,24 @@ class ProfilePhotoStore(private val appContext: Context) {
      * transfers share one path per peer (`<fingerprint>.jpg`), so a stale
      * transfer must never blindly delete: a newer transfer may have
      * overwritten the path since our save. Returns true if deleted.
+     *
+     * The hash check and the delete run under the same static lock as
+     * [savePeerPhoto]'s write, so a fresh save cannot complete between
+     * the check and the delete and have its bytes deleted underneath a
+     * live DB link (check-then-delete TOCTOU).
      */
     suspend fun deleteIfHashMatches(file: File, expectedHash: ByteArray): Boolean =
         withContext(Dispatchers.IO) {
-            try {
-                if (!file.isFile) return@withContext false
-                val actual = MessageDigest.getInstance("SHA-256").digest(file.readBytes())
-                if (!actual.contentEquals(expectedHash)) return@withContext false
-                file.delete()
-            } catch (e: Exception) {
-                Log.w(TAG, "deleteIfHashMatches failed", e)
-                false
+            synchronized(FILE_LOCK) {
+                try {
+                    if (!file.isFile) return@withContext false
+                    val actual = MessageDigest.getInstance("SHA-256").digest(file.readBytes())
+                    if (!actual.contentEquals(expectedHash)) return@withContext false
+                    file.delete()
+                } catch (e: Exception) {
+                    Log.w(TAG, "deleteIfHashMatches failed", e)
+                    false
+                }
             }
         }
 
@@ -146,5 +176,12 @@ class ProfilePhotoStore(private val appContext: Context) {
         private const val TAG = "ProfilePhotoStore"
         private const val MAX_EDGE_PX = 256
         private const val JPEG_QUALITY = 85
+
+        /**
+         * Serializes peer-photo file mutations across ALL store instances
+         * (engine + view models each build their own): a delete must never
+         * interleave with another instance's save on the shared paths.
+         */
+        private val FILE_LOCK = Any()
     }
 }

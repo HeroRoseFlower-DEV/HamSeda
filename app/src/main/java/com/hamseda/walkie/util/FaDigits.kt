@@ -14,3 +14,14 @@ fun String.toFaDigits(): String {
     }
     return out.toString()
 }
+
+/**
+ * Locale-aware digit mapping for times, dates and counts: Persian digits
+ * ONLY under a Persian [locale] — an English UI must never render «۱۴:۳۰»
+ * next to "5 October". Unlike SAS codes and fingerprints (which use
+ * [toFaDigits] unconditionally so both devices render byte-identical
+ * glyphs for comparison), these values are never cross-checked between
+ * devices, so they follow the UI locale.
+ */
+fun String.toLocalizedDigits(locale: java.util.Locale): String =
+    if (locale.language == "fa") toFaDigits() else this

@@ -1,7 +1,6 @@
 package com.hamseda.walkie.ui.screens
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -10,14 +9,15 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.absolutePadding
-import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsBottomHeight
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -53,6 +53,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -67,7 +68,7 @@ import com.hamseda.walkie.ui.theme.TelegramColors
 import com.hamseda.walkie.ui.vm.ChatViewModel
 import com.hamseda.walkie.ui.vm.ChatVmFactory
 import com.hamseda.walkie.ui.vm.VmDeps
-import com.hamseda.walkie.util.toFaDigits
+import com.hamseda.walkie.util.toLocalizedDigits
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
@@ -84,6 +85,7 @@ import java.util.Locale
 fun ChatScreen(
     deps: VmDeps,
     peerId: String,
+    dark: Boolean,
     onBack: () -> Unit,
     // Keyed by peer: without key=, the ViewModelStore (activity-scoped,
     // class-keyed) would return chat A's VM when opening chat B — rendering
@@ -104,7 +106,10 @@ fun ChatScreen(
     val online by vm.online.collectAsStateWithLifecycle()
     val peerProfile by vm.peerProfile.collectAsStateWithLifecycle()
     val peerName by vm.peerName.collectAsStateWithLifecycle()
-    val dark = isSystemInDarkTheme()
+    // `dark` is the RESOLVED theme (user's ThemeMode override applied by
+    // MainActivity), passed in — never isSystemInDarkTheme(): an explicit
+    // Dark choice on a light-system phone (or vice versa) must theme this
+    // screen like every other.
     val listState = rememberLazyListState()
 
     val displayName = peerProfile?.displayName?.takeIf { it.isNotEmpty() } ?: peerName
@@ -150,22 +155,22 @@ fun ChatScreen(
         // too (see HamSedaRoot) — otherwise the two stack a second copy
         // (nested-Scaffold double inset, ~1 nav-bar of dead space above
         // the input, as seen in the user's screenshot).
-        val bottomInset = maxOf(
-            WindowInsets.ime.asPaddingValues().calculateBottomPadding(),
-            WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding(),
-        )
+        // The bottom inset itself is a layout-phase Spacer at the end of
+        // the Column (below), NOT a value read here: reading WindowInsets
+        // during composition recomposed the whole screen (and redrew the
+        // wallpaper) on every IME animation frame.
         val layoutDir = LocalLayoutDirection.current
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 // absolutePadding with the absolute values is identical to
-                // padding(padding) for top/sides; only the bottom is computed
-                // (max of IME / nav bars, applied exactly once — see above).
+                // padding(padding) for top/sides; the bottom comes from the
+                // layout-phase inset Spacer at the end of the Column.
                 .absolutePadding(
                     left = padding.calculateLeftPadding(layoutDir),
                     top = padding.calculateTopPadding(),
                     right = padding.calculateRightPadding(layoutDir),
-                    bottom = bottomInset,
+                    bottom = 0.dp,
                 ),
         ) {
             if (!online) {
@@ -202,7 +207,7 @@ fun ChatScreen(
                             val msg = item.msg
                             val time = remember(msg.timestamp, locale) {
                                 SimpleDateFormat("HH:mm", locale)
-                                    .format(Date(msg.timestamp)).toFaDigits()
+                                    .format(Date(msg.timestamp)).toLocalizedDigits(locale)
                             }
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
@@ -213,7 +218,13 @@ fun ChatScreen(
                                 horizontalArrangement = if (msg.isFromMe) Arrangement.Absolute.Right
                                 else Arrangement.Absolute.Left,
                             ) {
-                                Column {
+                                // Children align to the PHYSICAL right in both
+                                // locales: the QUEUED/FAILED label belongs over
+                                // the outgoing bubble's right edge. A default
+                                // (Start) alignment + a fillMaxWidth label used
+                                // to stretch this Column full-width and park the
+                                // bubble at Start — physical LEFT in LTR.
+                                Column(horizontalAlignment = AbsoluteRightAlignment) {
                                     if (msg.isFromMe &&
                                         (msg.state == MessageState.QUEUED || msg.state == MessageState.FAILED)
                                     ) {
@@ -226,13 +237,8 @@ fun ChatScreen(
                                             color = if (msg.state == MessageState.FAILED) MaterialTheme.colorScheme.error
                                             else if (dark) TelegramColors.InTimeTextDark
                                             else TelegramColors.InTimeTextLight,
-                                            // Absolute right: the label belongs to outgoing
-                                            // messages, which always sit on the right.
-                                            // (TextAlign.Right is direction-independent,
-                                            // unlike Alignment.End.)
                                             textAlign = TextAlign.Right,
                                             modifier = Modifier
-                                                .fillMaxWidth()
                                                 .absolutePadding(right = 12.dp, bottom = 2.dp),
                                         )
                                     }
@@ -255,9 +261,19 @@ fun ChatScreen(
                 }
             }
             TelegramInput(
+                peerId = peerId,
                 onSend = { vm.send(it); vm.onTyping(false) },
                 onTyping = { vm.onTyping(it) },
                 dark = dark,
+            )
+            // The screen's single bottom inset, resolved in the LAYOUT
+            // phase: max(ime, navigationBars) via the insets union — the
+            // input rides above the keyboard when open and above the
+            // system nav when closed, without recomposing per IME frame.
+            Spacer(
+                Modifier.windowInsetsBottomHeight(
+                    WindowInsets.ime.union(WindowInsets.navigationBars),
+                ),
             )
         }
     }
@@ -272,9 +288,9 @@ private fun lastSeenText(lastSeen: Long): String {
     val sameDay = now.get(Calendar.YEAR) == then.get(Calendar.YEAR) &&
         now.get(Calendar.DAY_OF_YEAR) == then.get(Calendar.DAY_OF_YEAR)
     val label = if (sameDay) {
-        SimpleDateFormat("HH:mm", locale).format(Date(lastSeen)).toFaDigits()
+        SimpleDateFormat("HH:mm", locale).format(Date(lastSeen)).toLocalizedDigits(locale)
     } else {
-        SimpleDateFormat("d MMM", locale).format(Date(lastSeen)).toFaDigits()
+        SimpleDateFormat("d MMM", locale).format(Date(lastSeen)).toLocalizedDigits(locale)
     }
     return stringResource(R.string.profile_last_seen, label)
 }
@@ -355,6 +371,17 @@ private fun TelegramOfflineStrip(dark: Boolean) {
 
 // ------------------------------------------------------------ date dividers
 
+/**
+ * Physical-right horizontal alignment, direction-independent: returns
+ * `space - size` regardless of layout direction. Used for the outgoing
+ * message column so the bubble + its QUEUED/FAILED label hug the right
+ * edge in BOTH locales (Telegram never mirrors message sides).
+ */
+private object AbsoluteRightAlignment : Alignment.Horizontal {
+    override fun align(size: Int, space: Int, layoutDirection: LayoutDirection): Int =
+        space - size
+}
+
 internal sealed interface ChatItem {
     val key: String
     // Keyed by day key, not the display label: dayLabel drops the year for
@@ -430,7 +457,7 @@ private fun dayLabel(ts: Long, todayLabel: String, yesterdayLabel: String, local
     val yesterday = y.get(Calendar.YEAR) == then.get(Calendar.YEAR) &&
         y.get(Calendar.DAY_OF_YEAR) == then.get(Calendar.DAY_OF_YEAR)
     if (yesterday) return yesterdayLabel
-    return SimpleDateFormat("d MMMM", locale).format(Date(ts)).toFaDigits()
+    return SimpleDateFormat("d MMMM", locale).format(Date(ts)).toLocalizedDigits(locale)
 }
 
 /** Date pill: 14sp white text on a dark translucent pill (Telegram service). */
@@ -460,12 +487,17 @@ private fun DateDivider(label: String, dark: Boolean) {
 
 @Composable
 private fun TelegramInput(
+    peerId: String,
     onSend: (String) -> Unit,
     onTyping: (Boolean) -> Unit,
     dark: Boolean,
 ) {
     // rememberSaveable: rotating the phone must not discard the typed draft.
-    var text by rememberSaveable { mutableStateOf("") }
+    // Keyed by peer: an unkeyed draft survives navigation (same composition
+    // slot in MainActivity), so text typed for A reappeared in B's input —
+    // and one Send tap away from going to the wrong person. (MainActivity
+    // also keys the whole ChatScreen by peer; this is the second lock.)
+    var text by rememberSaveable(key = "chatDraft/$peerId") { mutableStateOf("") }
 
     fun submit() {
         val t = text.trim()

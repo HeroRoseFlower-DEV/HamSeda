@@ -9,3 +9,12 @@
 # Keep serializable protocol/crypto entry points used across the session layer.
 -keep class com.hamseda.walkie.proto.** { *; }
 -keep class com.hamseda.walkie.crypto.** { *; }
+
+# Room: the database, DAOs, entities and the generated *_Impl classes are
+# reached reflectively (Room instantiates the impl classes by name and
+# reads entity/DAO metadata at runtime). Without these keeps a future
+# minified release would rename them and messaging persistence would die
+# with a "cannot find implementation" crash on first launch.
+-keep class com.hamseda.walkie.data.msg.** { *; }
+-keep class * extends androidx.room.RoomDatabase { *; }
+-keep class **_Impl { *; }

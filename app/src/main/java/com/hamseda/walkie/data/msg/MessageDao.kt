@@ -64,14 +64,22 @@ interface MessageDao {
 
     // ---------------------------------------------------------------- outbox
 
+    /**
+     * Due outbox rows for ONE peer only. Delivery is strictly per-peer:
+     * senderSeq spaces are independent per peer, and a queued text must
+     * never be drained onto another peer's session (it would deliver A's
+     * private message to B, or be dropped as "already seen" by B's HELLO
+     * cursor). The drain in MessagingEngine relies on this predicate.
+     */
     @Query(
         "SELECT m.id AS msgId, m.peerId AS peerId, m.senderSeq AS senderSeq, " +
             "m.body AS body, m.timestamp AS timestamp, o.attempts AS attempts, " +
             "o.nextRetryAt AS nextRetryAt " +
             "FROM outbox o INNER JOIN messages m ON o.msgId = m.id " +
-            "WHERE o.nextRetryAt <= :now ORDER BY m.senderSeq ASC LIMIT :limit",
+            "WHERE m.peerId = :peerId AND o.nextRetryAt <= :now " +
+            "ORDER BY m.senderSeq ASC LIMIT :limit",
     )
-    suspend fun dueOutbox(now: Long, limit: Int): List<OutboxItem>
+    suspend fun dueOutbox(peerId: String, now: Long, limit: Int): List<OutboxItem>
 
     @Query("DELETE FROM outbox WHERE msgId = :msgId")
     suspend fun deleteOutbox(msgId: String)
@@ -157,15 +165,35 @@ interface MessageDao {
     @Query("SELECT MAX(senderSeq) FROM messages WHERE peerId = :peerId AND isFromMe = 0")
     suspend fun maxPeerSeq(peerId: String): Long?
 
+    /** All seqs received from this peer, ascending — HELLO watermark input. */
+    @Query(
+        "SELECT senderSeq FROM messages WHERE peerId = :peerId AND isFromMe = 0 " +
+            "ORDER BY senderSeq ASC",
+    )
+    suspend fun receivedSeqs(peerId: String): List<Long>
+
+    @Query("SELECT * FROM messages WHERE id = :id")
+    suspend fun getMessage(id: String): MessageEntity?
+
     // ------------------------------------------------------------------ read
 
     /** One conversation's messages, oldest first. */
     @Query("SELECT * FROM messages WHERE peerId = :peerId ORDER BY createdAt ASC, id ASC")
     fun observeConversation(peerId: String): Flow<List<MessageEntity>>
 
-    /** Recent messages across peers for building the conversation list. */
-    @Query("SELECT * FROM messages ORDER BY createdAt DESC LIMIT :limit")
-    fun observeRecent(limit: Int): Flow<List<MessageEntity>>
+    /**
+     * The latest message of EVERY peer (one row per peer), newest first.
+     * The conversation list is built from this — a global "recent N"
+     * window would silently drop a peer's whole thread once N newer
+     * messages exist elsewhere.
+     */
+    @Query(
+        "SELECT * FROM messages m WHERE m.id = (" +
+            "SELECT id FROM messages WHERE peerId = m.peerId " +
+            "ORDER BY createdAt DESC, id DESC LIMIT 1" +
+            ") ORDER BY m.createdAt DESC, m.id DESC",
+    )
+    fun observeLatestPerPeer(): Flow<List<MessageEntity>>
 
     @Query(
         "SELECT peerId, COUNT(*) AS unread FROM messages " +
