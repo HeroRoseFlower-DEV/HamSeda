@@ -21,8 +21,11 @@ import java.util.concurrent.atomic.AtomicBoolean
  * Disconnect detection: a clean peer close surfaces as `InputStream.read()`
  * returning -1 (EOF) — this is checked explicitly and reported as
  * [ReadResult.Closed], because some stacks deliver EOF without throwing.
- * Any [IOException] (including [SocketTimeoutException]) is reported as
- * [ReadResult.Error]; the caller decides whether to retry or tear down.
+ * Any other [IOException] is reported as [ReadResult.Error]; the caller
+ * decides whether to retry or tear down. The one exception is a
+ * [SocketTimeoutException] mid-read: it consumes no bytes, so [readExactly]
+ * resumes the partial read instead of erroring — discarding it would
+ * desync the length-prefixed stream and kill a recoverable session.
  */
 class FramedSocket(
     private val input: InputStream,

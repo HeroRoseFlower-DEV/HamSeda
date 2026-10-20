@@ -97,10 +97,13 @@ class SessionHandshakeTest {
          * Budget for [await]. Aligned with the production handshake timeout:
          * on a heavily-loaded CI runner the handshake awaits can exceed 8s
          * with perfectly correct code. Overridable via HSEDA_TEST_AWAIT_MS
-         * for constrained runners.
+         * for constrained runners, hard-capped at 120s: a typo'd override
+         * (e.g. 3000000) must never mask a genuine deadlock by hanging the
+         * suite for minutes.
          */
         val RIG_AWAIT_TIMEOUT_MS: Long =
             System.getenv("HSEDA_TEST_AWAIT_MS")?.toLongOrNull()?.takeIf { it > 0 }
+                ?.coerceAtMost(120_000L)
                 ?: 30_000L
     }
 

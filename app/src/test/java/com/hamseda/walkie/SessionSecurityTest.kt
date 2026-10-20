@@ -208,10 +208,13 @@ class SessionSecurityTest {
          * Budget for [await]. Aligned with the production handshake timeout:
          * on a heavily-loaded CI runner the pre-hammer awaits ("sas phase",
          * "in session", "transmitting") can exceed 8s with perfectly correct
-         * code. Overridable via HSEDA_TEST_AWAIT_MS for constrained runners.
+         * code. Overridable via HSEDA_TEST_AWAIT_MS for constrained runners,
+         * hard-capped at 120s: a typo'd override (e.g. 3000000) must never
+         * mask a genuine deadlock by hanging the suite for minutes.
          */
         val RIG_AWAIT_TIMEOUT_MS: Long =
             System.getenv("HSEDA_TEST_AWAIT_MS")?.toLongOrNull()?.takeIf { it > 0 }
+                ?.coerceAtMost(120_000L)
                 ?: 30_000L
     }
 
@@ -687,10 +690,17 @@ class SessionSecurityTest {
         }
         threads.forEach { it.join() }
         // Under overload the bounded freshness-first queue evicts old unsent
-        // audio rather than accumulating stale speech. The session must survive.
-        Thread.sleep(1000)
-        assertEquals(SessionManager.Phase.IN_SESSION, rig.a.phase.value)
-        assertEquals(SessionManager.Phase.IN_SESSION, rig.b.phase.value)
+        // audio rather than accumulating stale speech. The session must
+        // survive — verified by a SOAK, not a sleep + one-shot assert: poll
+        // continuously so a teardown landing late (e.g. at ~1.5s, inside
+        // the old fixed 1s window's blind spot) is caught the moment it
+        // happens.
+        val soakDeadline = System.nanoTime() + 2_500_000_000L
+        while (System.nanoTime() < soakDeadline) {
+            assertEquals(SessionManager.Phase.IN_SESSION, rig.a.phase.value)
+            assertEquals(SessionManager.Phase.IN_SESSION, rig.b.phase.value)
+            Thread.sleep(50)
+        }
         // And the session still works afterwards.
         rig.a.setPttPressed(false)
         rig.await("capture stopped") { !rig.audioA.isCapturing }

@@ -198,6 +198,10 @@ jobs:
       - name: Verify release signatures and generate checksums
         id: artifacts
         shell: bash
+        env:
+          # Via env, never interpolated into the script text: the value
+          # keeps GitHub's log masking and cannot break out of quoting.
+          HAMSEDA_CERT_SHA256: ${{ secrets.HAMSEDA_CERT_SHA256 }}
         run: |
           set -euo pipefail
           APK="$(find app/build/outputs/apk/release -maxdepth 1 -type f -name '*.apk' -print -quit)"
@@ -213,7 +217,7 @@ jobs:
           # release certificate. The SHA-256 fingerprint is stored as the
           # HAMSEDA_CERT_SHA256 secret (hex, no colons). This catches a
           # misconfigured keystore signing with the wrong key.
-          EXPECTED_CERT="${{ secrets.HAMSEDA_CERT_SHA256 }}"
+          EXPECTED_CERT="$HAMSEDA_CERT_SHA256"
           if [ -n "$EXPECTED_CERT" ]; then
             ACTUAL_CERT="$("$APKSIGNER" verify --print-certs "$APK" 2>/dev/null \
               | grep -i "SHA-256" | head -n 1 | tr -d ' :' | tr 'a-f' 'A-F' | grep -o '[0-9A-F]\{64\}')"

@@ -59,10 +59,54 @@ class MessageDaoTest {
     fun insertOutgoing_isAtomic() = runTest {
         dao.insertOutgoing(msg("m1"), OutboxEntity("m1"))
         assertEquals(1, dao.outboxCount())
-        val due = dao.dueOutbox(Long.MAX_VALUE, 10)
+        val due = dao.dueOutbox("peer1", Long.MAX_VALUE, 10)
         assertEquals(1, due.size)
         assertEquals("m1", due[0].msgId)
         assertEquals("hello m1", due[0].body)
+    }
+
+    /**
+     * Round-6 C1 regression: the outbox drain is scoped to the connected
+     * peer. A session with peer B must neither see (and thus send) nor be
+     * able to drop a message queued for peer A — before the fix the drain
+     * query had no peer predicate and applied B's HELLO cursor globally,
+     * leaking A's text to B or silently marking it delivered.
+     */
+    @Test
+    fun dueOutbox_neverReturnsOtherPeersRows() = runTest {
+        dao.insertOutgoing(msg("forA", peerId = "peerA", seq = 1L), OutboxEntity("forA"))
+        dao.insertOutgoing(msg("forB", peerId = "peerB", seq = 1L), OutboxEntity("forB"))
+
+        // A session with B drains only B's row.
+        val forB = dao.dueOutbox("peerB", Long.MAX_VALUE, 10)
+        assertEquals(listOf("forB"), forB.map { it.msgId })
+        // A session with A drains only A's row.
+        val forA = dao.dueOutbox("peerA", Long.MAX_VALUE, 10)
+        assertEquals(listOf("forA"), forA.map { it.msgId })
+        // An unknown peer drains nothing.
+        assertTrue(dao.dueOutbox("peerC", Long.MAX_VALUE, 10).isEmpty())
+        // Both rows are still queued afterwards: scoping must not have
+        // consumed or dropped either one.
+        assertEquals(2, dao.outboxCount())
+    }
+
+    /**
+     * Round-6 M5 regression: the conversation list takes the latest
+     * message PER PEER, so a quiet peer's thread can never fall out of a
+     * global "recent N" window once other chats get busy.
+     */
+    @Test
+    fun latestPerPeer_coversEveryPeer() = runTest {
+        dao.insertIncomingDedup(msg("p1a", peerId = "peer1").copy(createdAt = 100L))
+        dao.insertIncomingDedup(msg("p1b", peerId = "peer1").copy(createdAt = 300L))
+        dao.insertIncomingDedup(msg("p2a", peerId = "peer2").copy(createdAt = 200L))
+        dao.insertIncomingDedup(msg("p3a", peerId = "peer3").copy(createdAt = 50L))
+
+        val latest = dao.observeLatestPerPeer().first()
+        assertEquals(3, latest.size)
+        // Newest activity first; one row per peer; peer1's row is its
+        // LATEST message, not its first.
+        assertEquals(listOf("p1b", "p2a", "p3a"), latest.map { it.id })
     }
 
     @Test
@@ -96,9 +140,9 @@ class MessageDaoTest {
         val future = System.currentTimeMillis() + 60_000L
         dao.scheduleOutboxRetry("m4", 2, future)
         // Not due yet.
-        assertTrue(dao.dueOutbox(System.currentTimeMillis(), 10).isEmpty())
+        assertTrue(dao.dueOutbox("peer1", System.currentTimeMillis(), 10).isEmpty())
         // Due after the retry timestamp.
-        assertEquals(1, dao.dueOutbox(future + 1, 10).size)
+        assertEquals(1, dao.dueOutbox("peer1", future + 1, 10).size)
     }
 
     @Test
