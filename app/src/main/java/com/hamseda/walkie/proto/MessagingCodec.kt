@@ -88,6 +88,12 @@ object MessagingCodec {
             throw MsgCodecException("bad chunk index/total: $index/$total")
         }
         val bytes = payload.copyOfRange(ChunkHeader.SIZE, payload.size)
+        // Cap the per-chunk payload here, not just via the upstream
+        // frame budget: the reassembly maps size their buffers from
+        // this value (round-7 M5).
+        if (bytes.size > Protocol.MSG_CHUNK_PLAINTEXT - ChunkHeader.SIZE) {
+            throw MsgCodecException("chunk payload too large: ${bytes.size}")
+        }
         return DecodedChunk(h.msgId, h.senderSeq, h.timestamp, index, total, bytes)
     }
 
@@ -212,6 +218,10 @@ object MessagingCodec {
             throw MsgCodecException("bad photo chunk index/total: $index/$total")
         }
         val bytes = payload.copyOfRange(PhotoChunkHeader.SIZE, payload.size)
+        // Same per-chunk payload cap as text chunks (round-7 M5).
+        if (bytes.size > Protocol.MSG_CHUNK_PLAINTEXT - PhotoChunkHeader.SIZE) {
+            throw MsgCodecException("photo chunk payload too large: ${bytes.size}")
+        }
         return DecodedPhotoChunk(photoId, index, total, bytes)
     }
 
@@ -307,7 +317,18 @@ object MessagingCodec {
         fun read(payload: ByteArray, minSize: Int): HeaderValues {
             if (payload.size < minSize) throw MsgCodecException("payload too short: ${payload.size}")
             val buf = ByteBuffer.wrap(payload).order(ByteOrder.BIG_ENDIAN)
-            return HeaderValues(UUID(buf.long, buf.long), buf.long, buf.long)
+            val msgId = UUID(buf.long, buf.long)
+            val senderSeq = buf.long
+            // A seq below 1 is never legitimate: per-peer seq spaces
+            // start at 1 (the sender allocates maxOwnSeq + 1). Accepting
+            // an arbitrary peer-supplied value (e.g. Long.MAX_VALUE)
+            // would poison the peer's own thread — the seq joins our
+            // received-set and feeds the HELLO watermark — so reject at
+            // decode like any other framing violation (round-7 L9). The
+            // timestamp stays unvalidated: it is display-only; message
+            // ordering uses the local createdAt.
+            if (senderSeq < 1L) throw MsgCodecException("invalid senderSeq: $senderSeq")
+            return HeaderValues(msgId, senderSeq, buf.long)
         }
     }
 

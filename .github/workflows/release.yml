@@ -6,8 +6,11 @@ on:
       - "v[0-9]*.[0-9]*"
       - "v[0-9]*.[0-9]*.[0-9]*"
 
+# Least privilege by default (round-7 L19): only the release job —
+# which publishes the GitHub Release — gets a write-capable token.
+# The build steps (checkout, Gradle, native build) run read-only.
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: hamseda-release-${{ github.ref }}
@@ -46,11 +49,25 @@ jobs:
     needs: ci-gate
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    # Only this job publishes (gh release create); everything else in
+    # the workflow stays on the read-only default above.
+    permissions:
+      contents: write
     steps:
       - name: Checkout tagged source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+
+      - name: Verify Gradle wrapper
+        # Same pin as android.yml (round-7 L18): verify the checked-in
+        # wrapper JAR before it executes in the job that holds the
+        # signing secrets. The wrapper distribution itself is SHA-256
+        # pinned in gradle-wrapper.properties.
+        run: |
+          set -e
+          echo "3b8a25775a69158b5ad2b1d17a80a88dc7b40a352a73eb27d06c612a7ce68e98  gradle/wrapper/gradle-wrapper.jar" | sha256sum --check --strict
+          ./gradlew --version
 
       - name: Validate release notes are filled in
         shell: bash

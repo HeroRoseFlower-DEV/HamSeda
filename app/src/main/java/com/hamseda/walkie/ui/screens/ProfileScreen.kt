@@ -87,6 +87,11 @@ fun ProfileScreen(
     // rememberSaveable: rotation must not lose an unsaved name edit.
     var name by rememberSaveable { mutableStateOf<String?>(null) }
     var savedFlash by rememberSaveable { mutableStateOf(false) }
+    // Monotonic tick per save (round-7 L16): re-saving while the flash
+    // is already showing must restart its timer — with the boolean
+    // alone, the second assignment is a no-op and LaunchedEffect never
+    // restarts, so the label could revert <1.8s after the LAST save.
+    var savedFlashTick by rememberSaveable { mutableStateOf(0) }
 
     // Seed the editor from the persisted name once it loads. The ViewModel's
     // stateIn initial value ("") always wins the race against the DataStore
@@ -103,10 +108,10 @@ fun ProfileScreen(
     // that simply hasn't arrived yet. A DELIBERATE clear still works:
     // once seeded, clearing the field produces "" (non-null), which saves.
     val saveName: () -> Unit = {
-        name?.let { vm.setName(it); savedFlash = true }
+        name?.let { vm.setName(it); savedFlash = true; savedFlashTick++ }
     }
-    LaunchedEffect(savedFlash) {
-        if (savedFlash) {
+    LaunchedEffect(savedFlashTick) {
+        if (savedFlashTick > 0) {
             delay(1800)
             savedFlash = false
         }

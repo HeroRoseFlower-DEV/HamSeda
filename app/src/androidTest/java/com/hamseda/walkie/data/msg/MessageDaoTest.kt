@@ -94,19 +94,26 @@ class MessageDaoTest {
      * Round-6 M5 regression: the conversation list takes the latest
      * message PER PEER, so a quiet peer's thread can never fall out of a
      * global "recent N" window once other chats get busy.
+     *
+     * Round-7 L20: scaled past the old window size. The original test
+     * used 4 messages, so a regression to any global LIMIT >= 4 would
+     * have passed it; with 350 messages on peer1 alone, peer2/peer3 sit
+     * outside ANY global recent-N window up to 350 and must still
+     * appear.
      */
     @Test
     fun latestPerPeer_coversEveryPeer() = runTest {
-        dao.insertIncomingDedup(msg("p1a", peerId = "peer1").copy(createdAt = 100L))
-        dao.insertIncomingDedup(msg("p1b", peerId = "peer1").copy(createdAt = 300L))
         dao.insertIncomingDedup(msg("p2a", peerId = "peer2").copy(createdAt = 200L))
         dao.insertIncomingDedup(msg("p3a", peerId = "peer3").copy(createdAt = 50L))
+        for (i in 1..350) {
+            dao.insertIncomingDedup(msg("p1-$i", peerId = "peer1").copy(createdAt = 1_000L + i))
+        }
 
         val latest = dao.observeLatestPerPeer().first()
         assertEquals(3, latest.size)
         // Newest activity first; one row per peer; peer1's row is its
         // LATEST message, not its first.
-        assertEquals(listOf("p1b", "p2a", "p3a"), latest.map { it.id })
+        assertEquals(listOf("p1-350", "p2a", "p3a"), latest.map { it.id })
     }
 
     @Test
@@ -204,6 +211,50 @@ class MessageDaoTest {
         dao.failOutbox("f1")
         assertEquals(0, dao.outboxCount())
         assertEquals(MessageState.FAILED, stateOf("f1"))
+    }
+
+    /**
+     * Round-7 M4 regression: failing the outbox must never downgrade a
+     * message that already reached DELIVERED or READ — an inbound read
+     * receipt does not take the engine's send mutex, so it can land
+     * after a drain pass decided this row exceeded its attempts. The
+     * outbox row is still removed (delivery obligation ends).
+     */
+    @Test
+    fun failOutbox_neverDowngradesDeliveredOrRead() = runTest {
+        dao.insertOutgoing(msg("f2", state = MessageState.DELIVERED), OutboxEntity("f2"))
+        dao.failOutbox("f2")
+        assertEquals(MessageState.DELIVERED, stateOf("f2"))
+
+        dao.insertOutgoing(msg("f3", state = MessageState.READ), OutboxEntity("f3"))
+        dao.failOutbox("f3")
+        assertEquals(MessageState.READ, stateOf("f3"))
+
+        // Both outbox rows were still deleted.
+        assertEquals(0, dao.outboxCount())
+        // SENT (not yet delivered) still fails normally.
+        dao.insertOutgoing(msg("f4", state = MessageState.SENT), OutboxEntity("f4"))
+        dao.failOutbox("f4")
+        assertEquals(MessageState.FAILED, stateOf("f4"))
+    }
+
+    /**
+     * Round-7 L4: markReadByIds marks exactly the given ids — a message
+     * that arrived after the caller's snapshot stays unread (no receipt
+     * was sent for it), and outgoing rows are never touched.
+     */
+    @Test
+    fun markReadByIds_marksExactlyTheSnapshot() = runTest {
+        dao.insertIncomingDedup(msg("k1", fromMe = false, state = MessageState.DELIVERED))
+        dao.insertIncomingDedup(msg("k2", fromMe = false, state = MessageState.DELIVERED))
+        dao.markReadByIds(listOf("k1"))
+        val conv = dao.observeConversation("peer1").first().associateBy { it.id }
+        assertEquals(MessageState.READ, conv.getValue("k1").state)
+        assertEquals(MessageState.DELIVERED, conv.getValue("k2").state)
+        // Outgoing ids are ignored even when listed.
+        dao.insertOutgoing(msg("k3"), OutboxEntity("k3"))
+        dao.markReadByIds(listOf("k3"))
+        assertEquals(MessageState.QUEUED, stateOf("k3"))
     }
 
     @Test

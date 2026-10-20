@@ -118,6 +118,14 @@ class MainActivity : ComponentActivity() {
             config.setLocale(locale)
             super.attachBaseContext(newBase.createConfigurationContext(config))
         } else {
+            // System language: undo any Locale.setDefault() an earlier
+            // explicit-language attach performed in this same process
+            // (round-7 L12). Resources already follow the system
+            // configuration here, but without this the process default
+            // would stay on the previously chosen language until death
+            // for anything that reads Locale.getDefault().
+            val systemLocale = newBase.resources.configuration.locales[0]
+            Locale.setDefault(systemLocale)
             super.attachBaseContext(newBase)
         }
     }

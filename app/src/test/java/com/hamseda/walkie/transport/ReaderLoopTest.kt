@@ -17,6 +17,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -157,16 +158,47 @@ class ReaderLoopTest {
     }
 
     @Test
-    fun onFrameFalse_stopsReader() = runTest {
-        val t = FakeReaderTransport(this)
-        t.frameResult = false
-        val socket = socketOf(frameBytes(1), frameBytes(2))
-        t.start(socket, generation = 1L)
-        awaitTrue { t.receivedFrames.isNotEmpty() }
-        // Give the loop a chance to (incorrectly) read a second frame.
-        delay(200)
-        assertEquals(1, t.receivedFrames.size)
-        t.stop()
+    fun onFrameFalse_stopsReader() {
+        // Mechanism-based (round-7 L21): the second frame sits behind a
+        // gate — ANY read attempt past the first frame trips a latch, so
+        // a broken reader fails the moment it tries, not after a
+        // wall-clock guess. (The old version slept 200 ms and asserted
+        // absence; on a starved runner a broken reader delivering late
+        // false-passed.) Runs on a real scope like staleReader below:
+        // latches block, which runTest's virtual clock cannot drive.
+        val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+        try {
+            val t = FakeReaderTransport(scope)
+            t.frameResult = false
+            val firstFrame = frameBytes(1)
+            val data = firstFrame + frameBytes(2)
+            val secondReadAttempted = CountDownLatch(1)
+            val gated = object : InputStream() {
+                private var pos = 0
+                override fun read(): Int = throw AssertionError("3-arg read expected")
+                override fun read(b: ByteArray, off: Int, len: Int): Int {
+                    if (pos >= firstFrame.size) {
+                        secondReadAttempted.countDown()
+                        return -1
+                    }
+                    val n = minOf(len, firstFrame.size - pos)
+                    data.copyInto(b, off, pos, pos + n)
+                    pos += n
+                    return n
+                }
+            }
+            t.start(FramedSocket(gated, ByteArrayOutputStream()), generation = 1L)
+            awaitTrueBlocking { t.receivedFrames.isNotEmpty() }
+            assertEquals(1, t.receivedFrames.size)
+            assertFalse(
+                "reader must not read again after onFrame returned false",
+                secondReadAttempted.await(2, TimeUnit.SECONDS),
+            )
+            assertEquals(1, t.receivedFrames.size)
+            t.stop()
+        } finally {
+            scope.cancel()
+        }
     }
 
     @Test

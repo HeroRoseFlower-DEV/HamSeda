@@ -112,6 +112,44 @@ class MessagingCodecTest {
     }
 
     @Test
+    fun `decode rejects non-positive senderSeq`() {
+        // Round-7 L9: seq spaces start at 1; a peer-supplied 0 or
+        // negative (or poison like Long.MAX_VALUE-adjacent garbage) is
+        // a framing violation, never stored.
+        for (badSeq in listOf(0L, -1L, Long.MIN_VALUE)) {
+            val payload = MessagingCodec.encodeText(id, 1L, 0L, "hi")
+            // Rewrite the senderSeq field (offset 16, 8 bytes BE).
+            val buf = java.nio.ByteBuffer.wrap(payload).order(java.nio.ByteOrder.BIG_ENDIAN)
+            buf.putLong(16, badSeq)
+            try {
+                MessagingCodec.decodeText(payload)
+                throw AssertionError("expected MsgCodecException for seq=$badSeq")
+            } catch (e: MsgCodecException) {
+            }
+        }
+    }
+
+    @Test
+    fun `decode chunk rejects oversize per-chunk payload`() {
+        // Round-7 M5: the per-chunk payload is capped at decode, not
+        // just by the upstream frame budget.
+        val header = MessagingCodec.chunk(id, 1L, 0L, "z".repeat(5000))[0]
+        val oversize = header + ByteArray(Protocol.MSG_CHUNK_PLAINTEXT)
+        try {
+            MessagingCodec.decodeChunk(oversize)
+            throw AssertionError("expected MsgCodecException")
+        } catch (e: MsgCodecException) {
+        }
+        val photoHeader = MessagingCodec.chunkPhoto(id, ByteArray(100) { 1 })[0]
+        val oversizePhoto = photoHeader + ByteArray(Protocol.MSG_CHUNK_PLAINTEXT)
+        try {
+            MessagingCodec.decodePhotoChunk(oversizePhoto)
+            throw AssertionError("expected MsgCodecException")
+        } catch (e: MsgCodecException) {
+        }
+    }
+
+    @Test
     fun `decode rejects truncated payloads`() {
         try {
             MessagingCodec.decodeText(ByteArray(10))

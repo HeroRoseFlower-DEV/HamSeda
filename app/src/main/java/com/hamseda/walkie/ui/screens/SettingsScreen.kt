@@ -51,6 +51,7 @@ import com.hamseda.walkie.ui.vm.SettingsViewModel
 import com.hamseda.walkie.ui.vm.VmDeps
 import com.hamseda.walkie.ui.vm.VmFactory
 import com.hamseda.walkie.util.toFaDigits
+import com.hamseda.walkie.util.toLocalizedDigits
 
 @Composable
 fun SettingsScreen(
@@ -312,7 +313,14 @@ fun SettingsScreen(
                     )
                     Spacer(Modifier.height(8.dp))
                     Text(
-                        text = "${stringResource(R.string.version_label)} ${BuildConfig.VERSION_NAME}",
+                        // Digits follow the UI locale like every other
+                        // user-facing number (round-7 L15): the raw
+                        // VERSION_NAME rendered Latin digits in the
+                        // Persian UI.
+                        text = "${stringResource(R.string.version_label)} " +
+                            BuildConfig.VERSION_NAME.toLocalizedDigits(
+                                androidx.compose.ui.text.intl.Locale.current.platformLocale,
+                            ),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

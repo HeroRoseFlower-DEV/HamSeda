@@ -46,6 +46,7 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.security.MessageDigest
 import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -203,13 +204,20 @@ class SessionManager(
     /**
      * Run [block] on the audio executor. If close() already shut it down,
      * run inline so teardown-after-close can never throw
-     * RejectedExecutionException.
+     * RejectedExecutionException. The shutdown check and execute() are
+     * not atomic (round-7 M2): a concurrent close() can shut the
+     * executor down between them, so a rejection is caught and the
+     * block runs inline — the fallback the check was reaching for.
      */
     private fun runOnAudioExecutor(block: () -> Unit) {
         if (audioExecutor.isShutdown) {
             block()
         } else {
-            audioExecutor.execute(block)
+            try {
+                audioExecutor.execute(block)
+            } catch (e: RejectedExecutionException) {
+                block()
+            }
         }
     }
 
@@ -1046,36 +1054,49 @@ class SessionManager(
      */
     fun close(onCleanupDone: (() -> Unit)? = null) {
         synchronized(lifecycleLock) { _phase.value = Phase.ENDED }
-        cancelDeadlines()
-        stopSender()
-        runOnAudioExecutor {
-            try { audio.stopCapture() } catch (e: Exception) { Log.w(TAG, "close: stopCapture failed: ${e.javaClass.simpleName}") }
-            try { audio.stopPlayback() } catch (e: Exception) { Log.w(TAG, "close: stopPlayback failed: ${e.javaClass.simpleName}") }
-        }
-        // wipeSecrets() stays synchronous: it is fast (no HAL, no blocking)
-        // and must run before onDestroy returns. The drain/shutdown barrier
-        // moves off the main thread below: drainAudioExecutor() can block up
-        // to 5s (the ANR threshold) on a stuck HAL/worker, and the barrier
-        // is not needed for correctness — encode-after-close is caught per
-        // frame and OpusCodec.close() is serialized on the codec lock, so
-        // there is no native use-after-free.
-        // Guarded so NOTHING in the sync prologue can skip scheduling the
-        // cleanup block below: the callback contract depends on it.
+        // The WHOLE synchronous prologue is guarded (round-7 M2): the
+        // cleanup block below must be scheduled on every path — the
+        // onCleanupDone contract depends on it — so no step here may
+        // throw out of close(). The unguarded steps were individually
+        // "cannot fail" (job cancels, flag resets, an executor submit),
+        // but a concurrent double-close races them: close #1's async
+        // block can shut down the audio executor between close #2's
+        // isShutdown check and its execute(), and the resulting
+        // RejectedExecutionException escaped before the cleanup block
+        // was ever scheduled — its callback would never fire.
         try {
-            wipeSecrets()
+            cancelDeadlines()
+            stopSender()
+            runOnAudioExecutor {
+                try { audio.stopCapture() } catch (e: Exception) { Log.w(TAG, "close: stopCapture failed: ${e.javaClass.simpleName}") }
+                try { audio.stopPlayback() } catch (e: Exception) { Log.w(TAG, "close: stopPlayback failed: ${e.javaClass.simpleName}") }
+            }
+            // wipeSecrets() stays synchronous: it is fast (no HAL, no
+            // blocking) and must run before onDestroy returns. The
+            // drain/shutdown barrier moves off the main thread below:
+            // drainAudioExecutor() can block up to 5s (the ANR threshold)
+            // on a stuck HAL/worker, and the barrier is not needed for
+            // correctness — encode-after-close is caught per frame and
+            // OpusCodec.close() is serialized on the codec lock, so
+            // there is no native use-after-free.
+            try {
+                wipeSecrets()
+            } catch (e: Exception) {
+                Log.w(TAG, "close: wipeSecrets failed: ${e.javaClass.simpleName}")
+            }
+            jitter.reset()
+            replay.reset()
+            pendingKeyConfirmFrame?.payload?.fill(0); pendingKeyConfirmFrame = null
+            pendingSasConfirmFrame?.payload?.fill(0); pendingSasConfirmFrame = null
+            handshakeStarted = false
+            _sasCode.value = null
+            _peerSasConfirmed.value = false
+            _isTransmitting.value = false
+            _floorHolder.value = FloorController.Holder.NONE
+            _voiceLevel.value = 0f
         } catch (e: Exception) {
-            Log.w(TAG, "close: wipeSecrets failed: ${e.javaClass.simpleName}")
+            Log.w(TAG, "close: sync prologue failed: ${e.javaClass.simpleName}")
         }
-        jitter.reset()
-        replay.reset()
-        pendingKeyConfirmFrame?.payload?.fill(0); pendingKeyConfirmFrame = null
-        pendingSasConfirmFrame?.payload?.fill(0); pendingSasConfirmFrame = null
-        handshakeStarted = false
-        _sasCode.value = null
-        _peerSasConfirmed.value = false
-        _isTransmitting.value = false
-        _floorHolder.value = FloorController.Holder.NONE
-        _voiceLevel.value = 0f
 
         // This must not use the service's child scope: VoiceService.onDestroy()
         // cancels that scope immediately after close() returns. Serialize final
@@ -1149,11 +1170,24 @@ class SessionManager(
             fail(SessionError.PROTOCOL_ERROR, "local identity key unavailable")
             return@synchronized
         }
-        hs.myKeyPair = SessionCrypto.generateEphemeralKeyPair()
-        // Invariant: assigned immediately above in this same synchronized block.
-        hs.myPubBytes = SessionCrypto.encodePublicKey(checkNotNull(hs.myKeyPair) { "ephemeral keypair just generated" }.public)
-        hs.myNonce = SessionCrypto.newNonce16()
-        hs.myCommitSalt = SessionCrypto.newCommitmentSalt()
+        try {
+            hs.myKeyPair = SessionCrypto.generateEphemeralKeyPair()
+            // Invariant: assigned immediately above in this same try block.
+            hs.myPubBytes = SessionCrypto.encodePublicKey(checkNotNull(hs.myKeyPair) { "ephemeral keypair just generated" }.public)
+            hs.myNonce = SessionCrypto.newNonce16()
+            hs.myCommitSalt = SessionCrypto.newCommitmentSalt()
+        } catch (e: Exception) {
+            // Guarded like the identity load above (round-7 L2): a
+            // provider failure here used to propagate into the transport
+            // callback that invoked beginHandshake, cancelling that
+            // attempt's collector coroutine while handshakeStarted
+            // stayed true — the session then sat in HANDSHAKE with dead
+            // watchers until the 30 s deadline instead of failing
+            // immediately with PROTOCOL_ERROR.
+            Log.e(TAG, "ephemeral key generation failed: ${e.javaClass.simpleName}")
+            fail(SessionError.PROTOCOL_ERROR, "ephemeral key generation failed")
+            return@synchronized
+        }
         sendSequence.reset()
         sequenceExhaustionTriggered.set(false)
         lastPeerSeen = elapsedClock()

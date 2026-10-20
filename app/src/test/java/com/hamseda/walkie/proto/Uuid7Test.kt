@@ -25,9 +25,25 @@ class Uuid7Test {
 
     @Test
     fun `ids sort in generation order`() {
+        // Deterministic (round-7 L22): the old version slept a fixed
+        // 2 ms and asserted strict string order — on a coarse clock both
+        // ids landed in the same millisecond, where ordering falls to
+        // the rand_a counter (with its documented 12-bit wrap), and the
+        // test false-failed. Instead, wait for the wall clock to
+        // actually tick past the first id's embedded millisecond, then
+        // the ordering claim is about timestamps alone and must hold.
         val first = Uuid7.generate()
-        Thread.sleep(2)
+        val firstTs = Uuid7.timestampMillis(first)
+        val deadline = System.currentTimeMillis() + 10_000
+        while (System.currentTimeMillis() <= firstTs) {
+            assertTrue("wall clock did not advance within 10s", System.currentTimeMillis() < deadline)
+            Thread.yield()
+        }
         val second = Uuid7.generate()
+        assertTrue(
+            "second id must embed a later millisecond",
+            Uuid7.timestampMillis(second) > firstTs,
+        )
         assertTrue(
             "uuid7 must be time-ordered",
             first.toString() < second.toString(),

@@ -154,6 +154,12 @@ class FloorControlTest {
             start.countDown()
             t1.join(5000)
             t2.join(5000)
+            // Assert the workers actually FINISHED (round-7 L25): a
+            // wedged thread must fail loudly — without this, the
+            // surviving thread alone can satisfy the state assertions
+            // below and the race goes unobserved.
+            assertFalse("requestFloor worker wedged", t1.isAlive)
+            assertFalse("onPeerRequest worker wedged", t2.isAlive)
             val peerHolds = c.holder == FloorController.Holder.PEER
             val selfPending = c.selfRequestPending
             assertFalse(

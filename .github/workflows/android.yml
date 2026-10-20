@@ -79,6 +79,15 @@ jobs:
       - name: Build release APK
         run: ./gradlew :app:assembleRelease --no-daemon --stacktrace
 
+      # ProGuard smoke build (round-7 L24): the shipped variant keeps
+      # minify off, so without this step the R8 rules in
+      # proguard-rules.pro (Room/JNI/proto/crypto keeps) would never be
+      # exercised until the first release that turns minify on. The
+      # -PhamsedaMinify property flips isMinifyEnabled for this build
+      # only; the artifacts are discarded.
+      - name: Build minified release APK (ProGuard rules smoke test)
+        run: ./gradlew :app:assembleRelease -PhamsedaMinify=true --no-daemon --stacktrace
+
       - name: Compile instrumented tests
         # Keep a dedicated compile failure separate from emulator startup and execution.
         run: ./gradlew :app:assembleAndroidTest --no-daemon --stacktrace

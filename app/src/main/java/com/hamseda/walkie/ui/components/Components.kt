@@ -45,7 +45,11 @@ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.CustomAccessibilityAction
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.customActions
+import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -193,6 +197,8 @@ fun PttButton(
     // out of the semantics block (not a @Composable context).
     val cdTransmitting = stringResource(R.string.ptt_transmitting)
     val cdIdle = stringResource(R.string.ptt_label)
+    val a11yStart = stringResource(R.string.ptt_a11y_start)
+    val a11yStop = stringResource(R.string.ptt_a11y_stop)
     Box(
         modifier = modifier,
         contentAlignment = Alignment.Center,
@@ -211,6 +217,16 @@ fun PttButton(
                 .scale(scale)
                 .semantics {
                     contentDescription = if (transmitting) cdTransmitting else cdIdle
+                    // A press-and-hold surface must still be operable
+                    // without touch (round-7 L17): expose it as a button
+                    // with explicit start/stop accessibility actions —
+                    // a labeled graphic alone gives a TalkBack user no
+                    // way to transmit at all.
+                    role = Role.Button
+                    customActions = listOf(
+                        CustomAccessibilityAction(a11yStart) { onPressDown(); true },
+                        CustomAccessibilityAction(a11yStop) { onRelease(); true },
+                    )
                 }
                 .pointerInput(enabled) {
                     detectTapGestures(
@@ -218,8 +234,18 @@ fun PttButton(
                             if (!enabled) return@detectTapGestures
                             haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                             onPressDown()
-                            tryAwaitRelease()
-                            onRelease()
+                            try {
+                                tryAwaitRelease()
+                            } finally {
+                                // Finally, not a sequential call
+                                // (round-7 M7): if this coroutine is
+                                // cancelled mid-press — navigation or
+                                // rotation disposing the composition —
+                                // tryAwaitRelease() throws and a plain
+                                // trailing call would never run, latching
+                                // the microphone open with no finger down.
+                                onRelease()
+                            }
                         },
                     )
                 },

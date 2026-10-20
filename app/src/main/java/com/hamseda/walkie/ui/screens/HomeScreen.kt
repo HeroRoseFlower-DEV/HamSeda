@@ -36,6 +36,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -99,6 +100,14 @@ fun HomeScreen(
     // finger down and no future release event — the mic must never be open
     // outside a live press.
     var pttHeld by remember { mutableStateOf(false) }
+    // Backstop for the PTT latch (round-7 M7): PttButton already releases
+    // in a finally, but if this whole screen is disposed mid-press the
+    // press may be gone before that runs — never leave the microphone
+    // latched open with no finger down and no future release event.
+    // setPtt(false) is a no-op when not transmitting.
+    DisposableEffect(Unit) {
+        onDispose { vm.setPtt(false) }
+    }
     val micLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { granted ->

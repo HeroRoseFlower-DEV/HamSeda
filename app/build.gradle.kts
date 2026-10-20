@@ -4,6 +4,14 @@ plugins {
     alias(libs.plugins.ksp)
 }
 
+// CI-only R8 smoke build (round-7 L24): -PhamsedaMinify=true exercises
+// proguard-rules.pro on every PR even though the shipped variant keeps
+// minify off. Read at script top level; `providers` does not resolve
+// inside the android {} configuration lambdas.
+val minifyRelease = providers.gradleProperty("hamsedaMinify")
+    .map { it.toBoolean() }
+    .getOrElse(false)
+
 // Release signing is injected only by the tag-triggered release workflow.
  // Pull-request CI deliberately builds an unsigned release variant.
 val releaseKeystorePath = System.getenv("HAMSEDA_KEYSTORE_PATH")
@@ -62,7 +70,7 @@ android {
             if (releaseSigningConfigured) {
                 signingConfig = signingConfigs.getByName("release")
             }
-            isMinifyEnabled = false
+            isMinifyEnabled = minifyRelease
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -138,6 +146,10 @@ dependencies {
     androidTestImplementation(libs.androidx.test.runner)
     androidTestImplementation(libs.androidx.test.rules)
     androidTestImplementation(libs.androidx.room.testing)
+    // MessageMigrationTest declares a Room @Database for the v1 schema
+    // in the androidTest source set, so the Room compiler must process
+    // androidTest too (round-7 L23).
+    kspAndroidTest(libs.androidx.room.compiler)
     // Declared explicitly (not via the ui-test-junit4 transitive edge):
     // MessageDaoTest and ProfilePhotoStoreTest use runTest directly.
     androidTestImplementation(libs.kotlinx.coroutines.test)

@@ -63,7 +63,13 @@ class ProfilePhotoStore(private val appContext: Context) {
         try {
             val bytes = downscale(uri, MAX_EDGE_PX) ?: return@withContext null
             val out = File(profileDir(), "own.jpg")
-            FileOutputStream(out).use { it.write(bytes) }
+            // Under the shared lock (round-7 L7): a session-up read of
+            // own.jpg (sendProfile) must never observe a half-written
+            // file — the advertised hash is computed over the read
+            // bytes, so torn bytes would verify and stick.
+            synchronized(FILE_LOCK) {
+                FileOutputStream(out).use { it.write(bytes) }
+            }
             out
         } catch (e: Exception) {
             Log.w(TAG, "importOwnPhoto failed", e)
@@ -72,7 +78,18 @@ class ProfilePhotoStore(private val appContext: Context) {
     }
 
     suspend fun removeOwnPhoto(): Unit = withContext(Dispatchers.IO) {
-        runCatching { File(profileDir(), "own.jpg").delete() }
+        synchronized(FILE_LOCK) {
+            runCatching { File(profileDir(), "own.jpg").delete() }
+        }
+    }
+
+    /**
+     * Reads the own photo's bytes under [FILE_LOCK], so the read can
+     * never interleave with an import's write or a remove's delete
+     * (round-7 L7). Returns null when no photo is set.
+     */
+    fun readOwnPhotoBytes(): ByteArray? = synchronized(FILE_LOCK) {
+        ownPhotoFile()?.readBytes()
     }
 
     /**
@@ -178,9 +195,11 @@ class ProfilePhotoStore(private val appContext: Context) {
         private const val JPEG_QUALITY = 85
 
         /**
-         * Serializes peer-photo file mutations across ALL store instances
+         * Serializes photo file mutations across ALL store instances
          * (engine + view models each build their own): a delete must never
          * interleave with another instance's save on the shared paths.
+         * Covers the peer-photo paths and, since round-7 L7, own.jpg
+         * (import write / remove delete / session-up read).
          */
         private val FILE_LOCK = Any()
     }

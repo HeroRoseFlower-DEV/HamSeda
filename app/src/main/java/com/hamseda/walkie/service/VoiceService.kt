@@ -79,6 +79,15 @@ class VoiceService : Service() {
                 if (phase == SessionManager.Phase.IDLE) {
                     setSessionCpuAwake(false)
                     stopForegroundCompat()
+                } else if (phase == SessionManager.Phase.ENDED) {
+                    // The session is over; teardown emits IDLE next.
+                    // Taking the generic branch here re-posted the
+                    // "active" foreground notification for a dead
+                    // session during the endSession→teardown window
+                    // (round-7 L3, cosmetic flicker). Remove it, but do
+                    // NOT touch the wake lock: close()'s cleanup
+                    // callback releases it once teardown completes.
+                    stopForegroundCompat()
                 } else {
                     // Listening/handshake phases must not hold the CPU awake
                     // indefinitely. Audio processing needs the partial wake lock

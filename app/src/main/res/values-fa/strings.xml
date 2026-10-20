@@ -19,6 +19,8 @@
     <string name="home_identity_fingerprint">اثر انگشت هویت</string>
     <string name="ptt_label">برای صحبت نگه دار</string>
     <string name="ptt_transmitting">در حال ارسال…</string>
+    <string name="ptt_a11y_start">شروع ارسال</string>
+    <string name="ptt_a11y_stop">توقف ارسال</string>
     <string name="ptt_hint">دکمه را نگه دار و صحبت کن؛ رها کن تا قطع شود.</string>
     <string name="floor_free">کانال آزاد است</string>
     <string name="floor_you">تو داری صحبت می‌کنی</string>
