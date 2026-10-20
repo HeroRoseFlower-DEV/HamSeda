@@ -19,6 +19,8 @@
     <string name="home_identity_fingerprint">Identity fingerprint</string>
     <string name="ptt_label">Hold to talk</string>
     <string name="ptt_transmitting">Transmitting…</string>
+    <string name="ptt_a11y_start">Start transmitting</string>
+    <string name="ptt_a11y_stop">Stop transmitting</string>
     <string name="ptt_hint">Hold the button and speak; release to stop.</string>
     <string name="floor_free">Channel is free</string>
     <string name="floor_you">You are talking</string>

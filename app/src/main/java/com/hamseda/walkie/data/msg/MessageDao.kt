@@ -98,8 +98,23 @@ interface MessageDao {
     @Transaction
     suspend fun failOutbox(msgId: String) {
         deleteOutbox(msgId)
-        setState(msgId, MessageState.FAILED)
+        advanceToFailed(msgId)
     }
+
+    /**
+     * Advances to FAILED only from QUEUED/SENT. The state write must be
+     * forward-only like every other transition here: inbound receipts
+     * (onAck/onRead) do not take the engine's send mutex, so a message
+     * can reach DELIVERED/READ after a drain pass decided to fail it —
+     * an unconditional write would then flip a delivered+read message
+     * back to FAILED (round-7 M4). Failing still deletes the outbox row
+     * (see [failOutbox]): the delivery obligation ends either way.
+     */
+    @Query(
+        "UPDATE messages SET state = " + MessageState.FAILED +
+            " WHERE id = :msgId AND state < " + MessageState.DELIVERED,
+    )
+    suspend fun advanceToFailed(msgId: String)
 
     @Query("UPDATE outbox SET attempts = :attempts, nextRetryAt = :nextRetryAt WHERE msgId = :msgId")
     suspend fun scheduleOutboxRetry(msgId: String, attempts: Int, nextRetryAt: Long)
@@ -150,14 +165,30 @@ interface MessageDao {
     suspend fun unreadIncomingIds(peerId: String): List<String>
 
     /**
-     * Marks every incoming message of this peer up to READ, except ones the
-     * user never saw. Returns the number of rows changed.
+     * Marks ALL of this peer's incoming messages READ — including any
+     * that arrived after the caller's unread snapshot was taken. The
+     * engine's visible-chat path uses [markReadByIds] instead, so local
+     * read state covers exactly the set receipts were sent for
+     * (round-7 L4); this bulk form remains for callers that genuinely
+     * mean "everything from this peer". Returns rows changed.
      */
     @Query(
         "UPDATE messages SET state = " + MessageState.READ +
             " WHERE peerId = :peerId AND isFromMe = 0 AND state < " + MessageState.READ,
     )
     suspend fun markPeerRead(peerId: String): Int
+
+    /**
+     * Marks exactly [ids] READ (incoming only, forward-only): a message
+     * inserted between the caller's snapshot and this call is NOT
+     * silently marked read without a receipt having been sent for it
+     * (round-7 L4). Returns rows changed.
+     */
+    @Query(
+        "UPDATE messages SET state = " + MessageState.READ +
+            " WHERE id IN (:ids) AND isFromMe = 0 AND state < " + MessageState.READ,
+    )
+    suspend fun markReadByIds(ids: List<String>): Int
 
     @Query("SELECT MAX(senderSeq) FROM messages WHERE peerId = :peerId AND isFromMe = 1")
     suspend fun maxOwnSeq(peerId: String): Long?

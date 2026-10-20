@@ -508,9 +508,17 @@ class AudioEngine(private val context: Context) : AudioPipeline {
                 var peak = 0
                 for (sample in frame) peak = maxOf(peak, abs(sample.toInt()))
                 val level = min(1f, peak / 32768f)
+                // Encode and delivery are separate failure domains
+                // (round-7 L1): an encode failure (e.g. the codec was
+                // closed under us) is a pipeline error and must escalate
+                // via reportCaptureFailure — looping on it would retry
+                // every 20 ms forever while PTT shows "transmitting"
+                // and nothing is sent. Only a failure of the delivery
+                // CALLBACK is transient and safe to log + continue.
+                val encoded: ByteArray
                 try {
                     val encodeStartedAt = System.nanoTime()
-                    val encoded = codec.encode(frame)
+                    encoded = codec.encode(frame)
                     val encodeElapsedNanos = System.nanoTime() - encodeStartedAt
                     encodeWindowFrames++
                     encodeWindowTotalNanos += encodeElapsedNanos
@@ -527,15 +535,19 @@ class AudioEngine(private val context: Context) : AudioPipeline {
                         encodeWindowTotalNanos = 0L
                         encodeWindowMaxNanos = 0L
                     }
-                    try {
-                        onFrame(encoded, level)
-                    } finally {
-                        encoded.fill(0)
-                    }
                 } catch (e: Exception) {
-                    // The encode itself succeeded (bytes were produced above);
-                    // this is the delivery callback failing.
+                    Log.w(TAG, "capture encode failed: ${e.javaClass.simpleName}")
+                    reportCaptureFailure(generation, "audio encode failed")
+                    break
+                }
+                try {
+                    onFrame(encoded, level)
+                } catch (e: Exception) {
+                    // The encode itself succeeded (bytes were produced
+                    // above); this is the delivery callback failing.
                     Log.w(TAG, "capture frame delivery failed: ${e.javaClass.simpleName}")
+                } finally {
+                    encoded.fill(0)
                 }
             }
             frame.fill(0)
@@ -831,8 +843,15 @@ class AudioEngine(private val context: Context) : AudioPipeline {
                 "bufferLimitMs=${String.format(Locale.ROOT, "%.1f", effectiveBufferMs)}, " +
                 "initialUnderruns=$initialUnderruns, frameMs=20",
         )
+        // Bump + capture the generation HERE, in the calling thread,
+        // before Thread.start() (round-7 M1) — the capture side already
+        // does exactly this. Reading playbackGeneration lazily inside
+        // the worker let a start-delayed zombie adopt its REPLACEMENT's
+        // generation: the zombie's finally-guard then matched the live
+        // worker and cleared playbackRunning + reset the jitter buffer
+        // under it, silently killing live playback mid-session.
+        val generation = ++playbackGeneration
         playbackThread = Thread({
-            val generation = playbackGeneration
             try {
                 Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
             } catch (e: Exception) {

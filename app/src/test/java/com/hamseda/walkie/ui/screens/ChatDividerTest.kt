@@ -13,6 +13,12 @@ import java.util.Locale
  * backing the reversed LazyColumn, each day's divider must come AFTER its
  * messages, so visually it renders ABOVE (before) them. The old code
  * prepended the divider, rendering «امروز» below the day's messages.
+ *
+ * Round-7 L22: all timestamps in one arrangement derive from a SINGLE
+ * captured instant, and the arrangement re-runs if the wall clock
+ * crosses midnight while it executes — the code under test re-derives
+ * "today" at call time, so a run straddling midnight would otherwise
+ * flip the expected labels and false-fail.
  */
 class ChatDividerTest {
 
@@ -25,32 +31,48 @@ class ChatDividerTest {
             state = MessageState.SENT,
         )
 
-    private fun atToday(hour: Int): Long =
-        Calendar.getInstance().apply {
+    /** Milliseconds at [hour]:00 on the day of [base] plus [dayOffset] days. */
+    private fun atHour(base: Calendar, dayOffset: Int, hour: Int): Long =
+        (base.clone() as Calendar).apply {
+            add(Calendar.DAY_OF_YEAR, dayOffset)
             set(Calendar.HOUR_OF_DAY, hour)
             set(Calendar.MINUTE, 0)
             set(Calendar.SECOND, 0)
             set(Calendar.MILLISECOND, 0)
         }.timeInMillis
 
-    private fun atYesterday(hour: Int): Long =
-        Calendar.getInstance().apply {
-            add(Calendar.DAY_OF_YEAR, -1)
-            set(Calendar.HOUR_OF_DAY, hour)
-            set(Calendar.MINUTE, 0)
-            set(Calendar.SECOND, 0)
-            set(Calendar.MILLISECOND, 0)
-        }.timeInMillis
+    private fun dayKeyOf(ts: Long): String {
+        val c = Calendar.getInstance().apply { timeInMillis = ts }
+        return "${c.get(Calendar.YEAR)}-${c.get(Calendar.DAY_OF_YEAR)}"
+    }
+
+    /**
+     * Runs [block] with one captured "now"; if the day rolled over while
+     * it ran, the expectations and the code under test used different
+     * days — re-run on the new day instead of flaking.
+     */
+    private fun <T> onStableDay(block: (Calendar) -> T): T {
+        repeat(3) {
+            val now = Calendar.getInstance()
+            val result = block(now)
+            if (dayKeyOf(System.currentTimeMillis()) == dayKeyOf(now.timeInMillis)) {
+                return result
+            }
+        }
+        return block(Calendar.getInstance())
+    }
 
     @Test
     fun `divider comes after its day's messages in reversed list order`() {
         // Input is oldest-first.
-        val messages = listOf(
-            msg("y1", atYesterday(10), fromMe = false),
-            msg("t1", atToday(9)),
-            msg("t2", atToday(10)),
-        )
-        val items = withDateDividers(messages, "امروز", "دیروز", Locale("fa"))
+        val items = onStableDay { now ->
+            val messages = listOf(
+                msg("y1", atHour(now, -1, 10), fromMe = false),
+                msg("t1", atHour(now, 0, 9)),
+                msg("t2", atHour(now, 0, 10)),
+            )
+            withDateDividers(messages, "امروز", "دیروز", Locale("fa"))
+        }
         assertEquals(5, items.size)
         val m0 = items[0] as ChatItem.Msg
         val m1 = items[1] as ChatItem.Msg
@@ -66,8 +88,10 @@ class ChatDividerTest {
 
     @Test
     fun `single day yields one divider after all messages`() {
-        val messages = listOf(msg("a", atToday(9)), msg("b", atToday(10)))
-        val items = withDateDividers(messages, "امروز", "دیروز", Locale("fa"))
+        val items = onStableDay { now ->
+            val messages = listOf(msg("a", atHour(now, 0, 9)), msg("b", atHour(now, 0, 10)))
+            withDateDividers(messages, "امروز", "دیروز", Locale("fa"))
+        }
         assertEquals(3, items.size)
         assertTrue(items[0] is ChatItem.Msg)
         assertTrue(items[1] is ChatItem.Msg)
@@ -78,11 +102,13 @@ class ChatDividerTest {
     @Test
     fun `grouping flags still computed across the divider`() {
         // Two same-sender messages, one per day: each is its own run.
-        val messages = listOf(
-            msg("y1", atYesterday(10)),
-            msg("t1", atToday(9)),
-        )
-        val items = withDateDividers(messages, "امروز", "دیروز", Locale("fa"))
+        val items = onStableDay { now ->
+            val messages = listOf(
+                msg("y1", atHour(now, -1, 10)),
+                msg("t1", atHour(now, 0, 9)),
+            )
+            withDateDividers(messages, "امروز", "دیروز", Locale("fa"))
+        }
         assertEquals(4, items.size)
         val mToday = items[0] as ChatItem.Msg
         val mYesterday = items[2] as ChatItem.Msg

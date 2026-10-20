@@ -319,6 +319,12 @@ class SettingsViewModel(private val deps: VmDeps) : ViewModel() {
 
     fun setLanguage(code: String, onChanged: () -> Unit) {
         viewModelScope.launch {
+            // No-op when the tapped option is already the active
+            // language (round-7 L13): Material's selectable fires
+            // onClick even for the selected row, and the unconditional
+            // write + onChanged() used to recreate the whole activity
+            // for a tap that changed nothing.
+            if (deps.settings.languageFlow.first() == code) return@launch
             deps.settings.setLanguage(code)
             onChanged()
         }

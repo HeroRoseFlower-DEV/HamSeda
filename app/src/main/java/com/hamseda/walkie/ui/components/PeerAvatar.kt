@@ -41,6 +41,10 @@ fun PeerAvatar(
 ) {
     var bitmap by remember(photoPath) { mutableStateOf<android.graphics.Bitmap?>(null) }
     LaunchedEffect(photoPath) {
+        // Clear BEFORE the async decode (round-7 L14): until the new
+        // result lands, the previous bitmap would otherwise keep
+        // rendering — including for a peer/path with no photo at all.
+        bitmap = null
         bitmap = withContext(Dispatchers.IO) {
             runCatching {
                 val f = photoPath?.let { File(it) } ?: return@runCatching null

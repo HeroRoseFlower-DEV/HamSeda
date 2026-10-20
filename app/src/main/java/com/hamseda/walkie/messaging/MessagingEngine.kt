@@ -208,6 +208,22 @@ class MessagingEngine(
         // key material and must never complete under a new one.
         reassembly.clear()
         photoReassembly.clear()
+        // Drain both queues (round-7 I1): entries still queued here were
+        // delivered by the dead session and must never be processed or
+        // flushed under the next one. The consumer/batcher jobs keep
+        // running (they live for the engine's lifetime and must stay
+        // single — two frame processors would break wire order), but
+        // anything they already dequeued is stopped by the enqueue-time
+        // peer tag check, and anything enqueued from now on tags the new
+        // peer. Plaintexts are wiped, as the consumer would have done.
+        while (true) {
+            val stale = frameChannel.tryReceive().getOrNull() ?: break
+            stale.plaintext.fill(0)
+        }
+        while (ackChannel.tryReceive().isSuccess) {
+            // ACK ids of the dead session are dropped: their senders
+            // retry, and a fresh session re-ACKs on redelivery.
+        }
     }
 
     // ------------------------------------------------------------------ send
@@ -255,10 +271,22 @@ class MessagingEngine(
         val peerId = currentPeerId.value
         if (peerId.isEmpty()) return
         sendMutex.withLock {
+            // Re-validate after acquiring the mutex: the snapshot above
+            // was taken before any wait, and the session may have been
+            // replaced while this drain queued behind another one.
+            if (manager !== mgr || !_online.value || currentPeerId.value != peerId) return
             val now = System.currentTimeMillis()
             val due = dao.dueOutbox(peerId, now, DRAIN_BATCH)
             val lastSeen = helloLastSeenSeq[peerId] ?: 0L
             for (item in due) {
+                // Re-validate the LIVE session per item (round-7 M3):
+                // a drain pass runs up to DRAIN_BATCH items × up to 16
+                // chunks, and the session can drop — and a new session
+                // to a DIFFERENT peer come up on the same manager —
+                // while it runs. The pre-loop snapshot cannot see that;
+                // without this check the remaining rows of the old peer
+                // would be sent on the new peer's live session.
+                if (manager !== mgr || !_online.value || currentPeerId.value != peerId) break
                 // Defense in depth: the query already filters by peer,
                 // but never let a row cross sessions even if it regresses.
                 if (item.peerId != peerId) continue
@@ -267,18 +295,29 @@ class MessagingEngine(
                     dao.ackDelivered(item.msgId)
                     continue
                 }
-                val ok = sendItem(mgr, item)
+                val ok = sendItem(mgr, item, peerId)
                 if (ok) {
                     // Guarded: a resend racing the ACK/read receipt must not
                     // downgrade DELIVERED/READ back to SENT.
                     dao.advanceToSent(item.msgId)
-                    // At-least-once: keep it queued until the ACK arrives, but
-                    // pace resends instead of hammering every drain pass.
-                    dao.scheduleOutboxRetry(
-                        item.msgId,
-                        item.attempts,
-                        now + RESEND_DELAY_MS,
-                    )
+                    // At-least-once, but with a bounded lifetime: attempts
+                    // counts EVERY send, including successful-but-unacked
+                    // resends (round-7 L8). A peer that never ACKs (e.g.
+                    // it crashed before persisting) would otherwise keep
+                    // this row resending every RESEND_DELAY_MS in every
+                    // future session, forever, never reaching FAILED.
+                    val attempts = item.attempts + 1
+                    if (attempts > MAX_ATTEMPTS) {
+                        dao.failOutbox(item.msgId)
+                    } else {
+                        // Keep it queued until the ACK arrives, but pace
+                        // resends instead of hammering every drain pass.
+                        dao.scheduleOutboxRetry(
+                            item.msgId,
+                            attempts,
+                            now + RESEND_DELAY_MS,
+                        )
+                    }
                 } else {
                     val attempts = item.attempts + 1
                     if (attempts > MAX_ATTEMPTS) {
@@ -300,6 +339,7 @@ class MessagingEngine(
     private fun sendItem(
         mgr: SessionManager,
         item: OutboxItem,
+        peerId: String,
     ): Boolean {
         val id = try {
             UUID.fromString(item.msgId)
@@ -322,6 +362,11 @@ class MessagingEngine(
             return false
         }
         for (payload in chunks) {
+            // A multi-chunk send spans real time: if the session dropped
+            // (or was replaced by another peer's) mid-message, stop —
+            // the remaining chunks must not land on the new session
+            // (round-7 M3). The row stays queued and retries whole.
+            if (manager !== mgr || currentPeerId.value != peerId) return false
             if (!mgr.sendMessagingFrame(MessageType.CHUNK, payload)) return false
         }
         return true
@@ -337,8 +382,26 @@ class MessagingEngine(
      * new photo silently failed verification), chunks arriving before a
      * first-seen peer's PROFILE were dropped outright, and bursts could
      * insert out of order.
+     *
+     * Every entry is TAGGED with the peer whose session delivered it,
+     * captured at enqueue time (round-7 I1): handlers must attribute by
+     * this tag, never by the processing-time [currentPeerId]. Without
+     * the tag, frames queued by session A were processed after a swap
+     * under session B — A's text landed in B's chat, A's PROFILE
+     * overwrote B's row, A's ACK ids were flushed to B. The consumer
+     * additionally drops a frame whose tag no longer matches the live
+     * peer, and detach() drains both channels, so a stale entry cannot
+     * survive into the next session even if it was enqueued mid-teardown.
+     *
+     * Bounded (round-7 L5): an UNLIMITED queue let a fast peer grow
+     * plaintext copies without limit while the DB-bound consumer fell
+     * behind. The cap is a high-water safeguard, not flow control —
+     * 1024 frames ≈ 2 MB worst case — and a full queue drops + logs
+     * rather than ever blocking the session's reader thread.
      */
-    private val frameChannel = Channel<Pair<Byte, ByteArray>>(Channel.UNLIMITED)
+    private data class TaggedFrame(val type: Byte, val peerId: String, val plaintext: ByteArray)
+
+    private val frameChannel = Channel<TaggedFrame>(FRAME_CHANNEL_CAPACITY)
 
     @Volatile
     private var frameProcessorStarted = false
@@ -347,32 +410,59 @@ class MessagingEngine(
         if (frameProcessorStarted) return
         frameProcessorStarted = true
         scope.launch {
-            for ((type, plaintext) in frameChannel) {
-                processFrame(type, plaintext)
+            for (frame in frameChannel) {
+                // Session-swap guard: a frame delivered by a session that
+                // has since ended (or been replaced by another peer's) is
+                // stale — drop it instead of processing under the new
+                // session. If the SAME peer reconnected, the tag matches
+                // and processing is semantically correct.
+                if (frame.peerId != currentPeerId.value) {
+                    frame.plaintext.fill(0)
+                    continue
+                }
+                processFrame(frame.type, frame.peerId, frame.plaintext)
             }
         }
     }
 
     private fun onFrame(type: Byte, plaintext: ByteArray) {
-        // Enqueue only — never blocks the session's reader thread.
-        frameChannel.trySend(type to plaintext)
+        // Enqueue only — never blocks the session's reader thread. The
+        // peer tag is captured NOW: by processing time the live session
+        // may belong to someone else (round-7 I1).
+        val peerId = currentPeerId.value
+        if (peerId.isEmpty()) {
+            // No live session to attribute this frame to; it cannot be
+            // processed safely under any later session.
+            plaintext.fill(0)
+            return
+        }
+        if (!frameChannel.trySend(TaggedFrame(type, peerId, plaintext)).isSuccess) {
+            // Queue full (consumer hopelessly behind): drop + wipe rather
+            // than block the reader thread (round-7 L5).
+            Log.w(TAG, "frame queue full; dropping frame type=$type")
+            plaintext.fill(0)
+        }
     }
 
-    private suspend fun processFrame(type: Byte, plaintext: ByteArray) {
+    private suspend fun processFrame(type: Byte, peerId: String, plaintext: ByteArray) {
         try {
             when (type) {
-                MessageType.MSG -> onTextFrame(MessagingCodec.decodeText(plaintext))
-                MessageType.CHUNK -> onChunkFrame(MessagingCodec.decodeChunk(plaintext))
-                MessageType.MSG_ACK -> onAck(MessagingCodec.decodeId(plaintext))
-                MessageType.MSG_READ -> onRead(MessagingCodec.decodeId(plaintext))
-                MessageType.TYPING -> onTyping(MessagingCodec.decodeTyping(plaintext))
-                MessageType.MSG_HELLO -> onHello(MessagingCodec.decodeHello(plaintext))
-                MessageType.PROFILE -> onProfileFrame(MessagingCodec.decodeProfile(plaintext))
-                MessageType.PROFILE_PHOTO -> onPhotoChunk(MessagingCodec.decodePhotoChunk(plaintext))
+                MessageType.MSG -> onTextFrame(MessagingCodec.decodeText(plaintext), peerId)
+                MessageType.CHUNK -> onChunkFrame(MessagingCodec.decodeChunk(plaintext), peerId)
+                MessageType.MSG_ACK -> onAck(MessagingCodec.decodeId(plaintext), peerId)
+                MessageType.MSG_READ -> onRead(MessagingCodec.decodeId(plaintext), peerId)
+                MessageType.TYPING -> onTyping(MessagingCodec.decodeTyping(plaintext), peerId)
+                MessageType.MSG_HELLO -> onHello(MessagingCodec.decodeHello(plaintext), peerId)
+                MessageType.PROFILE -> onProfileFrame(MessagingCodec.decodeProfile(plaintext), peerId)
+                MessageType.PROFILE_PHOTO -> onPhotoChunk(MessagingCodec.decodePhotoChunk(plaintext), peerId)
                 else -> Unit
             }
         } catch (e: MsgCodecException) {
             Log.w(TAG, "dropping malformed messaging frame", e)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            // Never swallow cancellation: the consumer must actually stop
+            // when its scope goes away.
+            throw e
         } catch (e: Exception) {
             Log.w(TAG, "messaging frame handling failed", e)
         } finally {
@@ -380,8 +470,7 @@ class MessagingEngine(
         }
     }
 
-    private suspend fun onTextFrame(decoded: MessagingCodec.DecodedText) {
-        val peerId = currentPeerId.value.ifEmpty { return }
+    private suspend fun onTextFrame(decoded: MessagingCodec.DecodedText, peerId: String) {
         val storedName = dao.getPeer(peerId)?.displayName.orEmpty()
         val entity = MessageEntity(
             id = decoded.msgId.toString(),
@@ -395,9 +484,13 @@ class MessagingEngine(
         )
         // Idempotent: duplicates are ACKed but not stored twice.
         dao.insertIncomingDedup(entity)
-        ackChannel.trySend(decoded.msgId.toString())
+        if (!ackChannel.trySend(peerId to decoded.msgId.toString()).isSuccess) {
+            // A lost ACK is harmless (the sender retries); never block
+            // the frame consumer on a full queue (round-7 L5).
+            Log.w(TAG, "ack queue full; dropping ack for ${decoded.msgId}")
+        }
         if (activePeer.value == peerId) {
-            maybeSendReadReceipt(decoded.msgId.toString())
+            maybeSendReadReceipt(decoded.msgId.toString(), peerId)
         }
     }
 
@@ -413,11 +506,20 @@ class MessagingEngine(
 
     private val reassembly = ConcurrentHashMap<String, Reassembly>()
 
-    private suspend fun onChunkFrame(chunk: MessagingCodec.DecodedChunk) {
+    private suspend fun onChunkFrame(chunk: MessagingCodec.DecodedChunk, peerId: String) {
         val key = chunk.msgId.toString()
         val now = System.currentTimeMillis()
         // Prune stale reassemblies on every chunk (cheap: usually 0-1 entries).
         reassembly.entries.removeIf { it.value.deadline < now }
+        // Bound the number of DISTINCT in-flight messages, not just the
+        // chunks per message (round-7 M5): a peer streaming first-chunks
+        // for fresh random ids would otherwise accumulate entries until
+        // OOM — expiry pruning alone never fires while chunks keep
+        // arriving. Evict the entry closest to its deadline.
+        if (!reassembly.containsKey(key) && reassembly.size >= MAX_REASSEMBLY_ENTRIES) {
+            reassembly.entries.minByOrNull { it.value.deadline }
+                ?.let { reassembly.remove(it.key) }
+        }
         val state = reassembly.getOrPut(key) {
             Reassembly(
                 total = chunk.total,
@@ -427,7 +529,15 @@ class MessagingEngine(
                 deadline = now + Protocol.MSG_REASSEMBLY_TIMEOUT_MS,
             )
         }
-        if (state.total != chunk.total) {
+        // Every chunk of one message must agree with the first chunk's
+        // header (round-7 L6): text has no final integrity check (photos
+        // have SHA-256), so without this, two interleaved streams sharing
+        // a msgId would silently merge into one corrupted message. A
+        // mismatch means the entry is poisoned — drop it entirely.
+        if (state.total != chunk.total ||
+            state.senderSeq != chunk.senderSeq ||
+            state.timestamp != chunk.timestamp
+        ) {
             reassembly.remove(key)
             return
         }
@@ -446,14 +556,22 @@ class MessagingEngine(
             }
             onTextFrame(
                 MessagingCodec.DecodedText(chunk.msgId, state.senderSeq, state.timestamp, bytes.toString(Charsets.UTF_8)),
+                peerId,
             )
         }
     }
 
     // ------------------------------------------------------ acks and receipts
 
-    /** Coalesces ACK timing: collects for ~200ms then flushes, one frame per id. */
-    private val ackChannel = Channel<String>(Channel.UNLIMITED)
+    /**
+     * Coalesces ACK timing: collects for ~200ms then flushes, one frame
+     * per id. Entries carry the peer whose session delivered the message
+     * (round-7 I1): at flush time an entry is sent only if that peer is
+     * STILL the connected one — otherwise the id (a UUIDv7, embedding a
+     * timestamp) would leak to a different peer, who never sent the
+     * message. Bounded like the frame queue (round-7 L5).
+     */
+    private val ackChannel = Channel<Pair<String, String>>(ACK_CHANNEL_CAPACITY)
 
     @Volatile
     private var ackBatcherStarted = false
@@ -471,7 +589,8 @@ class MessagingEngine(
                 }
                 // A lost ACK is harmless: the sender retries until it gets one.
                 val mgr = manager ?: continue
-                for (id in batch) {
+                for ((peerTag, id) in batch) {
+                    if (peerTag != currentPeerId.value) continue
                     runCatching {
                         mgr.sendMessagingFrame(
                             MessageType.MSG_ACK,
@@ -483,24 +602,24 @@ class MessagingEngine(
         }
     }
 
-    private suspend fun onAck(msgId: UUID) {
+    private suspend fun onAck(msgId: UUID, peerId: String) {
         val id = msgId.toString()
-        // Scoped to the connected peer's conversation: an ACK may only
-        // move messages that belong to the peer on THIS session. (The DAO
-        // already guards direction/state; this stops a peer from acking
-        // ids of a conversation it is not part of.)
+        // Scoped to the peer whose session delivered this ACK: it may
+        // only move messages that belong to that peer's conversation.
+        // (The DAO already guards direction/state; this stops a peer
+        // from acking ids of a conversation it is not part of.)
         val msg = dao.getMessage(id) ?: return
-        if (msg.peerId != currentPeerId.value) return
+        if (msg.peerId != peerId) return
         // Advance forward only: never downgrade a READ back to DELIVERED.
         dao.ackDelivered(id)
     }
 
-    private suspend fun onRead(msgId: UUID) {
+    private suspend fun onRead(msgId: UUID, peerId: String) {
         val id = msgId.toString()
         // Same scoping as onAck: read receipts apply only to the sender's
-        // own conversation with the connected peer.
+        // own conversation with the peer that sent the receipt.
         val msg = dao.getMessage(id) ?: return
-        if (msg.peerId != currentPeerId.value) return
+        if (msg.peerId != peerId) return
         // Guarded: a remote peer may only advance our own outgoing messages
         // forward to READ — never incoming, FAILED, or unknown ids.
         dao.markReadByPeer(id)
@@ -518,7 +637,12 @@ class MessagingEngine(
             // messages. The receipts setting governs only telling the peer —
             // conflating the two left this peer's unread badges stuck
             // forever whenever receipts were off.
-            dao.markPeerRead(peerId)
+            //
+            // Mark exactly the snapshot (round-7 L4): a message inserted
+            // between the snapshot and this call must not be marked read
+            // locally when no receipt will be sent for it until the next
+            // visible trigger.
+            dao.markReadByIds(ids)
         }
         if (ids.isEmpty()) return
         if (!settings.readReceiptsFlow.first()) return
@@ -538,13 +662,20 @@ class MessagingEngine(
         }
     }
 
-    private suspend fun maybeSendReadReceipt(msgId: String) {
+    private suspend fun maybeSendReadReceipt(msgId: String, peerId: String) {
         // The chat is visibly open on this message: it is read locally no
         // matter the receipts setting; only the wire receipt is gated.
         dao.setState(msgId, MessageState.READ)
         if (!settings.readReceiptsFlow.first()) return
+        // Re-check the peer AFTER the DataStore suspension (round-7 M6,
+        // the same guard markReadVisible has): the session may have
+        // switched to another peer while suspended, and sending this
+        // receipt then would leak this conversation's message id — a
+        // UUIDv7 — to the wrong peer.
+        if (currentPeerId.value != peerId) return
+        val mgr = manager ?: return
         runCatching {
-            manager?.sendMessagingFrame(
+            mgr.sendMessagingFrame(
                 MessageType.MSG_READ,
                 MessagingCodec.encodeId(UUID.fromString(msgId)),
             )
@@ -562,24 +693,35 @@ class MessagingEngine(
      */
     fun setTyping(typing: Boolean) {
         scope.launch {
-            val send = typingMutex.withLock {
-                val now = System.currentTimeMillis()
-                if (typing && now - lastTypingSentAt < TYPING_MIN_INTERVAL_MS) {
-                    false
-                } else {
-                    lastTypingSentAt = now
-                    true
-                }
-            }
-            // Only for the CONNECTED peer's own chat: typing in an offline
+            // Checks FIRST (round-7 L10): a typing frame concerns only
+            // the CONNECTED peer's own chat — typing in an offline
             // conversation (A) while a session with B is up must not show
-            // B a typing indicator for a chat B is not part of.
+            // B a typing indicator for a chat B is not part of. Running
+            // these checks after the rate limiter (as before) also let
+            // stop frames and other chats' typing stamp the timestamp,
+            // suppressing the first real typing frame of the connected
+            // chat for up to TYPING_MIN_INTERVAL_MS.
             val active = activePeer.value
-            if (!send || active == null || active != currentPeerId.value || !_online.value) {
+            if (active == null || active != currentPeerId.value || !_online.value) {
                 return@launch
             }
+            val mgr = manager ?: return@launch
+            if (typing) {
+                // Only a typing=true frame that is actually sent consumes
+                // rate-limit budget; stop frames always pass through.
+                val send = typingMutex.withLock {
+                    val now = System.currentTimeMillis()
+                    if (now - lastTypingSentAt < TYPING_MIN_INTERVAL_MS) {
+                        false
+                    } else {
+                        lastTypingSentAt = now
+                        true
+                    }
+                }
+                if (!send) return@launch
+            }
             runCatching {
-                manager?.sendMessagingFrame(
+                mgr.sendMessagingFrame(
                     MessageType.TYPING,
                     MessagingCodec.encodeTyping(typing),
                 )
@@ -587,11 +729,12 @@ class MessagingEngine(
         }
     }
 
-    private fun onTyping(typing: Boolean) {
-        // Only surface for the open chat, and only when it is the connected
-        // peer's chat — never leak a live peer's typing into another
+    private fun onTyping(typing: Boolean, peerId: String) {
+        // Only surface for the open chat, and only when it is the chat of
+        // the peer whose session delivered the frame (the enqueue-time
+        // tag, round-7 I1) — never leak a live peer's typing into another
         // conversation's thread. Not persisted.
-        if (activePeer.value == null || activePeer.value != currentPeerId.value) return
+        if (activePeer.value == null || activePeer.value != peerId) return
         typingTimeoutJob?.cancel()
         if (typing) {
             _peerTyping.value = true
@@ -632,14 +775,12 @@ class MessagingEngine(
         }
     }
 
-    private fun onHello(lastSeenSeq: Long) {
-        // The cursor describes THIS peer's view of OUR outbox — store it
-        // under the connected peer only (round-6 C1).
-        val peerId = currentPeerId.value
-        if (peerId.isNotEmpty()) {
-            val prev = helloLastSeenSeq[peerId] ?: 0L
-            if (lastSeenSeq > prev) helloLastSeenSeq[peerId] = lastSeenSeq
-        }
+    private fun onHello(lastSeenSeq: Long, peerId: String) {
+        // The cursor describes the SENDING peer's view of our outbox —
+        // store it under the peer whose session delivered the HELLO
+        // (the enqueue-time tag, round-7 I1; round-6 C1).
+        val prev = helloLastSeenSeq[peerId] ?: 0L
+        if (lastSeenSeq > prev) helloLastSeenSeq[peerId] = lastSeenSeq
         scope.launch { drainOutbox() }
     }
 
@@ -655,7 +796,10 @@ class MessagingEngine(
         scope.launch {
             val mgr = manager ?: return@launch
             val name = settings.profileNameFlow.first()
-            val photoBytes = photoStore.ownPhotoFile()?.readBytes()
+            // Locked read (round-7 L7): a concurrent photo re-import
+            // must not let us hash + send a half-written JPEG whose
+            // torn bytes still verify against their own hash.
+            val photoBytes = photoStore.readOwnPhotoBytes()
             val hash = if (photoBytes != null) photoStore.sha256(photoBytes)
             else ByteArray(Protocol.PROFILE_HASH_BYTES)
             val payload = runCatching {
@@ -696,8 +840,7 @@ class MessagingEngine(
      * name always wins. Photo bytes arrive separately and are only stored
      * after hash verification (see [onPhotoChunk]).
      */
-    private suspend fun onProfileFrame(profile: MessagingCodec.DecodedProfile) {
-        val peerId = currentPeerId.value.ifEmpty { return }
+    private suspend fun onProfileFrame(profile: MessagingCodec.DecodedProfile, peerId: String) {
         val now = System.currentTimeMillis()
         val existing = dao.getPeer(peerId)
         val hashChanged = existing == null ||
@@ -739,12 +882,17 @@ class MessagingEngine(
      * on completion verifies SHA-256 against the hash from the peer's
      * PROFILE frame before saving to app-private storage.
      */
-    private suspend fun onPhotoChunk(chunk: MessagingCodec.DecodedPhotoChunk) {
-        val peerId = currentPeerId.value.ifEmpty { return }
+    private suspend fun onPhotoChunk(chunk: MessagingCodec.DecodedPhotoChunk, peerId: String) {
         val peer = dao.getPeer(peerId) ?: return
         val key = "${peerId}:${chunk.photoId}"
         val now = System.currentTimeMillis()
         photoReassembly.entries.removeIf { it.value.deadline < now }
+        // Entry-count bound, same as text reassembly (round-7 M5): a
+        // photo entry can hold ~44 KB, so the cap is tighter.
+        if (!photoReassembly.containsKey(key) && photoReassembly.size >= MAX_PHOTO_REASSEMBLY_ENTRIES) {
+            photoReassembly.entries.minByOrNull { it.value.deadline }
+                ?.let { photoReassembly.remove(it.key) }
+        }
         val state = photoReassembly.getOrPut(key) {
             PhotoReassembly(
                 total = chunk.total,
@@ -868,6 +1016,12 @@ class MessagingEngine(
         private const val ACK_BATCH_MS = 200L
         private const val TYPING_MIN_INTERVAL_MS = 3_000L
         private const val TYPING_TTL_MS = 8_000L
+        /** High-water caps for the inbound queues (round-7 L5). */
+        private const val FRAME_CHANNEL_CAPACITY = 1024
+        private const val ACK_CHANNEL_CAPACITY = 1024
+        /** Max distinct in-flight reassemblies (round-7 M5). */
+        private const val MAX_REASSEMBLY_ENTRIES = 64
+        private const val MAX_PHOTO_REASSEMBLY_ENTRIES = 16
 
         /** Short, stable display fallback for identity-based peer ids. */
         fun shortId(peerId: String): String =
@@ -875,15 +1029,23 @@ class MessagingEngine(
 
         /**
          * Highest contiguous watermark of a peer's received seqs: the
-         * largest N such that every seq from the first received one up to
-         * N is present. HELLO advertises this (never the bare max), so a
-         * gap below the max cannot make the sender skip a message that
-         * was never actually received. Pure — unit tested.
+         * largest N such that every seq from 1 up to N is present. The
+         * anchor is 1, unconditionally: per-peer seq spaces always start
+         * at 1 (allocation is maxOwnSeq + 1), so a history whose first
+         * surviving seq is above 1 has a genuine GAP at the bottom, not
+         * pruned history. It arises when later seqs overtake an earlier
+         * one (a transient send failure parks seq 1 in backoff while
+         * seqs 2,3 send on a later drain). Anchoring at the first
+         * surviving seq — the old behavior — advertised those as
+         * contiguous, and the sender then ack-dropped the still-queued
+         * seq 1: silent, permanent message loss (round-7 I2). HELLO
+         * advertises this watermark (never the bare max), so a gap
+         * cannot make the sender skip a message never actually received.
+         * Pure — unit tested.
          */
         fun contiguousWatermark(seqsAscending: List<Long>): Long {
-            if (seqsAscending.isEmpty()) return 0L
-            var expected = seqsAscending.first()
-            var watermark = expected - 1
+            var expected = 1L
+            var watermark = 0L
             for (seq in seqsAscending) {
                 when {
                     seq == expected -> {

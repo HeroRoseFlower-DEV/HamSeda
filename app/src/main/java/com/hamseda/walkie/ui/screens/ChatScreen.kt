@@ -98,7 +98,15 @@ fun ChatScreen(
     // typing indicators and read receipts stop when the chat is not visible.
     DisposableEffect(peerId) {
         vm.activate()
-        onDispose { vm.clearActivePeer() }
+        onDispose {
+            // Leaving with a non-empty draft must not leave the peer's
+            // "typing…" indicator lit until its TTL expires (round-7
+            // L11): send the stop frame BEFORE clearing the active peer,
+            // while setTyping's peer check still passes for this chat.
+            // Harmless when nothing was typed.
+            vm.onTyping(false)
+            vm.clearActivePeer()
+        }
     }
 
     val messages by vm.messages.collectAsStateWithLifecycle()
